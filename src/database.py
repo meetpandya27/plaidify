@@ -32,6 +32,8 @@ class AccessToken(Base):
     username_encrypted = Column(Text)
     password_encrypted = Column(Text)
 
+    instructions = Column(Text, nullable=True)
+
 def encrypt_password(plaintext: str) -> str:
     return fernet.encrypt(plaintext.encode()).decode()
 

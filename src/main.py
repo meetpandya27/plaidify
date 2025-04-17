@@ -3,7 +3,10 @@ from src.models import ConnectRequest, ConnectResponse
 from src.core.engine import connect_to_site
 from src.database import SessionLocal, init_db, Link, AccessToken, encrypt_password, decrypt_password
 
+from fastapi.staticfiles import StaticFiles
+
 app = FastAPI()
+app.mount("/ui", StaticFiles(directory="frontend", html=True), name="frontend")
 
 @app.on_event("startup")
 def on_startup():
@@ -86,6 +89,25 @@ async def submit_credentials(link_token: str, username: str, password: str):
     return {"access_token": access_token}
 
 
+@app.post("/submit_instructions")
+async def submit_instructions(access_token: str, instructions: str):
+    """
+    Accept instructions for a given access_token, storing them in the DB.
+    Example usage:
+      POST /submit_instructions?access_token=abc&instructions=ScrapeLastMonth
+      -> Returns {"status":"Instructions stored successfully"} or an error if invalid token
+    """
+    db = SessionLocal()
+    token_record = db.query(AccessToken).filter_by(token=access_token).first()
+    if not token_record:
+        db.close()
+        raise HTTPException(status_code=401, detail="Invalid access token.")
+
+    token_record.instructions = instructions
+    db.commit()
+    db.close()
+    return {"status": "Instructions stored successfully"}
+
 @app.get("/fetch_data")
 async def fetch_data(access_token: str):
     """
@@ -109,6 +131,14 @@ async def fetch_data(access_token: str):
     username = decrypt_password(token_record.username_encrypted)
     password = decrypt_password(token_record.password_encrypted)
 
+    # Retrieve any instructions stored for this access token
+    user_instructions = token_record.instructions
+
     response_data = await connect_to_site(site.site, username, password)
+
+    # Optionally attach instructions to the response, or apply special logic
+    if user_instructions:
+        response_data["instructions_applied"] = user_instructions
+
     db.close()
     return response_data

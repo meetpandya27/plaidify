@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Plaidify: Finance Frontend</title>
+</head>
+<body>
+  <h1>Plaidify: Basic Frontend</h1>
+  <p>Use the forms below to interact with the Plaidify API.</p>
+
+  <!-- Simple form to create a link token for a specific site -->
+  <h2>Create Link Token</h2>
+  <form id="create-link-form">
+    <label for="create-link-site">Site:</label>
+    <input type="text" id="create-link-site" name="create-link-site" required />
+    <button type="submit">Create Link</button>
+  </form>
+  <p id="create-link-result"></p>
+
+  <!-- Simple form to submit credentials and retrieve an access token -->
+  <h2>Submit Credentials</h2>
+  <form id="submit-credentials-form">
+    <label for="submit-link-token">Link Token:</label>
+    <input type="text" id="submit-link-token" name="submit-link-token" required />
+    <label for="submit-username">Username:</label>
+    <input type="text" id="submit-username" name="submit-username" required />
+    <label for="submit-password">Password:</label>
+    <input type="password" id="submit-password" name="submit-password" required />
+    <button type="submit">Submit Credentials</button>
+  </form>
+  <p id="submit-credentials-result"></p>
+
+  <!-- Simple form to fetch data using an access token -->
+  <h2>Fetch Data</h2>
+  <form id="fetch-data-form">
+    <label for="fetch-access-token">Access Token:</label>
+    <input type="text" id="fetch-access-token" name="fetch-access-token" required />
+    <button type="submit">Fetch Data</button>
+  </form>
+  <p id="fetch-data-result"></p>
+
+  <!-- A script tag referencing our frontend logic -->
+  <script src="main.js"></script>
+</body>
+</html>

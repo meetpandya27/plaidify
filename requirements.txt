@@ -9,3 +9,4 @@ beautifulsoup4
 lxml
 sqlalchemy
 cryptography
+gunicorn
