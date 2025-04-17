@@ -1,17 +1,15 @@
-version: '3.8'
-
 services:
   plaidify:
     build:
-      context: ./src
+      context: .
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
-      - ./src:/app
+      - .:/app
     environment:
       - PYTHONUNBUFFERED=1
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 networks:
   default:

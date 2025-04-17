@@ -1,8 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from src.models import ConnectRequest, ConnectResponse
 from src.core.engine import connect_to_site
+from src.database import SessionLocal, init_db, Link, AccessToken, encrypt_password, decrypt_password
 
 app = FastAPI()
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
 @app.post("/connect", response_model=ConnectResponse)
 async def connect(request: ConnectRequest):
@@ -13,6 +18,10 @@ async def connect(request: ConnectRequest):
         raise HTTPException(status_code=400, detail=str(e))
     return response_data
 
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the API!"}
+
 @app.get("/status")
 async def status():
     return {"status": "API is running"}
@@ -21,12 +30,10 @@ async def status():
 async def disconnect():
     return {"status": "disconnected"}
 
-# Below is a basic in-memory store and sample endpoints to demonstrate a Plaid-like flow in "plaidify":
-
+# Setting up UUID import
 import uuid
 
-LINK_TOKENS = {}
-ACCESS_TOKENS = {}
+# Removed in-memory dicts, replaced with DB
 
 @app.post("/create_link")
 async def create_link(site: str):
@@ -37,10 +44,13 @@ async def create_link(site: str):
       -> Returns {"link_token": "some-link-token"}
     """
     link_token = str(uuid.uuid4())
-    LINK_TOKENS[link_token] = {
-        "site": site,
-        "credentials": None
-    }
+
+    db = SessionLocal()
+    new_link = Link(link_token=link_token, site=site)
+    db.add(new_link)
+    db.commit()
+    db.close()
+
     return {"link_token": link_token}
 
 
@@ -53,21 +63,25 @@ async def submit_credentials(link_token: str, username: str, password: str):
       POST /submit_credentials?link_token=abc&username=mock_user&password=mock_password
       -> Returns {"access_token": "some-access-token"}
     """
-    if link_token not in LINK_TOKENS:
+    db = SessionLocal()
+    existing_link = db.query(Link).filter_by(link_token=link_token).first()
+    if not existing_link:
+        db.close()
         raise HTTPException(status_code=404, detail="Invalid link token.")
 
-    LINK_TOKENS[link_token]["credentials"] = {
-        "username": username,
-        "password": password
-    }
+    encrypted_username = encrypt_password(username)
+    encrypted_password = encrypt_password(password)
 
-    # For demonstration, generate a new access_token:
     access_token = str(uuid.uuid4())
-    ACCESS_TOKENS[access_token] = {
-        "site": LINK_TOKENS[link_token]["site"],
-        "username": username,
-        "password": password
-    }
+    new_token = AccessToken(
+        token=access_token,
+        link_token=link_token,
+        username_encrypted=encrypted_username,
+        password_encrypted=encrypted_password
+    )
+    db.add(new_token)
+    db.commit()
+    db.close()
 
     return {"access_token": access_token}
 
@@ -81,14 +95,20 @@ async def fetch_data(access_token: str):
       GET /fetch_data?access_token=some-access-token
       -> Returns the extracted data or a default payload if credentials are invalid
     """
-    if access_token not in ACCESS_TOKENS:
+    db = SessionLocal()
+    token_record = db.query(AccessToken).filter_by(token=access_token).first()
+    if not token_record:
+        db.close()
         raise HTTPException(status_code=401, detail="Invalid access token.")
-    
-    token_info = ACCESS_TOKENS[access_token]
-    site = token_info["site"]
-    username = token_info["username"]
-    password = token_info["password"]
 
-    # Attempt connection and extraction:
-    response_data = await connect_to_site(site, username, password)
+    site = db.query(Link).filter_by(link_token=token_record.link_token).first()
+    if not site:
+        db.close()
+        raise HTTPException(status_code=401, detail="Linked data not found.")
+
+    username = decrypt_password(token_record.username_encrypted)
+    password = decrypt_password(token_record.password_encrypted)
+
+    response_data = await connect_to_site(site.site, username, password)
+    db.close()
     return response_data

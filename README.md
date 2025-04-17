@@ -188,12 +188,17 @@ plaidify/
 ├─ src/
 │  ├─ main.py          # FastAPI entry-point
 │  ├─ core/            # Connection engine & helpers
+│  ├─ database.py      # Optional DB integration
 │  └─ models.py        # Pydantic response models
+├─ example_site/       # Sample site for demonstration
 ├─ connectors/         # JSON blueprints (one per site)
 ├─ docs/               # Diagrams, guides, badges
 ├─ tests/              # Unit + blueprint tests
+├─ test_endpoints.py   # Additional test endpoints
 ├─ docker-compose.yml
+├─ Dockerfile
 ├─ requirements.txt
+├─ plaidify.db         # Local DB (tracked or ephemeral)
 └─ README.md
 ```
 
@@ -226,7 +231,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, coding style, and PR guideline
 **Good first issues:**
 - Create a connector for a public demo site.
 - Add integration tests using pytest.
-- Improve error handling in [`src/core/session.py`](src/core/session.py).
+- Improve error handling in [`src/core/engine.py`](src/core/engine.py).
 
 ---
 

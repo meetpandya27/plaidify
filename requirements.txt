@@ -7,3 +7,5 @@ pytest-asyncio
 aiofiles
 beautifulsoup4
 lxml
+sqlalchemy
+cryptography
