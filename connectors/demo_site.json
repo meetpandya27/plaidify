@@ -1,0 +1,16 @@
+{
+  "name": "Demo Site",
+  "login_url": "https://demo.example.com/login",
+  "fields": {
+    "username": "#user",
+    "password": "#pass",
+    "submit": "#login-btn"
+  },
+  "post_login": [
+    { "wait": "#dashboard" },
+    { "extract": {
+        "profile_status": "#status",
+        "last_synced": "#last-sync"
+    }}
+  ]
+}

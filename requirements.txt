@@ -1,0 +1,9 @@
+FastAPI
+uvicorn
+pydantic
+httpx
+pytest
+pytest-asyncio
+aiofiles
+beautifulsoup4
+lxml

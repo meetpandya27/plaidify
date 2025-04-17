@@ -1,0 +1,20 @@
+{
+  "name": "Mock Site",
+  "login_url": "https://mock.example.com/login",
+  "fields": {
+    "username": "#username",
+    "password": "#password",
+    "submit": "#login-btn"
+  },
+  "post_login": [
+    {
+      "wait": "#dashboard"
+    },
+    {
+      "extract": {
+        "mock_status": "#mock-status",
+        "mock_synced": "#mock-sync"
+      }
+    }
+  ]
+}
