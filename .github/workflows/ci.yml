@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  ENCRYPTION_KEY: "ZY58Cfm5vG7YuExWuJ7uG8eN9_A8v6uLEFncah56324="
+  JWT_SECRET_KEY: "ci-test-secret-key-not-for-production-use-1234567890abcdef"
+  DATABASE_URL: "sqlite:///test_plaidify.db"
+  LOG_LEVEL: "WARNING"
+  LOG_FORMAT: "text"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Run ruff check
+        run: ruff check src/ tests/
+      - name: Run ruff format check
+        run: ruff format --check src/ tests/
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=src --cov-report=term-missing --cov-fail-under=70
+      - name: Upload coverage
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: .coverage
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run pip-audit
+        run: pip-audit --strict
+        continue-on-error: true  # Don't block PRs on audit warnings initially
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t plaidify:test .
+      - name: Check image size
+        run: |
+          SIZE=$(docker image inspect plaidify:test --format='{{.Size}}')
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "Image size: ${SIZE_MB}MB"
+          if [ $SIZE_MB -gt 500 ]; then
+            echo "::warning::Docker image is ${SIZE_MB}MB (target: <500MB)"
+          fi

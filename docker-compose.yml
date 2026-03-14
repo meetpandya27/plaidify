@@ -7,9 +7,12 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
-    command: gunicorn src.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+      - LOG_FORMAT=text
+    command: gunicorn src.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --reload
 
 networks:
   default:

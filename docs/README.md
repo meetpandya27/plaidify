@@ -233,6 +233,40 @@ plaidify/
 
 ---
 
+## Adding a New Python Connector
+
+To add support for a new site using Python code:
+
+1. **Copy the Template**: Duplicate `connectors/template_connector.py` and rename it to match your site, e.g. `my_site_connector.py`.
+2. **Implement the Connector**: Edit your new file and implement the `connect` method with your site-specific logic.
+3. **Class Naming**: Name your connector class `<YourSiteName>Connector` and inherit from `BaseConnector`.
+4. **Return Structure**: The `connect` method should return a dictionary with at least `status` and `data` keys.
+5. **Dynamic Loading**: All files ending with `_connector.py` in the `connectors/` directory will be loaded automatically.
+
+### Example
+
+```python
+from src.core.connector_base import BaseConnector
+
+class MySiteConnector(BaseConnector):
+    def connect(self, username: str, password: str) -> dict:
+        # Your site-specific logic here
+        return {
+            "status": "connected",
+            "data": {"field": "value"}
+        }
+```
+
+## Adding a JSON Blueprint Connector
+
+You can also add a JSON blueprint (see `connectors/demo_site.json`) for simple sites.
+
+---
+
+For more details, see the docstrings in `src/core/connector_base.py` and the template connector.
+
+---
+
 ## 🔐 Security by Design
 
 - **Ephemeral Credentials** – Used only for the active session and then discarded.

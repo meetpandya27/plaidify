@@ -9,6 +9,8 @@ venv/
 
 # Pytest cache
 .pytest_cache/
+.coverage
+htmlcov/
 
 # Editor backups and OS files
 .DS_Store
@@ -18,3 +20,10 @@ venv/
 # Environment variables
 .env
 .env.*
+!.env.example
+
+# Database files (local dev)
+*.db
+
+# Alembic
+alembic/versions/__pycache__/
