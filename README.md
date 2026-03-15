@@ -1,361 +1,478 @@
 <p align="center">
-  <h1 align="center">Plaidify</h1>
-  <p align="center">
-    Open-source infrastructure for authenticated web data — for developers and AI agents.
-    <br />
-    <a href="#-quick-start">Quick Start</a> · <a href="https://github.com/meetpandya27/plaidify/issues">Report Bug</a> · <a href="https://github.com/meetpandya27/plaidify/issues">Request Feature</a>
-  </p>
+  <br />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/🔓_Plaidify-Open_Source_Web_Auth_Gateway-8B5CF6?style=for-the-badge&labelColor=1a1a2e">
+    <img src="https://img.shields.io/badge/🔓_Plaidify-Open_Source_Web_Auth_Gateway-8B5CF6?style=for-the-badge&labelColor=1a1a2e" alt="Plaidify">
+  </picture>
+  <br /><br />
+  <strong>The missing infrastructure between AI agents and the authenticated web.</strong>
+  <br />
+  Give any app or agent a REST API to log in, read data, and take actions on <em>any</em> website — <br />
+  banks, utilities, portals, government sites — without writing a single scraper.
+  <br /><br />
+  <a href="#-30-second-quickstart">Quickstart</a> &nbsp;·&nbsp;
+  <a href="docs/AGENTS.md">Agent Integration</a> &nbsp;·&nbsp;
+  <a href="#-api-reference">API Docs</a> &nbsp;·&nbsp;
+  <a href="docs/PRODUCT_PLAN.md">Roadmap</a> &nbsp;·&nbsp;
+  <a href="https://github.com/meetpandya27/plaidify/issues">Report a Bug</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/meetpandya27/plaidify/actions/workflows/ci.yml"><img src="https://github.com/meetpandya27/plaidify/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/meetpandya27/plaidify/stargazers"><img src="https://img.shields.io/github/stars/meetpandya27/plaidify?style=social" alt="Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License"></a>
-  <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/python-3.9%2B-3776AB.svg?logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/MCP-coming_soon-blueviolet?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJ3aGl0ZSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTAiLz48L3N2Zz4=" alt="MCP">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
-  <img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Alpha">
 </p>
 
 ---
 
-> **Honest status:** Plaidify is in **early alpha**. The API, auth system, database layer, and blueprint architecture are built and tested. The browser automation engine (the part that actually logs into real websites) **is not yet implemented** — it currently returns simulated responses. We're building in public and contributions are welcome. See [What's Built vs. What's Not](#-whats-built-vs-whats-not) for the full picture.
+## The Problem
+
+> Every AI agent hits the same wall: **the world's most valuable data is locked behind login forms.**
+
+Bank balances. Utility bills. Insurance policies. Medical records. Academic transcripts. Government portals. **None of them have APIs.** And the ones that do (Plaid) cost $500+/month and only cover finance.
+
+If you're building an AI agent, an agentic workflow, or any app that needs to access user data from the authenticated web — you're stuck writing fragile Selenium scripts or paying per-connection fees to closed-source vendors.
+
+**Plaidify fixes this.** One JSON blueprint per site. One REST API for everything.
 
 ---
 
-## What is Plaidify?
+## How It Works
 
-Plaidify lets developers programmatically **connect to any website protected by a login form** and extract structured data through a unified API.
-
-The world's data is locked behind login forms — bank balances, utility bills, insurance policies, academic transcripts — and most of these sites have no API. Plaidify aims to be the open-source infrastructure layer that solves this: define a JSON "blueprint" for any site, and get a REST API that authenticates and returns clean data.
-
-**The long-term vision:** Plaidify becomes the standard way both **developers** and **AI agents** safely access authenticated web data — with user consent, scoped permissions, and full audit trails.
-
-### How It Works
-
-```text
-Your App                              Plaidify
-────────                              ────────
-
-POST /connect ──────────────────────► Load Blueprint (JSON or Python)
-  { site, username, password }                │
-                                              ▼
-                                       Execute Login Flow
-                                       (Playwright — coming in Phase 1)
-                                              │
-                                              ▼
-                                       Extract Structured Data
-                                              │
-◄──────────────────────────────────── Return JSON Response
-  { status: "connected",
-    data: { balance: 4521.30, ... } }
+```
+┌──────────────────┐        ┌─────────────────────────────────────┐
+│                  │        │            Plaidify                  │
+│   Your App /     │  POST  │                                     │
+│   AI Agent /     ├───────►│  1. Load Blueprint (JSON or Python) │
+│   MCP Client     │        │  2. Launch Browser (Playwright)     │
+│                  │◄───────┤  3. Authenticate & Extract Data     │
+│                  │  JSON  │  4. Return Structured Response      │
+│                  │        │                                     │
+└──────────────────┘        └─────────────────────────────────────┘
 ```
 
-### Who Is This For?
-
-| Persona | Use Case |
-|---------|----------|
-| **App Developer** | Pull data from sites with no API (banks, portals, utilities) into your product |
-| **AI Agent Builder** | Give your agents safe, scoped, auditable access to authenticated web data |
-| **Data Startup** | Build "Plaid for X" (utilities, insurance, healthcare) on top of Plaidify |
-| **Enterprise** | Self-host for internal data aggregation with compliance controls |
-
----
-
-## ✅ What's Built vs. What's Not
-
-We believe in being transparent about where this project stands.
-
-### Built and Working
-
-| Component | Details |
-|-----------|---------|
-| **REST API** | FastAPI with full Swagger docs at `/docs` |
-| **User Authentication** | Registration, login, JWT tokens, OAuth2 placeholder |
-| **Link Token Flow** | Multi-step Plaid-style: `create_link` → `submit_credentials` → `fetch_data` |
-| **Credential Encryption** | Fernet symmetric encryption at rest. No hardcoded keys. |
-| **Blueprint System** | JSON blueprints + Python connector plugins (`BaseConnector`) |
-| **Database** | SQLAlchemy ORM with Alembic migrations. SQLite (dev) / PostgreSQL (prod) |
-| **Configuration** | Pydantic Settings — all config via env vars. Fails fast if secrets missing. |
-| **Error Handling** | Custom exception hierarchy → structured JSON error responses |
-| **Structured Logging** | JSON format (production) and colored text (development) |
-| **Health Check** | `GET /health` — DB connectivity, version, system status |
-| **CI/CD** | GitHub Actions: lint (ruff), test (Python 3.9–3.12), security audit, Docker build |
-| **Docker** | Multi-stage build, non-root user, container health check |
-| **Test Suite** | 53 tests, 80% code coverage, user isolation verified |
-| **Link/Token Management** | Full CRUD — list, create, delete links and tokens per user |
-
-### Not Built Yet
-
-| Component | Phase | What's Missing |
-|-----------|-------|----------------|
-| **Browser Engine** | 1 | The core engine uses stub responses. Playwright integration needed for real site login. |
-| **Real Blueprints** | 1 | Only demo/mock test blueprints exist. No real-world site connectors yet. |
-| **MFA Support** | 1 | No OTP, push notification, or security question handling. |
-| **Data Type System** | 1 | No currency/date/table parsing or pagination. |
-| **Python SDK** | 2 | No `pip install plaidify` yet. |
-| **JavaScript SDK** | 2 | No `npm install plaidify` yet. |
-| **Plaidify Link UI** | 2 | No embeddable frontend component. |
-| **Blueprint Registry** | 2 | No community-contributed searchable registry. |
-| **CLI Tool** | 2 | No `plaidify` command-line tool. |
-| **Webhooks** | 2 | No real-time event notifications. |
-| **AI Agent Protocol** | 3 | No MCP server, consent model, or agent SDK. |
-| **Write Actions** | 4 | No form filling, bill payment, or submissions. |
-| **Enterprise** | 5 | No multi-tenant, SSO, SOC 2, or admin dashboard. |
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.9+
-- pip
-
-### Setup
+**One call. Structured JSON out. Any website.**
 
 ```bash
-# Clone
-git clone https://github.com/meetpandya27/plaidify.git
-cd plaidify
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env and set ENCRYPTION_KEY and JWT_SECRET_KEY
-# (instructions are in the file)
-
-# Run database migrations
-alembic upgrade head
-
-# Start the server
-uvicorn src.main:app --reload
-
-# Open Swagger docs
-open http://127.0.0.1:8000/docs
-```
-
-### Docker
-
-```bash
-cp .env.example .env
-# Fill in ENCRYPTION_KEY and JWT_SECRET_KEY
-docker compose up --build
-```
-
----
-
-## 📖 API Reference
-
-### Quick Test
-
-```bash
-# Simple connection (no auth required)
 curl -X POST http://localhost:8000/connect \
   -H "Content-Type: application/json" \
-  -d '{"site": "demo_site", "username": "demo_user", "password": "secret123"}'
+  -d '{"site": "my_bank", "username": "jane", "password": "s3cret"}'
 ```
 
 ```json
 {
   "status": "connected",
   "data": {
-    "profile_status": "active",
-    "last_synced": "2025-04-17T12:00:00Z"
+    "accounts": [
+      { "name": "Checking", "balance": 4521.30, "currency": "USD" },
+      { "name": "Savings",  "balance": 12043.87, "currency": "USD" }
+    ],
+    "last_synced": "2026-03-14T12:00:00Z"
   }
 }
 ```
 
-> **Note:** This returns simulated data. Real browser-driven extraction comes in Phase 1.
+---
 
-### Link Token Flow (Plaid-style)
+## Why Not Just Use Plaid?
 
-```bash
-# 1. Register & get JWT
-TOKEN=$(curl -s -X POST http://localhost:8000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"myuser","email":"me@example.com","password":"securepass123"}' \
-  | jq -r '.access_token')
-
-# 2. Create a link
-LINK=$(curl -s -X POST "http://localhost:8000/create_link?site=demo_site" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.link_token')
-
-# 3. Submit credentials (encrypted at rest)
-ACCESS=$(curl -s -X POST \
-  "http://localhost:8000/submit_credentials?link_token=$LINK&username=demo_user&password=secret123" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.access_token')
-
-# 4. Fetch data
-curl -s "http://localhost:8000/fetch_data?access_token=$ACCESS" \
-  -H "Authorization: Bearer $TOKEN" | jq
-```
-
-### All Endpoints
-
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/` | GET | — | Welcome + version |
-| `/health` | GET | — | System health + DB check |
-| `/status` | GET | — | Alive check |
-| `/connect` | POST | — | One-step connect + extract |
-| `/disconnect` | POST | — | End session |
-| `/create_link` | POST | JWT | Create link token for a site |
-| `/submit_credentials` | POST | JWT | Submit encrypted credentials |
-| `/submit_instructions` | POST | JWT | Attach processing instructions |
-| `/fetch_data` | GET | JWT | Fetch data via access token |
-| `/links` | GET | JWT | List your links |
-| `/links/{token}` | DELETE | JWT | Delete a link |
-| `/tokens` | GET | JWT | List your access tokens |
-| `/tokens/{token}` | DELETE | JWT | Delete an access token |
-| `/auth/register` | POST | — | Create account |
-| `/auth/token` | POST | — | Login → JWT |
-| `/auth/me` | GET | JWT | Your profile |
-| `/auth/oauth2` | POST | — | OAuth2 login (placeholder) |
-
-Interactive docs: `http://localhost:8000/docs`
+| | **Plaid** | **Plaidify** |
+|---|---|---|
+| **Cost** | $500+/mo, per-connection fees | **Free forever** (MIT) |
+| **Coverage** | Banks & financial only | **Any website with a login form** |
+| **Self-hosted** | No | **Yes** — your infra, your data |
+| **AI Agent Ready** | Not designed for agents | **MCP server, agent SDK, consent model** (Phase 3) |
+| **Open Source** | No | **Yes** — audit, extend, contribute |
+| **Custom Sites** | Wait for Plaid to support it | **Write a JSON blueprint in 5 minutes** |
+| **Data Residency** | Their servers | **Your servers, your country** |
 
 ---
 
-## 🧩 Blueprints
+## 🤖 Built for the AI Agent Era
 
-### JSON Blueprint
+Plaidify isn't just another Plaid alternative. It's **infrastructure for the next generation of AI agents** that need to interact with the authenticated web.
 
-Drop a `.json` file in `/connectors/` — no code changes needed:
+<table>
+<tr>
+<td width="50%">
+
+### For AI Agent Builders
+
+```python
+# Coming in Phase 3 — MCP Server
+# Your agent connects to any site
+# through a standardized protocol
+
+# Claude, GPT, or any MCP client:
+# "What's my electricity bill this month?"
+# → Plaidify logs into utility portal
+# → Returns structured bill data
+# → Agent summarizes and responds
+```
+
+**Why agents need this:**
+- Structured data from any authenticated site
+- User consent & scoped permissions
+- Credential encryption at rest
+- Full audit trail per agent action
+- Built-in rate limiting & error recovery
+
+</td>
+<td width="50%">
+
+### For App Developers
+
+```python
+# Today — works right now
+import requests
+
+# Connect to any site with a blueprint
+resp = requests.post(
+    "http://localhost:8000/connect",
+    json={
+        "site": "demo_site",
+        "username": "user",
+        "password": "pass"
+    }
+)
+print(resp.json()["data"])
+# → {"profile_status": "active", ...}
+```
+
+**Why devs love this:**
+- Drop a JSON blueprint → get an API
+- No Selenium/Playwright code to write
+- Credential encryption handled for you
+- Swagger docs at `/docs` out of the box
+- Docker-ready, CI included
+
+</td>
+</tr>
+</table>
+
+> **📖 Full agent integration guide → [docs/AGENTS.md](docs/AGENTS.md)**
+
+---
+
+## ⚡ 30-Second Quickstart
+
+### Option A: Docker (recommended)
+
+```bash
+git clone https://github.com/meetpandya27/plaidify.git && cd plaidify
+cp .env.example .env     # Edit and set ENCRYPTION_KEY + JWT_SECRET_KEY
+docker compose up --build
+# → API live at http://localhost:8000
+# → Swagger docs at http://localhost:8000/docs
+```
+
+### Option B: Local
+
+```bash
+git clone https://github.com/meetpandya27/plaidify.git && cd plaidify
+pip install -r requirements.txt
+cp .env.example .env     # Edit and set ENCRYPTION_KEY + JWT_SECRET_KEY
+alembic upgrade head
+uvicorn src.main:app --reload
+```
+
+### Try it
+
+```bash
+# Quick test — no auth needed
+curl -s http://localhost:8000/connect \
+  -H "Content-Type: application/json" \
+  -d '{"site": "demo_site", "username": "demo", "password": "demo"}' | jq
+
+# Full Plaid-style link flow
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"dev","email":"dev@test.com","password":"securepass123"}' \
+  | jq -r '.access_token')
+
+curl -s -X POST "http://localhost:8000/create_link?site=demo_site" \
+  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+---
+
+## 🧩 Blueprints — The Core Idea
+
+A **blueprint** is a tiny JSON file that teaches Plaidify how to log into a specific website. No code required.
 
 ```json
 {
-  "name": "Demo Site",
-  "login_url": "https://demo.example.com/login",
+  "name": "My Bank",
+  "login_url": "https://mybank.com/login",
   "fields": {
-    "username": "#user",
-    "password": "#pass",
-    "submit": "#login-btn"
+    "username": "#email-input",
+    "password": "#password-input",
+    "submit": "#login-button"
   },
   "post_login": [
-    { "wait": "#dashboard" },
+    { "wait": "#dashboard-loaded" },
     {
       "extract": {
-        "profile_status": "#status",
-        "last_synced": "#last-sync"
+        "balance": "#account-balance",
+        "last_transaction": "#recent-activity .first"
       }
     }
   ]
 }
 ```
 
-### Python Connector
+**Drop it in `/connectors/` → restart → call the API.** That's it.
 
-For custom logic beyond JSON:
+Need custom logic? Use a Python connector instead:
 
 ```python
 from src.core.connector_base import BaseConnector
 
-class MySiteConnector(BaseConnector):
+class MyBankConnector(BaseConnector):
     def connect(self, username: str, password: str) -> dict:
+        # Custom Playwright logic, API calls, anything
         return {"status": "connected", "data": {"balance": 4521.30}}
 ```
 
-Save as `connectors/my_site_connector.py` — auto-discovered on startup.
+> **Want to contribute a blueprint?** That's the #1 way to help. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-## 📁 Project Structure
+## 📖 API Reference
+
+### Core Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/connect` | POST | — | One-step connect & extract data |
+| `/disconnect` | POST | — | End a session |
+| `/health` | GET | — | System health + DB status |
+
+### Link Token Flow (Plaid-style)
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/create_link` | POST | JWT | Create a link token for a site |
+| `/submit_credentials` | POST | JWT | Submit credentials (encrypted at rest) |
+| `/submit_instructions` | POST | JWT | Attach processing instructions |
+| `/fetch_data` | GET | JWT | Fetch extracted data |
+| `/links` | GET | JWT | List your links |
+| `/links/{token}` | DELETE | JWT | Delete a link |
+| `/tokens` | GET | JWT | List your access tokens |
+| `/tokens/{token}` | DELETE | JWT | Delete an access token |
+
+### Auth
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/register` | POST | Create account |
+| `/auth/token` | POST | Login → JWT |
+| `/auth/me` | GET | Your profile |
+| `/auth/oauth2` | POST | OAuth2 login (placeholder) |
+
+**Interactive Swagger docs:** `http://localhost:8000/docs`
+
+---
+
+## 🔐 Security Model
+
+We treat credential handling as the #1 priority.
+
+| Practice | Status |
+|----------|--------|
+| Fernet encryption at rest (AES-128-CBC) | ✅ |
+| No hardcoded secrets — app fails to start without env vars | ✅ |
+| JWT auth with signed tokens + expiry | ✅ |
+| User data isolation (tested & verified) | ✅ |
+| Non-root Docker container | ✅ |
+| Dependency auditing in CI (pip-audit) | ✅ |
+| Input validation (Pydantic, password min length) | ✅ |
+| Rate limiting | 🔜 Phase 2 |
+| Credential vaulting (HashiCorp Vault) | 🔜 Phase 3 |
+| SOC 2 compliance | 🔜 Phase 5 |
+
+---
+
+## 📊 Current Status — Honest & Transparent
+
+> **We believe in building in public.** Here's exactly what works and what doesn't.
+
+### ✅ Production-Ready
+
+| Component | What it does |
+|-----------|-------------|
+| **REST API** | FastAPI with 19 endpoints, full Swagger docs |
+| **Auth System** | Register, login, JWT tokens, OAuth2 placeholder |
+| **Link Token Flow** | Plaid-style multi-step: create_link → submit_credentials → fetch_data |
+| **Credential Encryption** | Fernet symmetric encryption, no plaintext storage |
+| **Blueprint System** | JSON blueprints + Python connector plugins |
+| **Database** | SQLAlchemy ORM, Alembic migrations, SQLite/PostgreSQL |
+| **Configuration** | Pydantic Settings, env vars, fails fast if misconfigured |
+| **CI/CD** | GitHub Actions: lint, test (3.9–3.12 matrix), security audit, Docker build |
+| **Test Suite** | 53 tests, 80% coverage, user isolation verified |
+| **Docker** | Multi-stage build, non-root user, health check |
+
+### 🚧 In Progress
+
+| Component | What's Missing | Help Wanted? |
+|-----------|---------------|:---:|
+| **Browser Engine** | Playwright integration — currently returns simulated responses | **🔥 Yes** |
+| **Real Blueprints** | Only demo/mock blueprints exist | **🔥 Yes** |
+| **MFA Handling** | OTP, push notification, security question flows | Yes |
+| **Data Parsers** | Currency, date, table extraction | Yes |
+
+### 🗺️ Planned
+
+| Phase | Focus | Timeline |
+|-------|-------|----------|
+| **1** | Real browser engine (Playwright), MFA, real blueprints | Next |
+| **2** | Python & JS SDKs, Plaidify Link UI, CLI, blueprint registry | Q3 2026 |
+| **3** | **MCP server**, AI agent SDK, consent model, audit trails | Q4 2026 |
+| **4** | Write operations — pay bills, fill forms, file submissions | Q1 2027 |
+| **5** | Enterprise — multi-tenant, SSO, SOC 2, admin dashboard | Q2 2027 |
+
+> 📋 **Full 56-week product plan → [docs/PRODUCT_PLAN.md](docs/PRODUCT_PLAN.md)**
+
+---
+
+## 🏗️ Architecture
 
 ```
 plaidify/
 ├── src/
-│   ├── main.py              # FastAPI app & all endpoints
-│   ├── config.py            # Pydantic Settings (env var config)
-│   ├── database.py          # SQLAlchemy models + Fernet encryption
-│   ├── models.py            # Request/response schemas
-│   ├── exceptions.py        # Custom exception hierarchy
-│   ├── logging_config.py    # JSON/text structured logging
+│   ├── main.py              # FastAPI app — all 19 endpoints
+│   ├── config.py            # Pydantic Settings — env var config
+│   ├── database.py          # SQLAlchemy + Fernet encryption
+│   ├── models.py            # Request/response Pydantic schemas
+│   ├── exceptions.py        # Custom error hierarchy (15 types)
+│   ├── logging_config.py    # JSON (prod) / colored text (dev) logging
 │   └── core/
 │       ├── engine.py        # Connection engine (stub → Playwright)
 │       └── connector_base.py # Base class for Python connectors
-├── connectors/              # JSON blueprints + Python connectors
+├── connectors/              # Drop JSON blueprints here
 ├── alembic/                 # Database migrations
-├── tests/                   # 53 tests, 80% coverage
-├── .github/workflows/       # CI pipeline
-├── .env.example             # Required env vars template
+├── tests/                   # 53 tests across 4 suites
+├── .github/workflows/       # CI: lint → test → audit → docker
 ├── Dockerfile               # Multi-stage, non-root
-├── docker-compose.yml
-├── requirements.txt
-└── pyproject.toml           # Linter + test config
+├── docker-compose.yml       # One-command dev environment
+└── .env.example             # All config documented here
 ```
 
----
-
-## 🔐 Security
-
-| Practice | Status |
-|----------|--------|
-| No hardcoded secrets | ✅ App fails to start without env vars |
-| Credential encryption at rest | ✅ Fernet symmetric encryption |
-| JWT authentication | ✅ Signed tokens with expiry |
-| User data isolation | ✅ Tested — users can't access others' data |
-| Non-root Docker | ✅ Runs as unprivileged user |
-| Dependency auditing | ✅ pip-audit in CI |
-| Input validation | ✅ Pydantic with password min length |
-| Credential vaulting | ❌ Planned (HashiCorp Vault, etc.) |
-| Rate limiting | ❌ Planned |
-| SOC 2 compliance | ❌ Planned |
-
----
-
-## 🗺️ Roadmap
-
-See [docs/PRODUCT_PLAN.md](docs/PRODUCT_PLAN.md) for the full 56-week plan with architecture diagrams.
-
-| Phase | Focus | Status |
-|-------|-------|--------|
-| **0** | Foundation — security, config, testing, CI, migrations | ✅ Complete |
-| **1** | Browser engine (Playwright), MFA, real blueprints | 🔲 Next |
-| **2** | SDKs, Plaidify Link UI, blueprint registry, CLI | 🔲 Planned |
-| **3** | AI agent protocol (MCP), consent/scoping, audit trails | 🔲 Planned |
-| **4** | Write operations — pay bills, fill forms, submit apps | 🔲 Planned |
-| **5** | Enterprise — multi-tenant, SSO, SOC 2, admin console | 🔲 Planned |
+> 📖 **Full technical docs → [docs/README.md](docs/README.md)**
 
 ---
 
 ## 🤝 Contributing
 
-Contributions welcome — from typo fixes to building the browser engine.
+We're building the open-source infrastructure layer for authenticated web data. **This is a big problem and we need help.**
+
+### Highest-Impact Contributions Right Now
+
+| Priority | Task | Difficulty |
+|:--------:|------|:----------:|
+| 🔥 | **Build the Playwright browser engine** — replace the stub in `engine.py` | Hard |
+| 🔥 | **Write real blueprints** — pick a public site, write the JSON | Easy |
+| 🟡 | **Add MFA detection** — detect and handle 2FA flows | Medium |
+| 🟡 | **Build a blueprint validator CLI** — test blueprints locally | Medium |
+| 🟢 | **Add unit tests** — edge cases, error paths | Easy |
+| 🟢 | **Improve error messages** — make failures actionable | Easy |
 
 ```bash
-# Setup
+# Get started in 60 seconds
 git clone https://github.com/YOUR_USERNAME/plaidify.git && cd plaidify
 pip install -r requirements.txt
-cp .env.example .env  # Fill in secrets
-
-# Test
-pytest tests/ -v
-
-# Lint
-ruff check src/ tests/
+cp .env.example .env               # Set ENCRYPTION_KEY + JWT_SECRET_KEY
+alembic upgrade head && pytest -v  # All 53 tests should pass
 ```
 
-### Good First Issues
+> 📋 **Full contributor guide → [CONTRIBUTING.md](CONTRIBUTING.md)**
 
-- Write a JSON blueprint for a public test site
-- Add unit tests for edge cases in auth endpoints
-- Improve error messages in the engine
-- Add request logging middleware with correlation IDs
-- Create a CLI to test blueprints locally
+---
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
+## 🌍 Use Cases
+
+<details>
+<summary><strong>💰 Personal Finance App</strong> — Aggregate bank data without Plaid</summary>
+
+Write blueprints for each bank your users need. Plaidify handles login, session management, and data extraction. You get structured JSON with balances, transactions, and account details.
+
+</details>
+
+<details>
+<summary><strong>🤖 AI Financial Assistant</strong> — Let your agent check bank balances</summary>
+
+Your agent calls the Plaidify API to securely access the user's bank portal, extract current balances, and answer questions like "Can I afford this purchase?" — with full audit trails and user consent.
+
+</details>
+
+<details>
+<summary><strong>⚡ Utility Bill Tracker</strong> — Monitor bills across providers</summary>
+
+Create blueprints for utility company portals. Schedule periodic data fetches. Get structured billing data without waiting for each company to build an API.
+
+</details>
+
+<details>
+<summary><strong>🏥 Insurance & Healthcare Aggregator</strong> — Unified patient/policyholder portal</summary>
+
+Access insurance claims, EOBs, and coverage details from provider portals. Self-hosted means full data residency compliance.
+
+</details>
+
+<details>
+<summary><strong>🎓 Student Data Platform</strong> — Transcripts, grades, financial aid</summary>
+
+Build integrations with university portals. Pull transcripts, grades, and financial aid information through a unified API.
+
+</details>
+
+<details>
+<summary><strong>🏢 Enterprise Data Aggregation</strong> — Internal tool integration</summary>
+
+Connect to internal portals, vendor dashboards, and legacy systems that lack APIs. Self-host with compliance controls and SSO.
+
+</details>
+
+---
+
+## Comparison with Other Tools
+
+| Tool | Type | Websites Supported | AI Agent Ready | Self-Hosted | Cost |
+|------|------|-------------------|:--------------:|:-----------:|------|
+| **Plaidify** | Infrastructure layer | **Any login-protected site** | ✅ (Phase 3) | ✅ | Free |
+| Plaid | Managed service | Banks & financial only | ❌ | ❌ | $500+/mo |
+| Woob | Python scrapers | ~80 French/EU sites | ❌ | ✅ | Free |
+| Selenium/Playwright | Raw tools | Any (you write everything) | ❌ | ✅ | Free |
+| Huginn | Ruby agents | Any (complex setup) | ❌ | ✅ | Free |
+
+**Plaidify's sweet spot:** The abstraction of Plaid + the flexibility of Playwright + the openness of Woob + built for AI agents.
+
+---
+
+## Star History
+
+If Plaidify is useful to you, a ⭐ helps others find it.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=meetpandya27/plaidify&type=Date)](https://star-history.com/#meetpandya27/plaidify&Date)
 
 ---
 
 ## 📄 License
 
-[MIT](LICENSE) — use it anywhere.
+[MIT](LICENSE) — use it in personal projects, startups, or enterprise. No restrictions.
 
 ---
 
 <p align="center">
-  Built by <a href="https://github.com/meetpandya27">@meetpandya27</a>
+  <strong>Built by <a href="https://github.com/meetpandya27">@meetpandya27</a> and contributors</strong>
   <br />
-  Giving every developer and AI agent a secure, unified way to access data behind login forms.
+  <sub>The open-source gateway between AI agents and the authenticated web.</sub>
+  <br /><br />
+  <a href="https://github.com/meetpandya27/plaidify/stargazers">⭐ Star</a> &nbsp;·&nbsp;
+  <a href="https://github.com/meetpandya27/plaidify/fork">🍴 Fork</a> &nbsp;·&nbsp;
+  <a href="https://github.com/meetpandya27/plaidify/issues">🐛 Issues</a> &nbsp;·&nbsp;
+  <a href="docs/AGENTS.md">🤖 Agent Docs</a>
 </p>

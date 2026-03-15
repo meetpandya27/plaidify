@@ -1,37 +1,126 @@
 # Contributing to Plaidify
 
-Thanks for your interest in contributing! Plaidify is in early alpha and we welcome help at every level — from fixing typos to building core features.
+> **We're building the open-source infrastructure layer between AI agents and the authenticated web. That's a big mission, and we need your help.**
+
+Every contribution matters — whether it's writing a JSON blueprint for a new site, fixing a bug, or building the Playwright browser engine. You don't need to be a senior engineer. You just need to care about the problem.
 
 ---
 
-## Development Setup
+## 🔥 Highest-Impact Work Right Now
+
+These are the things that move the needle most. Pick one and become a hero.
+
+| Priority | Task | Difficulty | Good First Issue? |
+|:--------:|------|:----------:|:-----------------:|
+| 🔥 | [**Build the Playwright engine**](#the-big-one-playwright-engine) — replace `engine.py` stub with real browser automation | Hard | No |
+| 🔥 | [**Write a real blueprint**](#writing-blueprints) — pick a public site, write the JSON | Easy | **Yes** ✅ |
+| 🟡 | **MFA detection** — detect and handle 2FA flows in blueprints | Medium | No |
+| 🟡 | **Blueprint validator CLI** — `python -m plaidify test connectors/my_site.json` | Medium | Yes |
+| 🟢 | **Add tests** — edge cases, error paths, special characters | Easy | **Yes** ✅ |
+| 🟢 | **Improve error messages** — make failures actionable for AI agents | Easy | **Yes** ✅ |
+| 🟢 | **Request logging middleware** — correlation IDs across each API call | Easy | Yes |
+
+---
+
+## ⚡ Setup (60 seconds)
 
 ```bash
 # 1. Fork and clone
 git clone https://github.com/YOUR_USERNAME/plaidify.git
 cd plaidify
 
-# 2. Install dependencies
+# 2. Install
 pip install -r requirements.txt
 
-# 3. Set up environment
+# 3. Configure
 cp .env.example .env
-# Edit .env — you MUST set ENCRYPTION_KEY and JWT_SECRET_KEY
-# Generation commands are in the file
+# Open .env and set ENCRYPTION_KEY and JWT_SECRET_KEY
+# Generation commands are inside the file
 
-# 4. Run migrations
+# 4. Database
 alembic upgrade head
 
-# 5. Run the server
+# 5. Verify everything works
+pytest tests/ -v        # All 53 tests should pass
+ruff check src/ tests/  # No lint errors
+
+# 6. Start the server
 uvicorn src.main:app --reload
 # → http://127.0.0.1:8000/docs
-
-# 6. Run tests
-pytest tests/ -v
-
-# 7. Run linter
-ruff check src/ tests/
 ```
+
+---
+
+## Writing Blueprints
+
+**This is the #1 way to contribute.** Every new blueprint makes Plaidify useful for more people.
+
+A blueprint is a JSON file that teaches Plaidify how to log into a site:
+
+```json
+{
+  "name": "Example Portal",
+  "login_url": "https://example.com/login",
+  "fields": {
+    "username": "#email-input",
+    "password": "#password-input",
+    "submit": "#login-btn"
+  },
+  "post_login": [
+    { "wait": "#dashboard" },
+    {
+      "extract": {
+        "account_name": ".account-header",
+        "balance": ".balance-amount"
+      }
+    }
+  ]
+}
+```
+
+### Steps
+
+1. Pick a public-facing website with a login form (test/demo sites preferred while we're in alpha)
+2. Open DevTools → identify the CSS selectors for username, password, and submit button
+3. Identify the post-login data you want to extract
+4. Save as `connectors/site_name.json`
+5. Test: `curl -X POST http://localhost:8000/connect -d '{"site":"site_name","username":"test","password":"test"}'`
+6. Submit a PR!
+
+### Blueprint Ideas
+
+- Banking demo sites (e.g., Parabank, OWASP WebGoat)
+- University portals (public demo instances)
+- Utility company demos
+- Test e-commerce sites
+- Government portal test environments
+
+---
+
+## The Big One: Playwright Engine
+
+The current engine in `src/core/engine.py` returns **simulated responses**. The most impactful contribution is replacing it with real Playwright browser automation.
+
+### What Needs to Happen
+
+1. **Browser pool manager** — launch and reuse Playwright browser instances
+2. **Step executor** — read a JSON blueprint and execute `fill`, `click`, `wait`, `extract` steps
+3. **Data extraction** — parse the authenticated page and return structured JSON
+4. **Error detection** — detect login failures, MFA prompts, CAPTCHAs, rate limits
+5. **Session cleanup** — close browsers, clear state after each connection
+
+### Architecture Hint
+
+```python
+# The current engine interface (don't change this — it's what the API calls)
+class PlaidifyEngine:
+    async def connect(self, site: str, username: str, password: str) -> dict:
+        # Currently returns simulated data
+        # Replace with: load blueprint → launch browser → execute → extract
+        pass
+```
+
+If you want to tackle this, open an issue first so we can discuss the approach.
 
 ---
 
@@ -39,26 +128,29 @@ ruff check src/ tests/
 
 - **Python 3.9+** — use modern syntax but stay compatible
 - **Type hints** on all function signatures
-- **Docstrings** on all public functions and classes (Google style)
-- **Ruff** for linting and formatting — config in `pyproject.toml`
+- **Docstrings** on all public functions (Google style)
+- **Ruff** for linting — config in `pyproject.toml`, run: `ruff check src/ tests/`
 - **No secrets in code** — all sensitive values via environment variables
-- **No logging of credentials** — never print, log, or persist passwords/tokens in plaintext
+- **No credential logging** — never print, log, or persist passwords in plaintext
 
 ---
 
-## Making Changes
+## Pull Request Process
 
-### Branch naming
-
-```
+```bash
+# Branch naming
 feature/short-description
 fix/short-description
 docs/short-description
 ```
 
-### Commit messages
+1. Create a branch from `main`
+2. Write your code with tests
+3. `pytest tests/ -v` — all tests pass
+4. `ruff check src/ tests/` — no lint errors
+5. Open a PR → fill out the template → wait for CI
 
-Write clear, descriptive commit messages. First line should be a concise summary (< 72 chars), followed by details if needed.
+### Commit Style
 
 ```
 Add MFA detection to JSON blueprint parser
@@ -68,87 +160,38 @@ Add MFA detection to JSON blueprint parser
 - Returns mfa_required status with session ID
 ```
 
-### Pull Requests
-
-1. Create a branch from `main`
-2. Make your changes with tests
-3. Run `pytest tests/ -v` — all tests must pass
-4. Run `ruff check src/ tests/` — no lint errors
-5. Open a PR and fill out the template
-6. Wait for CI to pass and a maintainer to review
-
 ---
 
 ## Testing
 
-We use **pytest** with the following conventions:
-
-- Tests go in `tests/`
-- Use the fixtures from `tests/conftest.py` (`client`, `auth_headers`, etc.)
-- Each test file covers one area: `test_auth.py`, `test_links.py`, `test_system.py`, `test_core.py`
-- Class-based test grouping: `class TestRegistration:`, `class TestLinkManagement:`
-- Minimum 70% coverage required (enforced in CI)
-
 ```bash
-# Run with coverage
+# Run all tests
+pytest tests/ -v
+
+# With coverage
 pytest tests/ --cov=src --cov-report=term-missing
 
-# Run a specific test
-pytest tests/test_auth.py::TestRegistration::test_register_success -v
+# Specific suite
+pytest tests/test_auth.py -v
+pytest tests/test_links.py -v
+pytest tests/test_system.py -v
+pytest tests/test_core.py -v
 ```
 
----
+We use **pytest** with shared fixtures in `tests/conftest.py`. Tests are grouped by area in classes: `class TestRegistration:`, `class TestLinkManagement:`, etc.
 
-## Good First Issues
-
-If you're new to the project, these are great starting points:
-
-- **Write a JSON blueprint** for a public demo/test site
-- **Add unit tests** for edge cases (empty strings, very long inputs, special characters)
-- **Improve error messages** in the engine — make them more actionable
-- **Add correlation IDs** — log a unique request ID across the lifecycle of each API call
-- **Create a minimal CLI** — `python -m plaidify test-blueprint connectors/demo_site.json`
-
----
-
-## Where Help Is Needed Most
-
-These areas have the highest impact:
-
-1. **Phase 1 — Playwright Engine** (the big one)
-   - Replace the stub in `src/core/engine.py` with real Playwright browser automation
-   - Write a browser pool manager for concurrent connections
-   - Build the `fill`, `click`, `wait`, `extract` step executor
-
-2. **Blueprint Quality**
-   - Write blueprints for real public-facing test sites
-   - Build a blueprint validator (check selectors, test connectivity)
-
-3. **Security Review**
-   - Review credential handling for vulnerabilities
-   - Suggest improvements to the encryption/auth approach
-
----
-
-## Project Structure
-
-```
-src/
-├── main.py              # Endpoints — start here to understand the API
-├── config.py            # Configuration — how env vars are loaded
-├── database.py          # Models & encryption — how data is stored
-├── models.py            # Schemas — request/response formats
-├── exceptions.py        # Errors — custom exception types
-├── logging_config.py    # Logging — structured log setup
-└── core/
-    ├── engine.py        # Engine — where connections happen (stub today)
-    └── connector_base.py # Base class for Python connectors
-```
+**Minimum 70% coverage required** (enforced in CI).
 
 ---
 
 ## Questions?
 
-Open a [GitHub issue](https://github.com/meetpandya27/plaidify/issues) — we're happy to help you get oriented.
+Open a [GitHub issue](https://github.com/meetpandya27/plaidify/issues). No question is too small.
 
-Thank you for contributing!
+---
+
+<p align="center">
+  <strong>Every blueprint, every test, every fix makes Plaidify more useful for developers and AI agents everywhere.</strong>
+  <br />
+  Thank you for contributing. 🙌
+</p>

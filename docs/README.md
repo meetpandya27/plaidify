@@ -1,6 +1,7 @@
 # Plaidify — Technical Documentation
 
-> For the project overview and quick start, see the [main README](../README.md).
+> For the project overview and quick start, see the [main README](../README.md).  
+> For AI agent integration, see **[AGENTS.md](AGENTS.md)**.
 
 ---
 
