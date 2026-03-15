@@ -9,6 +9,7 @@ Provides endpoints for:
 """
 
 import uuid
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -32,6 +33,7 @@ from src.database import (
     User,
     Link,
     AccessToken,
+    RefreshToken,
     encrypt_credential,
     decrypt_credential,
 )
@@ -42,6 +44,7 @@ from src.models import (
     ConnectResponse,
     UserRegisterRequest,
     TokenResponse,
+    RefreshTokenRequest,
     OAuth2LoginRequest,
     UserProfileResponse,
 )
@@ -183,6 +186,29 @@ def create_access_token(data: dict, expires_delta: Optional[int] = None) -> str:
     )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def create_refresh_token(user_id: int, db: Session) -> str:
+    """Create a cryptographically random refresh token and store it in the database."""
+    token = secrets.token_urlsafe(48)
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.jwt_refresh_token_expire_minutes
+    )
+    db_token = RefreshToken(token=token, user_id=user_id, expires_at=expires_at)
+    db.add(db_token)
+    db.commit()
+    return token
+
+
+def _issue_token_pair(user_id: int, db: Session) -> dict:
+    """Issue an access + refresh token pair for a user."""
+    access_token = create_access_token({"sub": str(user_id)})
+    refresh_token = create_refresh_token(user_id, db)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
 
 
 def get_password_hash(password: str) -> str:
@@ -548,9 +574,8 @@ def register_user(request: Request, body: UserRegisterRequest, db: Session = Dep
     db.commit()
     db.refresh(user)
 
-    access_token = create_access_token({"sub": str(user.id)})
     logger.info("User registered", extra={"extra_data": {"user_id": user.id}})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return _issue_token_pair(user.id, db)
 
 
 @app.post("/auth/token", response_model=TokenResponse)
@@ -561,8 +586,7 @@ def login_user(request: Request, form_data: OAuth2PasswordRequestForm = Depends(
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
 
-    access_token = create_access_token({"sub": str(user.id)})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return _issue_token_pair(user.id, db)
 
 
 @app.get("/auth/me", response_model=UserProfileResponse)
@@ -603,8 +627,31 @@ def oauth2_login(request: Request, body: OAuth2LoginRequest, db: Session = Depen
         db.refresh(user)
         logger.info("OAuth2 user created", extra={"extra_data": {"provider": provider, "user_id": user.id}})
 
-    access_token = create_access_token({"sub": str(user.id)})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return _issue_token_pair(user.id, db)
+
+
+@app.post("/auth/refresh", response_model=TokenResponse)
+@limiter.limit(settings.rate_limit_auth)
+def refresh_tokens(request: Request, body: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """
+    Exchange a valid refresh token for a new access + refresh token pair.
+
+    Implements token rotation: the old refresh token is revoked on use.
+    """
+    token_record = db.query(RefreshToken).filter_by(token=body.refresh_token, revoked=False).first()
+    if not token_record:
+        raise HTTPException(status_code=401, detail="Invalid or revoked refresh token.")
+
+    if token_record.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        token_record.revoked = True
+        db.commit()
+        raise HTTPException(status_code=401, detail="Refresh token has expired.")
+
+    # Revoke the old refresh token (rotation)
+    token_record.revoked = True
+    db.commit()
+
+    return _issue_token_pair(token_record.user_id, db)
 
 
 # ── Link & Token Management ──────────────────────────────────────────────────

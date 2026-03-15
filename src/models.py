@@ -78,7 +78,14 @@ class TokenResponse(BaseModel):
     """JWT token response."""
 
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
+
+
+class RefreshTokenRequest(BaseModel):
+    """Request body for POST /auth/refresh."""
+
+    refresh_token: str
 
 
 class OAuth2LoginRequest(BaseModel):
