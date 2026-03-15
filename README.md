@@ -10,6 +10,7 @@
   Give any app or agent a REST API to log in, read data, and take actions on <em>any</em> website — <br />
   banks, utilities, portals, government sites — without writing a single scraper.
   <br /><br />
+  <a href="#-try-the-demo">Try the Demo</a> &nbsp;·&nbsp;
   <a href="#-30-second-quickstart">Quickstart</a> &nbsp;·&nbsp;
   <a href="docs/AGENTS.md">Agent Integration</a> &nbsp;·&nbsp;
   <a href="#-api-reference">API Docs</a> &nbsp;·&nbsp;
@@ -57,18 +58,22 @@ Plaidify is an attempt to fix this: one JSON blueprint per site, one REST API fo
 ```bash
 curl -X POST http://localhost:8000/connect \
   -H "Content-Type: application/json" \
-  -d '{"site": "my_bank", "username": "jane", "password": "s3cret"}'
+  -d '{"site": "greengrid_energy", "username": "demo_user", "password": "demo_pass"}'
 ```
 
 ```json
 {
   "status": "connected",
   "data": {
-    "accounts": [
-      { "name": "Checking", "balance": 4521.30, "currency": "USD" },
-      { "name": "Savings",  "balance": 12043.87, "currency": "USD" }
-    ],
-    "last_synced": "2026-03-14T12:00:00Z"
+    "current_bill": "$142.57",
+    "usage_kwh": "1,247 kWh",
+    "account_status": "Active",
+    "service_address": "742 Evergreen Terrace, Springfield, IL 62704",
+    "plan_name": "Green Choice 100",
+    "usage_history": [
+      { "month": "March 2026", "kwh": "1,247", "cost": "$142.57" },
+      { "month": "February 2026", "kwh": "1,389", "cost": "$158.83" }
+    ]
   }
 }
 ```
@@ -106,8 +111,8 @@ Plaidify isn't just another Plaid alternative. It's **infrastructure for the nex
 
 # Claude, GPT, or any MCP client:
 # "What's my electricity bill this month?"
-# → Plaidify logs into utility portal
-# → Returns structured bill data
+# → Plaidify logs into GreenGrid Energy
+# → Returns $142.57 bill + 1,247 kWh usage
 # → Agent summarizes and responds
 ```
 
@@ -131,13 +136,13 @@ import requests
 resp = requests.post(
     "http://localhost:8000/connect",
     json={
-        "site": "demo_site",
-        "username": "user",
-        "password": "pass"
+        "site": "greengrid_energy",
+        "username": "demo_user",
+        "password": "demo_pass"
     }
 )
 print(resp.json()["data"])
-# → {"profile_status": "active", ...}
+# → {"current_bill": "$142.57", "usage_kwh": "1,247 kWh", ...}
 ```
 
 **Why devs love this:**
@@ -152,6 +157,37 @@ print(resp.json()["data"])
 </table>
 
 > **📖 Full agent integration guide → [docs/AGENTS.md](docs/AGENTS.md)**
+
+---
+
+## 🎮 Try the Demo
+
+See Plaidify in action with our built-in **GreenGrid Energy** demo — a fully functional utility company portal that showcases the complete extraction pipeline.
+
+```bash
+git clone https://github.com/meetpandya27/plaidify.git && cd plaidify
+pip install -r requirements.txt
+python run_demo.py
+# → Open http://localhost:8000/ui/demo.html
+```
+
+The demo launches two servers:
+- **GreenGrid Energy** portal (port 8080) — a realistic utility company site with login, dashboard, billing, and account pages
+- **Plaidify API** (port 8000) — the extraction engine with an interactive demo UI
+
+**Demo credentials:**
+| Username | Password | Flow |
+|----------|----------|------|
+| `demo_user` | `demo_pass` | Standard login → full data extraction |
+| `mfa_user` | `mfa_pass` | MFA challenge (code: `123456`) → data extraction |
+
+**What gets extracted:** Account info, current bill, energy usage (kWh), 6 months of usage history, payment records, service address, meter ID, plan details, and customer profile — all from a single API call.
+
+<p align="center">
+  <img src="https://img.shields.io/badge/13_fields_extracted-in_one_call-22c55e?style=for-the-badge" alt="13 fields">
+  <img src="https://img.shields.io/badge/MFA_flow-fully_supported-8B5CF6?style=for-the-badge" alt="MFA">
+  <img src="https://img.shields.io/badge/zero_config-just_run_it-3B82F6?style=for-the-badge" alt="Zero config">
+</p>
 
 ---
 
@@ -180,10 +216,14 @@ uvicorn src.main:app --reload
 ### Try it
 
 ```bash
-# Quick test — no auth needed
+# Quickest way — run the interactive demo
+python run_demo.py
+# → Open http://localhost:8000/ui/demo.html
+
+# Or use the API directly
 curl -s http://localhost:8000/connect \
   -H "Content-Type: application/json" \
-  -d '{"site": "demo_site", "username": "demo", "password": "demo"}' | jq
+  -d '{"site": "greengrid_energy", "username": "demo_user", "password": "demo_pass"}' | jq
 
 # Full Plaid-style link flow
 TOKEN=$(curl -s -X POST http://localhost:8000/auth/register \
@@ -306,28 +346,32 @@ We treat credential handling as the #1 priority.
 | **Auth System** | Register, login, JWT tokens, OAuth2 placeholder |
 | **Link Token Flow** | Plaid-style multi-step: create_link → submit_credentials → fetch_data |
 | **Credential Encryption** | AES-256-GCM authenticated encryption, no plaintext storage |
-| **Blueprint System** | JSON blueprints + Python connector plugins |
+| **Blueprint System V2** | JSON blueprints with typed extraction, list extractors, cleanup steps |
+| **Browser Engine** | Real Playwright automation — headless Chromium, browser pooling, step execution |
+| **MFA Handling** | Async event-based MFA manager — detects challenges, pauses for user input |
+| **Data Extraction** | Typed field extraction (text, currency, date, sensitive), list/table extraction |
 | **Database** | SQLAlchemy ORM, Alembic migrations, SQLite/PostgreSQL |
 | **Security** | AES-256-GCM (OWASP-recommended AEAD), no plaintext credentials |
 | **Configuration** | Pydantic Settings, env vars, fails fast if misconfigured |
 | **CI/CD** | GitHub Actions: lint, test (3.9–3.12 matrix), security audit, Docker build |
-| **Test Suite** | 53 tests, 80% coverage, user isolation verified |
+| **Test Suite** | 98 tests across 8 suites, covering engine, blueprints, MFA, API, auth |
 | **Docker** | Multi-stage build, non-root user, health check |
+| **Interactive Demo** | GreenGrid Energy utility portal + dark-themed demo UI |
 
 ### 🚧 In Progress
 
 | Component | What's Missing | Help Wanted? |
 |-----------|---------------|:---:|
-| **Browser Engine** | Playwright integration — currently returns simulated responses | **🔥 Yes** |
-| **Real Blueprints** | Only demo/mock blueprints exist | **🔥 Yes** |
-| **MFA Handling** | OTP, push notification, security question flows | Yes |
-| **Data Parsers** | Currency, date, table extraction | Yes |
+| **Real-World Blueprints** | Only demo blueprints exist — need community-contributed blueprints for real sites | **🔥 Yes** |
+| **Python & JS SDKs** | Client libraries for easier integration | Yes |
+| **Plaidify Link UI** | Embeddable drop-in widget (like Plaid Link) | Yes |
+| **Blueprint Registry** | Searchable catalog of community blueprints | Yes |
 
 ### 🗺️ Planned
 
 | Phase | Focus | Timeline |
 |-------|-------|----------|
-| **1** | Real browser engine (Playwright), MFA, real blueprints | Next |
+| **1** | ✅ ~~Real browser engine (Playwright), MFA, real blueprints~~ | **Complete** |
 | **2** | Python & JS SDKs, Plaidify Link UI, CLI, blueprint registry | Q3 2026 |
 | **3** | **MCP server**, AI agent SDK, consent model, audit trails | Q4 2026 |
 | **4** | Write operations — pay bills, fill forms, file submissions | Q1 2027 |
@@ -349,11 +393,20 @@ plaidify/
 │   ├── exceptions.py        # Custom error hierarchy (15 types)
 │   ├── logging_config.py    # JSON (prod) / colored text (dev) logging
 │   └── core/
-│       ├── engine.py        # Connection engine (stub → Playwright)
+│       ├── engine.py        # Playwright browser engine + blueprint executor
 │       └── connector_base.py # Base class for Python connectors
 ├── connectors/              # Drop JSON blueprints here
+│   ├── greengrid_energy.json # GreenGrid Energy demo blueprint
+│   └── test_bank.json       # Legacy test blueprint
+├── example_site/            # GreenGrid Energy fake utility portal
+│   └── server.py            # FastAPI app simulating a utility company
+├── frontend/                # Demo UI assets
+│   ├── demo.html            # Interactive demo widget
+│   ├── demo.css             # Dark theme styles
+│   └── demo.js              # Client-side connection flow logic
 ├── alembic/                 # Database migrations
-├── tests/                   # 53 tests across 4 suites
+├── tests/                   # 98 tests across 8 suites
+├── run_demo.py              # One-command demo launcher
 ├── .github/workflows/       # CI: lint → test → audit → docker
 ├── Dockerfile               # Multi-stage, non-root
 ├── docker-compose.yml       # One-command dev environment
@@ -372,10 +425,10 @@ We’re building open-source infrastructure for authenticated web data. Contribu
 
 | Priority | Task | Difficulty |
 |:--------:|------|:----------:|
-| 🔥 | **Build the Playwright browser engine** — replace the stub in `engine.py` | Hard |
-| 🔥 | **Write real blueprints** — pick a public site, write the JSON | Easy |
-| 🟡 | **Add MFA detection** — detect and handle 2FA flows | Medium |
-| 🟡 | **Build a blueprint validator CLI** — test blueprints locally | Medium |
+| 🔥 | **Write real-world blueprints** — pick a public site, write the JSON | Easy |
+| 🔥 | **Build the blueprint registry CLI** — search, validate, share blueprints | Medium |
+| 🟡 | **Build Python/JS SDKs** — client libraries for easier integration | Medium |
+| 🟡 | **Add push notification MFA** — extend MFA beyond OTP codes | Medium |
 | 🟢 | **Add unit tests** — edge cases, error paths | Easy |
 | 🟢 | **Improve error messages** — make failures actionable | Easy |
 
@@ -384,7 +437,7 @@ We’re building open-source infrastructure for authenticated web data. Contribu
 git clone https://github.com/YOUR_USERNAME/plaidify.git && cd plaidify
 pip install -r requirements.txt
 cp .env.example .env               # Set ENCRYPTION_KEY + JWT_SECRET_KEY
-alembic upgrade head && pytest -v  # All 53 tests should pass
+alembic upgrade head && pytest -v  # All 98 tests should pass
 ```
 
 > 📋 **Full contributor guide → [CONTRIBUTING.md](CONTRIBUTING.md)**
