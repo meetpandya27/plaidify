@@ -115,12 +115,23 @@ def wrap_dek(dek: bytes) -> str:
 def unwrap_dek(wrapped_dek: str) -> bytes:
     """Decrypt (unwrap) a DEK using the master key.
 
+    Tries the current master key first. If that fails and a previous key
+    is configured (ENCRYPTION_KEY_PREVIOUS), falls back to it.
+
     Returns the raw 32-byte DEK.
     """
     raw = base64.urlsafe_b64decode(wrapped_dek)
     nonce = raw[:_GCM_NONCE_BYTES]
     ct = raw[_GCM_NONCE_BYTES:]
-    return _get_aesgcm().decrypt(nonce, ct, None)
+    try:
+        return _get_aesgcm().decrypt(nonce, ct, None)
+    except Exception:
+        # Try previous master key if configured
+        prev = settings.encryption_key_previous
+        if prev:
+            prev_bytes = base64.urlsafe_b64decode(prev.encode("ascii"))
+            return AESGCM(prev_bytes).decrypt(nonce, ct, None)
+        raise
 
 
 def create_user_dek() -> str:
@@ -211,6 +222,61 @@ def rotate_master_key(old_key: str, new_key: str, db: 'Session') -> int:
     logger.info(f"Master key rotation complete: {count} DEK(s) re-wrapped")
     return count
 
+
+def get_current_key_version() -> int:
+    """Return the current encryption key version from settings."""
+    return settings.encryption_key_version
+
+
+def re_encrypt_tokens(db: 'Session', batch_size: int = 100) -> int:
+    """Re-encrypt AccessToken credentials that are on an older key_version.
+
+    This is the background job that should be run after a master-key rotation.
+    It decrypts each credential with the user's DEK (unwrapping with the
+    current or previous master key) and re-encrypts it, then stamps the
+    current key_version.
+
+    Args:
+        db: Database session.
+        batch_size: Number of tokens to process per batch.
+
+    Returns:
+        Number of tokens re-encrypted.
+    """
+    current_version = get_current_key_version()
+    tokens = (
+        db.query(AccessToken)
+        .filter(AccessToken.key_version < current_version)
+        .limit(batch_size)
+        .all()
+    )
+    count = 0
+    for token in tokens:
+        user = db.query(User).filter(User.id == token.user_id).first()
+        if not user or not user.encrypted_dek:
+            logger.warning(
+                "Skipping token re-encryption: no user or DEK",
+                extra={"extra_data": {"token": token.token}},
+            )
+            continue
+
+        try:
+            plain_user = decrypt_credential_for_user(user, token.username_encrypted)
+            plain_pass = decrypt_credential_for_user(user, token.password_encrypted)
+            token.username_encrypted = encrypt_credential_for_user(user, plain_user)
+            token.password_encrypted = encrypt_credential_for_user(user, plain_pass)
+            token.key_version = current_version
+            count += 1
+        except Exception as e:
+            logger.error(
+                f"Failed to re-encrypt token {token.token}: {e}",
+                extra={"extra_data": {"token": token.token}},
+            )
+
+    db.commit()
+    logger.info(f"Re-encrypted {count} access token(s) to key_version={current_version}")
+    return count
+
 # ── SQLAlchemy Setup ──────────────────────────────────────────────────────────
 
 engine = create_engine(
@@ -284,6 +350,7 @@ class AccessToken(Base):
     password_encrypted = Column(Text, nullable=False)
     instructions = Column(Text, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    key_version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 

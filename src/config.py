@@ -25,6 +25,14 @@ class Settings(BaseSettings):
         description="Base64url-encoded 256-bit key for AES-256-GCM credential encryption. "
         "Generate with: python -c \"import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())\"",
     )
+    encryption_key_version: int = Field(
+        default=1,
+        description="Current encryption key version. Increment when rotating keys.",
+    )
+    encryption_key_previous: Optional[str] = Field(
+        default=None,
+        description="Previous encryption key (base64url). Set during rotation so old DEKs can still be unwrapped.",
+    )
 
     # ── JWT / Auth ────────────────────────────────────────────
     jwt_secret_key: str = Field(

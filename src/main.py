@@ -40,6 +40,7 @@ from src.database import (
     encrypt_credential_for_user,
     decrypt_credential_for_user,
     ensure_user_dek,
+    get_current_key_version,
 )
 from src.exceptions import PlaidifyError, InvalidTokenError, UserNotFoundError, MFARequiredError
 from src.logging_config import setup_logging, get_logger
@@ -603,6 +604,7 @@ async def submit_credentials(
         username_encrypted=encrypted_username_stored,
         password_encrypted=encrypted_password_stored,
         user_id=user.id,
+        key_version=get_current_key_version(),
     )
     db.add(new_token)
     db.commit()
