@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.3.0-alpha.1] — 2026-03-15
+
+### Phase 2 (Week 1): Python SDK & CLI + Security Hardening
+
+The first deliverable of Phase 2 — a pip-installable Python SDK and CLI, plus a complete security hardening pass closing 7 issues (#8–#14).
+
+### Added
+
+- **Python SDK** (`sdk/plaidify/`) — PyPI-ready package (`pip install plaidify`)
+  - `Plaidify` async client — wraps all API endpoints with typed return values
+  - `PlaidifySync` synchronous client — blocking wrapper for non-async code
+  - `connect()` one-call method — connect + extract in a single call with optional `mfa_handler` callback
+  - **MFA auto-handling** — pass an async `mfa_handler(challenge) -> code` callback and MFA is resolved inline
+  - Link flow methods — `create_link()`, `submit_credentials()`, `fetch_data()` (Plaid-style multi-step)
+  - Auth methods — `register()`, `login()`, `me()` with auto JWT persistence
+  - Blueprint discovery — `list_blueprints()`, `get_blueprint(site)`
+  - Link/token management — `list_links()`, `delete_link()`, `list_tokens()`, `delete_token()`
+  - Full type annotations + `py.typed` marker for IDE autocomplete
+  - Typed models: `ConnectResult`, `BlueprintInfo`, `MFAChallenge`, `LinkResult`, `AuthToken`, `UserProfile`, `HealthStatus`
+  - Exception hierarchy: `PlaidifyError` → `ConnectionError`, `AuthenticationError`, `MFARequiredError`, `BlueprintNotFoundError`, `ServerError`, `RateLimitedError`, `InvalidTokenError`
+  - HTTP error → exception mapping (401→InvalidToken, 404→BlueprintNotFound, 429→RateLimited, 502→Connection, 5xx→Server)
+  - Configurable: `server_url`, `api_key`, `timeout`, `max_retries`, custom headers
+  - `PLAIDIFY_SERVER_URL` and `PLAIDIFY_API_KEY` env var support
+- **CLI tool** (`plaidify` command) — Click-based command-line interface
+  - `plaidify connect <site> -u <user> -p <pass>` — test a blueprint from the terminal with formatted output
+  - `plaidify blueprint list` — list all available blueprints on the server
+  - `plaidify blueprint info <site>` — show detailed blueprint metadata
+  - `plaidify blueprint validate <file>` — validate a JSON blueprint against the V2 schema (12 actions, 10 field types, selectors)
+  - `plaidify blueprint test <file> -u <user> -p <pass>` — run a blueprint against a live site and display results
+  - `plaidify serve` — start the Plaidify API server (replaces `uvicorn` command)
+  - `plaidify demo` — start both servers + auto-open browser (replaces `python run_demo.py`)
+  - `plaidify health` — check server health
+  - Interactive MFA prompt in CLI connect flow
+  - `--json-output` flag for machine-readable output
+- **SDK test suite** — 82 tests covering client, sync client, models, exceptions, CLI blueprint validation
+  - Mock HTTP with `respx` for fast, deterministic client tests
+  - Full CLI validation tests (valid, missing fields, unknown actions, invalid JSON, V1 compat)
+- **SDK packaging** (`sdk/pyproject.toml`) — hatchling build, `[project.scripts]` entry point, PyPI metadata
+- **Rate limiting** (#8) — slowapi-based rate limiting on auth (5/min) and connect (10/min) endpoints
+- **CORS enforcement** (#9) — default origins restricted to localhost; wildcard blocked in production
+- **Security headers** (#10) — X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, Permissions-Policy, HSTS in production
+- **JWT refresh tokens** (#11) — 15-minute access tokens + 7-day refresh tokens with single-use rotation via `POST /auth/refresh`
+- **Client-side RSA encryption** (#12) — ephemeral RSA-2048 keypairs for in-transit credential encryption (WebCrypto + Python SDK)
+- **Envelope encryption** (#13) — per-user AES-256-GCM Data Encryption Keys (DEKs) wrapped by master key; lazy migration for existing users
+- **Key rotation with versioning** (#14) — `key_version` column on AccessToken, `unwrap_dek` fallback to previous master key, `re_encrypt_tokens()` background job, CLI `plaidify rotate-key` command
+- **Alembic migration** — `key_version` column on `access_tokens` table
+
+### Changed
+
+- **Updated `requirements.txt`** — added `click>=8.0.0`, `respx>=0.21.0`, `slowapi>=0.1.9`
+- **Encryption upgraded** — from Fernet (AES-128-CBC) to AES-256-GCM with per-user DEK envelope encryption
+- **JWT access token lifetime** — reduced from 1 week to 15 minutes (refresh tokens handle renewal)
+
+---
+
 ## [0.2.0] — 2026-03-14
 
 ### Phase 1: Real Browser Engine

@@ -35,10 +35,11 @@ Request → FastAPI Router → Auth Middleware → Endpoint Handler
 |--------|---------|
 | `src/main.py` | FastAPI app, all endpoint definitions, auth utilities, exception handler |
 | `src/config.py` | Pydantic Settings class — loads all config from env vars |
-| `src/database.py` | SQLAlchemy models (User, Link, AccessToken), Fernet encryption, DB session management |
+| `src/database.py` | SQLAlchemy models (User, Link, AccessToken, RefreshToken), AES-256-GCM + envelope encryption (per-user DEKs), key rotation, DB session management |
 | `src/models.py` | Pydantic request/response schemas for API validation |
 | `src/exceptions.py` | Custom exception hierarchy (PlaidifyError → BlueprintNotFoundError, etc.) |
 | `src/logging_config.py` | Structured logging setup (JSON for prod, colored text for dev) |
+| `src/crypto.py` | Ephemeral RSA-2048 keypair management for client-side credential encryption |
 | `src/core/engine.py` | Connection engine — loads connectors, executes blueprint logic |
 | `src/core/connector_base.py` | Abstract base class for Python connectors |
 
@@ -52,7 +53,7 @@ All configuration is via environment variables, managed by Pydantic Settings. Th
 
 | Variable | Description | How to Generate |
 |----------|-------------|-----------------|
-| `ENCRYPTION_KEY` | Fernet key for encrypting stored credentials | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `ENCRYPTION_KEY` | Base64url-encoded 256-bit key for AES-256-GCM credential encryption | `python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"` |
 | `JWT_SECRET_KEY` | Secret for signing JWT tokens | `openssl rand -hex 32` |
 
 ### Optional
@@ -61,14 +62,21 @@ All configuration is via environment variables, managed by Pydantic Settings. Th
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite:///plaidify.db` | SQLAlchemy connection string |
 | `APP_NAME` | `Plaidify` | Application name |
-| `APP_VERSION` | `0.1.0` | Version string |
+| `APP_VERSION` | `0.3.0a1` | Version string |
 | `DEBUG` | `false` | Enable debug mode |
 | `LOG_LEVEL` | `INFO` | DEBUG, INFO, WARNING, ERROR, CRITICAL |
 | `LOG_FORMAT` | `json` | `json` (production) or `text` (development) |
-| `CORS_ORIGINS` | `*` | Comma-separated allowed origins |
+| `CORS_ORIGINS` | `http://localhost:3000,...` | Comma-separated allowed origins (no wildcard in production) |
 | `CONNECTORS_DIR` | `connectors` | Path to blueprint directory |
 | `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `10080` (1 week) | Token expiry |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token expiry |
+| `JWT_REFRESH_TOKEN_EXPIRE_MINUTES` | `10080` (1 week) | Refresh token expiry |
+| `ENCRYPTION_KEY_VERSION` | `1` | Current encryption key version (increment on rotation) |
+| `ENCRYPTION_KEY_PREVIOUS` | (none) | Previous master key for fallback during rotation |
+| `RATE_LIMIT_ENABLED` | `true` | Enable rate limiting |
+| `RATE_LIMIT_AUTH` | `5/minute` | Rate limit for auth endpoints |
+| `RATE_LIMIT_CONNECT` | `10/minute` | Rate limit for /connect |
+| `ENFORCE_HTTPS` | `false` | Redirect HTTP→HTTPS + HSTS (auto-enabled in production) |
 
 ---
 
@@ -87,6 +95,7 @@ All configuration is via environment variables, managed by Pydantic Settings. Th
 | oauth_sub | String | Provider's user ID |
 | is_active | Boolean | Default true |
 | created_at | DateTime | UTC timestamp |
+| encrypted_dek | Text | Per-user Data Encryption Key wrapped by master key (AES-256-GCM) |
 
 **Link** — A user's intent to connect to a site.
 | Column | Type | Notes |
@@ -101,10 +110,21 @@ All configuration is via environment variables, managed by Pydantic Settings. Th
 |--------|------|-------|
 | token | String | Primary key (UUID) |
 | link_token | String | FK → links.link_token |
-| username_encrypted | Text | Fernet-encrypted |
-| password_encrypted | Text | Fernet-encrypted |
+| username_encrypted | Text | AES-256-GCM encrypted via user DEK |
+| password_encrypted | Text | AES-256-GCM encrypted via user DEK |
 | instructions | Text | Optional processing instructions |
 | user_id | Integer | FK → users.id |
+| key_version | Integer | Encryption key version (for rotation tracking) |
+| created_at | DateTime | UTC timestamp |
+
+**RefreshToken** — Refresh token for JWT token rotation.
+| Column | Type | Notes |
+|--------|------|-------|
+| id | Integer | Primary key, auto-increment |
+| token | String | Unique, cryptographically random |
+| user_id | Integer | FK → users.id |
+| expires_at | DateTime | Token expiry (default 7 days) |
+| revoked | Boolean | Set to true on use (rotation) |
 | created_at | DateTime | UTC timestamp |
 
 ### Migrations
@@ -128,11 +148,12 @@ alembic downgrade -1
 
 ### Flow
 
-1. User registers via `POST /auth/register` → receives JWT
-2. User logs in via `POST /auth/token` → receives JWT
+1. User registers via `POST /auth/register` → receives JWT access token + refresh token
+2. User logs in via `POST /auth/token` → receives JWT access token + refresh token
 3. JWT is included as `Authorization: Bearer <token>` on protected endpoints
-4. Token is verified on each request via the `get_current_user` dependency
-5. All link/token/data endpoints enforce user ownership (isolation)
+4. Access tokens expire after 15 minutes; refresh via `POST /auth/refresh`
+5. Refresh tokens are single-use (rotation) and expire after 7 days
+6. All link/token/data endpoints enforce user ownership (isolation)
 
 ### Token Structure
 

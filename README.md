@@ -307,9 +307,11 @@ class MyBankConnector(BaseConnector):
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/auth/register` | POST | Create account |
-| `/auth/token` | POST | Login → JWT |
+| `/auth/token` | POST | Login → JWT (access + refresh tokens) |
+| `/auth/refresh` | POST | Exchange refresh token for new token pair |
 | `/auth/me` | GET | Your profile |
 | `/auth/oauth2` | POST | OAuth2 login (placeholder) |
+| `/encryption/session` | POST | Create ephemeral RSA keypair for credential encryption |
 
 **Interactive Swagger docs:** `http://localhost:8000/docs`
 
@@ -322,13 +324,18 @@ We treat credential handling as the #1 priority.
 | Practice | Status |
 |----------|--------|
 | AES-256-GCM encryption at rest | ✅ |
+| Envelope encryption — per-user Data Encryption Keys (DEKs) | ✅ |
+| Encryption key rotation with versioning | ✅ |
+| Client-side RSA-2048 credential encryption (ephemeral keys) | ✅ |
 | No hardcoded secrets — app fails to start without env vars | ✅ |
-| JWT auth with signed tokens + expiry | ✅ |
+| JWT auth with 15-min access tokens + refresh token rotation | ✅ |
+| Rate limiting on auth & connect endpoints (slowapi) | ✅ |
+| CORS enforcement — no wildcard in production | ✅ |
+| Security headers (X-Content-Type-Options, X-Frame-Options, CSP, HSTS) | ✅ |
 | User data isolation (tested & verified) | ✅ |
 | Non-root Docker container | ✅ |
 | Dependency auditing in CI (pip-audit) | ✅ |
 | Input validation (Pydantic, password min length) | ✅ |
-| Rate limiting | 🔜 Phase 2 |
 | Credential vaulting (HashiCorp Vault) | 🔜 Phase 3 |
 | SOC 2 compliance | 🔜 Phase 5 |
 
@@ -351,10 +358,10 @@ We treat credential handling as the #1 priority.
 | **MFA Handling** | Async event-based MFA manager — detects challenges, pauses for user input |
 | **Data Extraction** | Typed field extraction (text, currency, date, sensitive), list/table extraction |
 | **Database** | SQLAlchemy ORM, Alembic migrations, SQLite/PostgreSQL |
-| **Security** | AES-256-GCM (OWASP-recommended AEAD), no plaintext credentials |
+| **Security** | AES-256-GCM, envelope encryption (per-user DEKs), RSA client encryption, key rotation |
 | **Configuration** | Pydantic Settings, env vars, fails fast if misconfigured |
 | **CI/CD** | GitHub Actions: lint, test (3.9–3.12 matrix), security audit, Docker build |
-| **Test Suite** | 98 tests across 8 suites, covering engine, blueprints, MFA, API, auth |
+| **Test Suite** | 136+ tests across 13 suites, covering engine, blueprints, MFA, API, auth, security |
 | **Docker** | Multi-stage build, non-root user, health check |
 | **Interactive Demo** | GreenGrid Energy utility portal + dark-themed demo UI |
 
@@ -363,7 +370,8 @@ We treat credential handling as the #1 priority.
 | Component | What's Missing | Help Wanted? |
 |-----------|---------------|:---:|
 | **Real-World Blueprints** | Only demo blueprints exist — need community-contributed blueprints for real sites | **🔥 Yes** |
-| **Python & JS SDKs** | Client libraries for easier integration | Yes |
+| **Python SDK + CLI** | ✅ Shipped — `pip install plaidify`, CLI with `plaidify connect`, `plaidify blueprint`, `plaidify demo` | — |
+| **Security Hardening** | ✅ Complete — rate limiting, CORS, headers, JWT refresh, RSA encryption, envelope encryption, key rotation | — |
 | **Plaidify Link UI** | Embeddable drop-in widget (like Plaid Link) | Yes |
 | **Blueprint Registry** | Searchable catalog of community blueprints | Yes |
 
@@ -373,7 +381,7 @@ We treat credential handling as the #1 priority.
 |-------|-------|----------|
 | **0** | ✅ ~~Foundation hardening, security, CI/CD, tests~~ | **Complete** |
 | **1** | ✅ ~~Real browser engine (Playwright), MFA, blueprints, demo~~ | **Complete** |
-| **2** | Python & JS SDKs, Plaidify Link UI, CLI, blueprint registry | **Weeks 1-3** (Mar 17 – Apr 4) |
+| **2** | ✅ Python SDK + CLI, security hardening (7 issues closed), Plaidify Link UI | **Weeks 1-3** (Mar 15 – Apr 4) |
 | **3** | MCP server, AI agent SDK, consent engine, audit trails | **Weeks 3-5** (Mar 31 – Apr 18) |
 | **4** | Write operations — pay bills, fill forms, action framework | **Weeks 5-7** (Apr 14 – May 2) |
 | **5** | Enterprise — multi-tenant, K8s, SSO, admin console, **v1.0** 🚀 | **Weeks 7-10** (Apr 28 – May 23) |
@@ -387,15 +395,20 @@ We treat credential handling as the #1 priority.
 ```
 plaidify/
 ├── src/
-│   ├── main.py              # FastAPI app — all 19 endpoints
+│   ├── main.py              # FastAPI app — all endpoints, auth, security middleware
 │   ├── config.py            # Pydantic Settings — env var config
-│   ├── database.py          # SQLAlchemy + AES-256-GCM encryption
+│   ├── database.py          # SQLAlchemy + AES-256-GCM + envelope encryption + key rotation
 │   ├── models.py            # Request/response Pydantic schemas
 │   ├── exceptions.py        # Custom error hierarchy (15 types)
 │   ├── logging_config.py    # JSON (prod) / colored text (dev) logging
+│   ├── crypto.py            # Ephemeral RSA-2048 keypair management
 │   └── core/
 │       ├── engine.py        # Playwright browser engine + blueprint executor
 │       └── connector_base.py # Base class for Python connectors
+├── sdk/                     # Python SDK + CLI (`pip install plaidify`)
+│   └── plaidify/
+│       ├── client.py        # Async/sync clients with auto-encryption
+│       └── cli.py           # CLI: connect, blueprint, serve, demo, rotate-key
 ├── connectors/              # Drop JSON blueprints here
 │   ├── greengrid_energy.json # GreenGrid Energy demo blueprint
 │   └── test_bank.json       # Legacy test blueprint
@@ -406,7 +419,7 @@ plaidify/
 │   ├── demo.css             # Dark theme styles
 │   └── demo.js              # Client-side connection flow logic
 ├── alembic/                 # Database migrations
-├── tests/                   # 98 tests across 8 suites
+├── tests/                   # 136+ tests across 13 suites
 ├── run_demo.py              # One-command demo launcher
 ├── .github/workflows/       # CI: lint → test → audit → docker
 ├── Dockerfile               # Multi-stage, non-root
@@ -438,7 +451,7 @@ We’re building open-source infrastructure for authenticated web data. Contribu
 git clone https://github.com/YOUR_USERNAME/plaidify.git && cd plaidify
 pip install -r requirements.txt
 cp .env.example .env               # Set ENCRYPTION_KEY + JWT_SECRET_KEY
-alembic upgrade head && pytest -v  # All 98 tests should pass
+alembic upgrade head && pytest -v  # All 136+ tests should pass
 ```
 
 > 📋 **Full contributor guide → [CONTRIBUTING.md](CONTRIBUTING.md)**

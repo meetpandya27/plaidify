@@ -39,7 +39,7 @@ Every AI agent eventually needs to access real-world data that's locked behind a
 ### What Makes This Agent-Ready
 
 - **Structured JSON responses** — no HTML parsing in your agent
-- **Credential encryption** — Fernet AES-128-CBC at rest, never logged
+- **Credential encryption** — AES-256-GCM with per-user Data Encryption Keys (envelope encryption), client-side RSA-2048 in-transit
 - **User isolation** — each user's data is scoped and separate
 - **Error hierarchy** — agents get typed errors (`mfa_required`, `captcha_required`, `site_unavailable`) they can reason about
 - **Stateless API** — no session management needed in your agent

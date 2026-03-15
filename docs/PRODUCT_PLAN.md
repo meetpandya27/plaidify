@@ -193,7 +193,9 @@ data = await tool.fetch(blueprint="state_farm_insurance", user_token="usr_abc123
 
 **Goal:** Make Plaidify embeddable. Developer installs SDK → first successful extraction in <30 minutes.
 
-**Start date:** March 17, 2026
+**Start date:** March 15, 2026
+
+**Progress:** Python SDK + CLI shipped (v0.3.0a1)
 
 ---
 
