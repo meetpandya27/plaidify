@@ -203,8 +203,15 @@ class MFAConfig(BaseModel):
 class ExtractionField(BaseModel):
     """A single field to extract from a page."""
 
-    selector: str = Field(..., description="CSS selector for the data element.")
+    selector: Optional[str] = Field(
+        None,
+        description="CSS selector for the data element. Required for V2, optional for V3 llm_adaptive.",
+    )
     type: FieldType = Field(FieldType.TEXT, description="Data type of the field.")
+    description: Optional[str] = Field(
+        None,
+        description="Human-readable description of what this field is (used by LLM extraction).",
+    )
     transform: Optional[Union[TransformType, str]] = Field(
         None,
         description="Transform to apply to the raw value.",
@@ -225,13 +232,28 @@ class ExtractionField(BaseModel):
         None,
         description="Timeout in milliseconds for this field (overrides default).",
     )
+    example: Optional[str] = Field(
+        None,
+        description="Example value for LLM context (e.g., '$1,234.56').",
+    )
+    fallback_selector: Optional[str] = Field(
+        None,
+        description="Fallback CSS selector if primary selector fails (V3).",
+    )
 
 
 class ListExtractionField(BaseModel):
     """Configuration for extracting a list of items (e.g., transaction rows)."""
 
-    selector: str = Field(..., description="CSS selector for each row/item.")
+    selector: Optional[str] = Field(
+        None,
+        description="CSS selector for each row/item. Required for V2, optional for V3 llm_adaptive.",
+    )
     type: FieldType = Field(FieldType.LIST, description="Must be 'list' or 'table'.")
+    description: Optional[str] = Field(
+        None,
+        description="Human-readable description of this list (used by LLM extraction).",
+    )
     fields: Dict[str, ExtractionField] = Field(
         ...,
         description="Fields to extract from each row.",
@@ -259,6 +281,13 @@ ListExtractionField.model_rebuild()
 
 
 # ── Rate Limit & Health ──────────────────────────────────────────────────────
+
+
+class ExtractionStrategy(str, Enum):
+    """How data extraction should be performed."""
+
+    SELECTOR = "selector"  # V2: hardcoded CSS selectors
+    LLM_ADAPTIVE = "llm_adaptive"  # V3: LLM-based with selector caching
 
 
 class RateLimitConfig(BaseModel):
@@ -299,15 +328,19 @@ class AuthConfig(BaseModel):
 
 class BlueprintV2(BaseModel):
     """
-    Blueprint V2 — the complete definition for connecting to a website.
+    Blueprint V2/V3 — the complete definition for connecting to a website.
 
     Defines authentication flow, MFA handling, data extraction, cleanup,
     rate limiting, and health checks.
+
+    V2: All extraction fields must have CSS selectors.
+    V3: Adds 'llm_adaptive' strategy — fields use descriptions instead of selectors,
+        and the LLM figures out the correct selectors at runtime.
     """
 
     schema_version: str = Field(
         "2.0",
-        description="Blueprint schema version.",
+        description="Blueprint schema version. '2.0' or '3.0'.",
     )
     name: str = Field(..., description="Human-readable site name.")
     domain: str = Field(..., description="Target website domain.")
@@ -320,9 +353,21 @@ class BlueprintV2(BaseModel):
         None,
         description="MFA configuration (if the site supports/requires it).",
     )
+    extraction_strategy: ExtractionStrategy = Field(
+        ExtractionStrategy.SELECTOR,
+        description="Extraction approach: 'selector' (V2 CSS) or 'llm_adaptive' (V3 LLM).",
+    )
     extract: Dict[str, Union[ExtractionField, ListExtractionField]] = Field(
         default_factory=dict,
         description="Data fields to extract after authentication.",
+    )
+    page_context: Optional[str] = Field(
+        None,
+        description="Description of the page for LLM context (V3, e.g. 'utility bill dashboard').",
+    )
+    fallback_selectors: Optional[Dict[str, str]] = Field(
+        None,
+        description="Fallback CSS selectors for critical fields when LLM unavailable (V3).",
     )
     cleanup: Optional[List[BlueprintStep]] = Field(
         None,
@@ -340,9 +385,14 @@ class BlueprintV2(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def validate_schema_version(cls, v: str) -> str:
-        if v not in ("1.0", "2.0"):
-            raise ValueError(f"Unsupported schema version: {v}. Expected '1.0' or '2.0'.")
+        if v not in ("1.0", "2.0", "3.0"):
+            raise ValueError(f"Unsupported schema version: {v}. Expected '1.0', '2.0', or '3.0'.")
         return v
+
+    @property
+    def is_llm_adaptive(self) -> bool:
+        """Check if this blueprint uses LLM-adaptive extraction."""
+        return self.extraction_strategy == ExtractionStrategy.LLM_ADAPTIVE
 
 
 # ── Legacy V1 Conversion ─────────────────────────────────────────────────────
@@ -416,7 +466,7 @@ def load_blueprint(path: Path) -> BlueprintV2:
     """
     Load and parse a blueprint from a JSON file.
 
-    Automatically detects V1 vs V2 format and converts if needed.
+    Automatically detects V1 vs V2/V3 format and converts if needed.
 
     Args:
         path: Path to the blueprint JSON file.

@@ -13,6 +13,7 @@ from src.core.blueprint import (
     BlueprintStep,
     BlueprintV2,
     ExtractionField,
+    ExtractionStrategy,
     FieldType,
     ListExtractionField,
     MFAConfig,
@@ -191,7 +192,7 @@ class TestBlueprintV2:
     def test_invalid_schema_version(self):
         with pytest.raises(ValidationError):
             BlueprintV2(
-                schema_version="3.0",
+                schema_version="4.0",
                 name="Bad",
                 domain="bad.com",
                 auth=AuthConfig(
@@ -311,3 +312,158 @@ class TestLoadBlueprint:
         bp_file.write_text("not valid json {{{")
         with pytest.raises(json.JSONDecodeError):
             load_blueprint(bp_file)
+
+
+# ── Blueprint V3 Tests ───────────────────────────────────────────────────────
+
+
+class TestBlueprintV3:
+    """Tests for V3 schema features (LLM-adaptive extraction)."""
+
+    def _make_auth(self):
+        return AuthConfig(
+            type=AuthType.FORM,
+            steps=[BlueprintStep(action=StepAction.GOTO, url="https://example.com")],
+        )
+
+    def test_v3_schema_version(self):
+        bp = BlueprintV2(
+            schema_version="3.0",
+            name="V3 Site",
+            domain="v3.com",
+            auth=self._make_auth(),
+            extraction_strategy=ExtractionStrategy.LLM_ADAPTIVE,
+        )
+        assert bp.schema_version == "3.0"
+        assert bp.is_llm_adaptive
+
+    def test_v2_is_not_llm_adaptive(self):
+        bp = BlueprintV2(
+            schema_version="2.0",
+            name="V2 Site",
+            domain="v2.com",
+            auth=self._make_auth(),
+        )
+        assert not bp.is_llm_adaptive
+        assert bp.extraction_strategy == ExtractionStrategy.SELECTOR
+
+    def test_v3_fields_without_selectors(self):
+        """V3 fields can omit selectors and use descriptions instead."""
+        bp = BlueprintV2(
+            schema_version="3.0",
+            name="LLM Site",
+            domain="llm.com",
+            auth=self._make_auth(),
+            extraction_strategy=ExtractionStrategy.LLM_ADAPTIVE,
+            page_context="Utility bill dashboard",
+            extract={
+                "account_number": ExtractionField(
+                    type=FieldType.TEXT,
+                    description="The customer's account number",
+                    sensitive=True,
+                ),
+                "balance": ExtractionField(
+                    type=FieldType.CURRENCY,
+                    description="Amount currently owed",
+                    example="$1,234.56",
+                ),
+            },
+        )
+        assert bp.extract["account_number"].selector is None
+        assert bp.extract["account_number"].description == "The customer's account number"
+        assert bp.extract["balance"].example == "$1,234.56"
+        assert bp.page_context == "Utility bill dashboard"
+
+    def test_v3_with_fallback_selectors(self):
+        bp = BlueprintV2(
+            schema_version="3.0",
+            name="Fallback Site",
+            domain="fallback.com",
+            auth=self._make_auth(),
+            extraction_strategy=ExtractionStrategy.LLM_ADAPTIVE,
+            extract={
+                "account_number": ExtractionField(
+                    type=FieldType.TEXT,
+                    description="Account ID",
+                    fallback_selector="span.acc-num",
+                ),
+            },
+            fallback_selectors={"account_number": "span.acc-num"},
+        )
+        assert bp.fallback_selectors == {"account_number": "span.acc-num"}
+        assert bp.extract["account_number"].fallback_selector == "span.acc-num"
+
+    def test_v3_list_field_without_selector(self):
+        bp = BlueprintV2(
+            schema_version="3.0",
+            name="List Site",
+            domain="list.com",
+            auth=self._make_auth(),
+            extraction_strategy=ExtractionStrategy.LLM_ADAPTIVE,
+            extract={
+                "usage_history": ListExtractionField(
+                    type=FieldType.LIST,
+                    description="Monthly usage records",
+                    fields={
+                        "month": ExtractionField(type=FieldType.TEXT, description="Billing month"),
+                        "kwh": ExtractionField(type=FieldType.NUMBER, description="kWh consumed"),
+                        "cost": ExtractionField(type=FieldType.CURRENCY, description="Dollar amount"),
+                    },
+                ),
+            },
+        )
+        list_field = bp.extract["usage_history"]
+        assert list_field.selector is None
+        assert list_field.description == "Monthly usage records"
+
+    def test_v3_backward_compat_v2_still_works(self):
+        """V2 blueprints with selectors should still work exactly as before."""
+        bp = BlueprintV2(
+            schema_version="2.0",
+            name="Old Style",
+            domain="old.com",
+            auth=self._make_auth(),
+            extract={
+                "balance": ExtractionField(
+                    selector="span.balance",
+                    type=FieldType.CURRENCY,
+                ),
+            },
+        )
+        assert bp.extract["balance"].selector == "span.balance"
+        assert not bp.is_llm_adaptive
+
+    def test_load_v3_from_file(self, tmp_path):
+        bp_data = {
+            "schema_version": "3.0",
+            "name": "V3 File Test",
+            "domain": "v3file.com",
+            "extraction_strategy": "llm_adaptive",
+            "page_context": "Energy dashboard",
+            "auth": {
+                "type": "form",
+                "steps": [{"action": "goto", "url": "https://v3file.com"}],
+            },
+            "extract": {
+                "account_number": {
+                    "type": "text",
+                    "description": "Account ID",
+                    "sensitive": True,
+                },
+                "balance": {
+                    "type": "currency",
+                    "description": "Current balance",
+                    "example": "$100.00",
+                },
+            },
+            "fallback_selectors": {
+                "account_number": "span.acc-num",
+            },
+        }
+        bp_file = tmp_path / "v3.json"
+        bp_file.write_text(json.dumps(bp_data))
+        bp = load_blueprint(bp_file)
+        assert bp.schema_version == "3.0"
+        assert bp.is_llm_adaptive
+        assert bp.page_context == "Energy dashboard"
+        assert bp.fallback_selectors == {"account_number": "span.acc-num"}
