@@ -1,0 +1,117 @@
+{
+  "schema_version": "2.0",
+  "name": "Hydro One",
+  "domain": "www.hydroone.com",
+  "tags": ["utility", "electricity", "ontario", "canada"],
+  "description": "Hydro One — Ontario's largest electricity transmission and distribution provider. Extracts billing, usage, and account data from myAccount.",
+
+  "auth": {
+    "type": "form",
+    "steps": [
+      {
+        "action": "goto",
+        "url": "https://www.hydroone.com/login",
+        "timeout": 30000
+      },
+      {
+        "action": "wait",
+        "selector": "#LoginForm",
+        "timeout": 15000
+      },
+      {
+        "action": "fill",
+        "selector": "#username",
+        "value": "{{username}}"
+      },
+      {
+        "action": "fill",
+        "selector": "#password",
+        "value": "{{password}}"
+      },
+      {
+        "action": "click",
+        "selector": "#btnSubmit",
+        "timeout": 30000
+      },
+      {
+        "action": "wait",
+        "selector": "span.sm-banner-acc-number, .h1-db-bg, #bannerNoImage",
+        "timeout": 45000
+      },
+      {
+        "action": "execute_js",
+        "script": "new Promise(r => setTimeout(r, 5000))"
+      }
+    ]
+  },
+
+  "mfa": {
+    "detection": {
+      "selector": "#otp-input, .mfa-challenge, #verificationCode, input[name='otp'], .otp-container, #mfaForm",
+      "timeout": 5000
+    },
+    "type": "otp_input",
+    "handler": "user_prompt",
+    "input_selector": "#otp-input, #verificationCode, input[name='otp']",
+    "submit_selector": "button[type='submit'], .btn-primary, #btnVerify"
+  },
+
+  "extract": {
+    "account_number": {
+      "selector": "span.sm-banner-acc-number",
+      "type": "text",
+      "sensitive": true
+    },
+    "account_holder": {
+      "selector": "h1.woi-h1",
+      "type": "text",
+      "default": null
+    },
+    "current_balance": {
+      "selector": ".h1-db-row-padding .col-md-4:first-child p.h1-widget-bTitle",
+      "type": "currency",
+      "transform": "strip_dollar_sign"
+    },
+    "due_date": {
+      "selector": ".h1-db-row-padding .col-md-4:nth-child(2) p.h1-widget-bTitle",
+      "type": "date"
+    },
+    "usage_kwh": {
+      "selector": "p.h1-widget-amount",
+      "type": "text"
+    },
+    "overdue_amount": {
+      "selector": "p.h1-overdue-note-black, span.h1-overdue-note-black",
+      "type": "currency",
+      "transform": "strip_dollar_sign",
+      "default": "0.00"
+    },
+    "page_title": {
+      "selector": "h1#hydroOnePageTitleElement",
+      "type": "text"
+    }
+  },
+
+  "cleanup": [
+    {
+      "action": "conditional",
+      "condition_selector": "a[href*='pkmslogout'], a:has-text('Logout'), a:has-text('Sign Out')",
+      "then_steps": [
+        {
+          "action": "click",
+          "selector": "a[href*='pkmslogout'], a:has-text('Logout'), a:has-text('Sign Out')"
+        }
+      ]
+    }
+  ],
+
+  "rate_limit": {
+    "max_requests_per_minute": 3,
+    "min_interval_seconds": 30
+  },
+
+  "health_check": {
+    "url": "https://www.hydroone.com",
+    "expected_status": 200
+  }
+}
