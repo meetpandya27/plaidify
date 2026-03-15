@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.0] — 2026-03-14
+
+### Phase 1: Real Browser Engine
+
+Replaces the stub engine with a real Playwright-powered browser automation layer. Plaidify can now actually log into websites, navigate multi-step auth flows, handle MFA, and extract structured data.
+
+### Added
+
+- **Playwright integration** — real browser automation replaces stub logic; Chromium launched via async Playwright API
+- **Browser Pool Manager** (`src/core/browser_pool.py`) — pool of reusable browser contexts with configurable max concurrency, idle timeout cleanup, session isolation, resource blocking (images/fonts/analytics), stealth mode (randomized viewport, user-agent)
+- **Blueprint V2 Schema** (`src/core/blueprint.py`) — Pydantic models for the complete blueprint format:
+  - 12 step actions: `goto`, `fill`, `click`, `wait`, `screenshot`, `extract`, `conditional`, `scroll`, `select`, `iframe`, `wait_for_navigation`, `execute_js`
+  - Typed extraction fields: `text`, `currency`, `date`, `number`, `email`, `phone`, `list`, `table`, `boolean`
+  - MFA configuration: detection, OTP, email code, security questions, push notification
+  - Rate limiting and health check metadata
+  - Automatic V1→V2 conversion for backward compatibility
+- **Step Executor** (`src/core/step_executor.py`) — interprets blueprint steps, drives Playwright with `{{variable}}` interpolation, conditional branching, and per-step timeouts
+- **Data Extractor** (`src/core/data_extractor.py`) — extracts and normalizes data from pages:
+  - 10 built-in transforms: `strip_whitespace`, `strip_dollar_sign`, `strip_commas`, `to_lowercase`, `to_uppercase`, `to_number`, `to_currency`, `parse_date`, `regex_extract`
+  - Parameterized transforms: `parse_date(%m/%d/%Y)`, `regex_extract(\d+)`
+  - Type coercion for all field types
+  - List/table extraction with row iteration
+  - Pagination support (next-page clicking)
+  - Sensitive field handling (never logged)
+- **MFA Session Manager** (`src/core/mfa_manager.py`) — async MFA challenge handling:
+  - Engine pauses when MFA detected, waits for user input via API
+  - Auto-expiring sessions (configurable TTL, default 5 min)
+  - Push MFA polling support
+- **MFA API endpoints** — `POST /mfa/submit` to submit OTP codes, `GET /mfa/status/{session_id}` to check session state
+- **Blueprint discovery endpoints** — `GET /blueprints` lists all available blueprints, `GET /blueprints/{site}` returns detailed info (fields, MFA support, tags)
+- **Test Bank blueprint** (`connectors/test_bank.json`) — full V2 blueprint for the example test site with account data, transactions, MFA
+- **Enhanced example test site** (`example_site/server.py`) — realistic test site with login, MFA (OTP), dashboard with account balance, transactions table, profile data, and logout
+- **Browser engine config** — `BROWSER_HEADLESS`, `BROWSER_POOL_SIZE`, `BROWSER_IDLE_TIMEOUT`, `BROWSER_NAVIGATION_TIMEOUT`, `BROWSER_ACTION_TIMEOUT`, `BROWSER_BLOCK_RESOURCES`, `BROWSER_STEALTH` env vars
+- **Phase 1 test suite** — blueprint schema tests, data extractor/transform tests, MFA manager tests, browser pool tests, Playwright integration tests, API endpoint tests
+
+### Changed
+
+- **Rewrote `src/core/engine.py`** — Playwright-powered execution: load blueprint → acquire browser → run auth steps → detect MFA → extract data → cleanup → release browser
+- **Updated `ConnectRequest`/`ConnectResponse` models** — added `extract_fields`, `session_id`, `mfa_type`, `metadata` fields
+- **Updated `src/models.py`** — added `MFASubmitRequest`, `MFAStatusResponse`, `BlueprintInfoResponse` models
+- **Updated `src/main.py`** — browser pool lifecycle (start/stop), MFA error handling in `/connect`, new endpoints
+- **Updated `requirements.txt`** — added `playwright>=1.40.0`
+- **Updated `Dockerfile`** — installs Playwright system deps and Chromium browser
+- **Updated `src/core/__init__.py`** — module docstring
+- **Bumped version** to `0.2.0`
+
+---
+
 ## [0.1.0] — 2026-03-14
 
 ### Phase 0: Foundation Hardening

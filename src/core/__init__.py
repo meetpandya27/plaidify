@@ -1,1 +1,1 @@
-# This file is intentionally left blank.
+"""Plaidify core module — browser engine, blueprints, extraction, and MFA."""

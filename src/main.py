@@ -32,7 +32,7 @@ from src.database import (
     encrypt_credential,
     decrypt_credential,
 )
-from src.exceptions import PlaidifyError, InvalidTokenError, UserNotFoundError
+from src.exceptions import PlaidifyError, InvalidTokenError, UserNotFoundError, MFARequiredError
 from src.logging_config import setup_logging, get_logger
 from src.models import (
     ConnectRequest,
@@ -42,7 +42,9 @@ from src.models import (
     OAuth2LoginRequest,
     UserProfileResponse,
 )
-from src.core.engine import connect_to_site
+from src.core.engine import connect_to_site, submit_mfa_code
+from src.core.browser_pool import get_browser_pool, shutdown_browser_pool
+from src.core.mfa_manager import get_mfa_manager
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -61,7 +63,15 @@ async def lifespan(app: FastAPI):
         extra={"extra_data": {"version": settings.app_version, "debug": settings.debug}},
     )
     init_db()
+
+    # Pre-warm browser pool (lazy — actual start happens on first connection)
+    logger.info("Browser engine ready (Playwright, lazy-start)")
+
     yield
+
+    # Shutdown browser pool
+    logger.info("Shutting down browser pool...")
+    await shutdown_browser_pool()
     logger.info("Shutting down Plaidify")
 
 
@@ -218,6 +228,66 @@ async def app_status():
     return {"status": "API is running", "version": settings.app_version}
 
 
+# ── Blueprint Discovery ──────────────────────────────────────────────────────
+
+
+@app.get("/blueprints")
+async def list_blueprints():
+    """
+    List all available blueprints.
+
+    Returns the name and basic info for each blueprint in the connectors directory.
+    """
+    from pathlib import Path
+    from src.core.blueprint import load_blueprint
+
+    connectors_path = Path(settings.connectors_dir).resolve()
+    blueprints = []
+
+    if connectors_path.is_dir():
+        for f in sorted(connectors_path.glob("*.json")):
+            try:
+                bp = load_blueprint(f)
+                blueprints.append({
+                    "site": f.stem,
+                    "name": bp.name,
+                    "domain": bp.domain,
+                    "tags": bp.tags,
+                    "has_mfa": bp.mfa is not None,
+                    "schema_version": bp.schema_version,
+                })
+            except Exception as e:
+                logger.warning(f"Failed to load blueprint {f.name}: {e}")
+
+    return {"blueprints": blueprints, "count": len(blueprints)}
+
+
+@app.get("/blueprints/{site}")
+async def get_blueprint_info(site: str):
+    """
+    Get detailed info about a specific blueprint.
+
+    Does NOT include auth steps or selectors (security).
+    """
+    from pathlib import Path
+    from src.core.blueprint import load_blueprint
+
+    blueprint_path = Path(settings.connectors_dir).resolve() / f"{site}.json"
+    if not blueprint_path.exists():
+        raise HTTPException(status_code=404, detail=f"Blueprint not found: {site}")
+
+    bp = load_blueprint(blueprint_path)
+    return {
+        "name": bp.name,
+        "domain": bp.domain,
+        "tags": bp.tags,
+        "has_mfa": bp.mfa is not None,
+        "extract_fields": list(bp.extract.keys()),
+        "schema_version": bp.schema_version,
+        "rate_limit": bp.rate_limit.model_dump() if bp.rate_limit else None,
+    }
+
+
 # ── Connection Endpoints ──────────────────────────────────────────────────────
 
 
@@ -227,15 +297,64 @@ async def connect(request: ConnectRequest):
     Connect to a site and extract data in a single step.
 
     This is the simplest integration path — send credentials, get data back.
+    If MFA is required, returns status='mfa_required' with a session_id.
+    The client then calls POST /mfa/submit with the code.
     """
-    response_data = await connect_to_site(request.site, request.username, request.password)
-    return response_data
+    try:
+        response_data = await connect_to_site(
+            site=request.site,
+            username=request.username,
+            password=request.password,
+            extract_fields=request.extract_fields,
+        )
+        return response_data
+    except MFARequiredError as e:
+        return ConnectResponse(
+            status="mfa_required",
+            mfa_type=e.mfa_type,
+            session_id=e.session_id,
+            metadata={"message": e.message},
+        )
 
 
 @app.post("/disconnect")
 async def disconnect():
     """Disconnect / end a session."""
     return {"status": "disconnected"}
+
+
+# ── MFA Endpoints ─────────────────────────────────────────────────────────────
+
+
+@app.post("/mfa/submit")
+async def mfa_submit(session_id: str, code: str):
+    """
+    Submit an MFA code for a pending session.
+
+    After a connection returns status 'mfa_required', the client retrieves
+    the code from the user and submits it here.
+    """
+    result = await submit_mfa_code(session_id, code)
+    return result
+
+
+@app.get("/mfa/status/{session_id}")
+async def mfa_status(session_id: str):
+    """
+    Check the status of an MFA session.
+
+    Returns session metadata (type, question text, etc.) or 404 if expired.
+    """
+    mfa_manager = get_mfa_manager()
+    session = await mfa_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="MFA session not found or expired.")
+    return {
+        "session_id": session.session_id,
+        "site": session.site,
+        "mfa_type": session.mfa_type,
+        "metadata": session.metadata,
+    }
 
 
 # ── Link Token Flow ───────────────────────────────────────────────────────────

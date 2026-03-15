@@ -1,0 +1,112 @@
+{
+  "schema_version": "2.0",
+  "name": "Test Bank",
+  "domain": "localhost:8080",
+  "tags": ["banking", "test", "demo"],
+
+  "auth": {
+    "type": "form",
+    "steps": [
+      {
+        "action": "goto",
+        "url": "http://localhost:8080/login"
+      },
+      {
+        "action": "fill",
+        "selector": "#username",
+        "value": "{{username}}"
+      },
+      {
+        "action": "fill",
+        "selector": "#password",
+        "value": "{{password}}"
+      },
+      {
+        "action": "click",
+        "selector": "#login-btn",
+        "wait_for_navigation": true
+      },
+      {
+        "action": "wait",
+        "selector": "#dashboard",
+        "timeout": 10000
+      }
+    ]
+  },
+
+  "mfa": {
+    "detection": {
+      "selector": "#otp-input",
+      "timeout": 3000
+    },
+    "type": "otp_input",
+    "handler": "user_prompt",
+    "input_selector": "#otp-input",
+    "submit_selector": "#otp-submit"
+  },
+
+  "extract": {
+    "balance": {
+      "selector": "#account-balance",
+      "type": "currency",
+      "transform": "strip_dollar_sign"
+    },
+    "account_number": {
+      "selector": "#account-number",
+      "type": "text",
+      "sensitive": true
+    },
+    "account_status": {
+      "selector": "#account-status",
+      "type": "text"
+    },
+    "last_synced": {
+      "selector": "#last-synced",
+      "type": "date"
+    },
+    "profile_name": {
+      "selector": "#profile-name",
+      "type": "text"
+    },
+    "profile_email": {
+      "selector": "#profile-email",
+      "type": "email"
+    },
+    "transactions": {
+      "selector": ".txn-row",
+      "type": "list",
+      "fields": {
+        "date": {
+          "selector": ".txn-date",
+          "type": "date"
+        },
+        "description": {
+          "selector": ".txn-desc",
+          "type": "text"
+        },
+        "amount": {
+          "selector": ".txn-amount",
+          "type": "currency",
+          "transform": "strip_dollar_sign"
+        }
+      }
+    }
+  },
+
+  "cleanup": [
+    {
+      "action": "click",
+      "selector": "#logout-btn"
+    }
+  ],
+
+  "rate_limit": {
+    "max_requests_per_hour": 60,
+    "min_interval_seconds": 5
+  },
+
+  "health_check": {
+    "url": "http://localhost:8080/health",
+    "expected_status": 200
+  }
+}

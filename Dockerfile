@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Plaidify — Multi-stage Docker Build
+# Plaidify — Multi-stage Docker Build (with Playwright)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Builder ─────────────────────────────────────────────────────────
@@ -13,13 +13,40 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
+# Install Playwright system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libatspi2.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libwayland-client0 \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
 # Security: run as non-root user
-RUN groupadd -r plaidify && useradd -r -g plaidify plaidify
+RUN groupadd -r plaidify && useradd -r -g plaidify -m plaidify
 
 WORKDIR /app
 
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
+
+# Install Playwright browsers (chromium only to minimize image size)
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
+RUN playwright install chromium --with-deps 2>/dev/null || playwright install chromium
 
 # Copy application code
 COPY . /app/
