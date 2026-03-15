@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plaidify — Interactive Demo</title>
+  <link rel="stylesheet" href="demo.css" />
+</head>
+<body>
+  <!-- ── Header ───────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">◆ <span class="accent">Plaidify</span></div>
+      <span class="badge">Demo</span>
+    </div>
+    <div class="header-right">
+      <span class="version" id="api-version">v0.2.0</span>
+      <a href="/docs" class="header-link" target="_blank">API Docs</a>
+      <a href="https://github.com/meetpandya27/plaidify" class="header-link" target="_blank">GitHub</a>
+    </div>
+  </header>
+
+  <!-- ── Hero / Intro ─────────────────────────────────────── -->
+  <section class="hero">
+    <h1>Connect to any site. Extract structured data.</h1>
+    <p class="hero-sub">
+      Plaidify uses real browser automation to log into websites, navigate auth flows,
+      and return clean, typed JSON — like <strong>Plaid, but for everything</strong>.
+    </p>
+    <p class="hero-hint">
+      This demo connects to a local GreenGrid Energy portal. Everything runs on your machine — no data leaves localhost.
+    </p>
+  </section>
+
+  <!-- ── Main Demo Area ───────────────────────────────────── -->
+  <main class="demo-area">
+    <!-- Left: Connect Widget -->
+    <div class="widget-column">
+      <div class="widget-card" id="connect-widget">
+
+        <!-- Step 1: Select Institution -->
+        <div class="widget-step" id="step-select" data-active="true">
+          <div class="step-header">
+            <span class="step-number">1</span>
+            <span class="step-title">Select provider</span>
+          </div>
+          <div class="step-body">
+            <div class="institution-list" id="institution-list">
+              <div class="institution-item loading">
+                <span class="shimmer"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Enter Credentials -->
+        <div class="widget-step" id="step-credentials" data-active="false">
+          <div class="step-header">
+            <span class="step-number">2</span>
+            <span class="step-title">Enter credentials</span>
+          </div>
+          <div class="step-body">
+            <div class="selected-bank" id="selected-bank-display">
+              <span class="bank-icon">⚡</span>
+              <span class="bank-name" id="selected-bank-name">GreenGrid Energy</span>
+              <button class="change-btn" id="change-bank-btn">Change</button>
+            </div>
+            <form id="credentials-form" autocomplete="off">
+              <div class="form-group">
+                <label for="demo-username">Email or Account ID</label>
+                <input type="text" id="demo-username" placeholder="demo_user" />
+              </div>
+              <div class="form-group">
+                <label for="demo-password">Password</label>
+                <input type="password" id="demo-password" placeholder="demo_pass" />
+              </div>
+              <div class="credential-hints">
+                <span class="hint-label">Test credentials:</span>
+                <button type="button" class="hint-btn" data-user="demo_user" data-pass="demo_pass">
+                  demo_user / demo_pass
+                </button>
+                <button type="button" class="hint-btn" data-user="mfa_user" data-pass="mfa_pass">
+                  mfa_user / mfa_pass <span class="mfa-badge">MFA</span>
+                </button>
+              </div>
+              <button type="submit" class="connect-btn" id="connect-btn">
+                <span class="btn-text">Connect</span>
+                <span class="btn-arrow">→</span>
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Step 3: Connecting (Loading) -->
+        <div class="widget-step" id="step-connecting" data-active="false">
+          <div class="step-header">
+            <span class="step-number loading-spinner">⟳</span>
+            <span class="step-title">Connecting...</span>
+          </div>
+          <div class="step-body">
+            <div class="progress-steps">
+              <div class="progress-item" id="prog-browser">
+                <span class="prog-icon">○</span>
+                <span class="prog-text">Launching browser</span>
+              </div>
+              <div class="progress-item" id="prog-navigate">
+                <span class="prog-icon">○</span>
+                <span class="prog-text">Navigating to portal</span>
+              </div>
+              <div class="progress-item" id="prog-auth">
+                <span class="prog-icon">○</span>
+                <span class="prog-text">Authenticating</span>
+              </div>
+              <div class="progress-item" id="prog-extract">
+                <span class="prog-icon">○</span>
+                <span class="prog-text">Extracting data</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3b: MFA Challenge -->
+        <div class="widget-step" id="step-mfa" data-active="false">
+          <div class="step-header">
+            <span class="step-number mfa-icon">🔐</span>
+            <span class="step-title">Two-Factor Authentication</span>
+          </div>
+          <div class="step-body">
+            <p class="mfa-desc">GreenGrid Energy requires a verification code.</p>
+            <form id="mfa-form">
+              <div class="form-group">
+                <label for="mfa-code">Verification Code</label>
+                <input type="text" id="mfa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" />
+              </div>
+              <div class="credential-hints">
+                <span class="hint-label">Test code:</span>
+                <button type="button" class="hint-btn" id="mfa-hint-btn" data-code="123456">123456</button>
+              </div>
+              <button type="submit" class="connect-btn" id="mfa-submit-btn">
+                <span class="btn-text">Verify</span>
+                <span class="btn-arrow">→</span>
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Step 4: Success -->
+        <div class="widget-step" id="step-success" data-active="false">
+          <div class="step-header">
+            <span class="step-number success-icon">✓</span>
+            <span class="step-title">Connected!</span>
+          </div>
+          <div class="step-body">
+            <p class="success-msg">Successfully extracted <span id="field-count">0</span> fields from <span id="success-site">GreenGrid Energy</span>.</p>
+            <div class="success-time">
+              Completed in <span id="elapsed-time">0.0</span>s
+            </div>
+            <button class="connect-btn outline" id="try-again-btn">
+              <span class="btn-text">Try Again</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Error State -->
+        <div class="widget-step" id="step-error" data-active="false">
+          <div class="step-header">
+            <span class="step-number error-icon">✗</span>
+            <span class="step-title">Connection Failed</span>
+          </div>
+          <div class="step-body">
+            <p class="error-msg-widget" id="error-message">Something went wrong.</p>
+            <button class="connect-btn outline" id="retry-btn">
+              <span class="btn-text">Try Again</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Developer Console -->
+    <div class="console-column">
+      <div class="console-card">
+        <div class="console-header">
+          <span class="console-title">Developer Console</span>
+          <button class="console-clear" id="clear-console">Clear</button>
+        </div>
+        <div class="console-body" id="console-log">
+          <div class="console-entry info">
+            <span class="console-time">--:--:--</span>
+            <span class="console-text">Waiting for connection...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ── Results Section ──────────────────────────────────── -->
+  <section class="results-section" id="results-section" style="display: none;">
+    <h2 class="results-title">Extracted Data</h2>
+    <p class="results-subtitle">Structured, typed data extracted from GreenGrid Energy via browser automation.</p>
+
+    <div class="results-grid">
+      <!-- Account Card -->
+      <div class="result-card" id="card-account">
+        <div class="card-header">
+          <span class="card-icon">⚡</span>
+          <span class="card-title">Account</span>
+        </div>
+        <div class="card-body">
+          <div class="stat-row">
+            <span class="stat-label">Current Bill</span>
+            <span class="stat-value large" id="res-bill">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Usage</span>
+            <span class="stat-value" id="res-usage">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Account Number</span>
+            <span class="stat-value mono" id="res-account-number">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Status</span>
+            <span class="stat-value" id="res-status">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Service Card -->
+      <div class="result-card" id="card-service">
+        <div class="card-header">
+          <span class="card-icon">🏠</span>
+          <span class="card-title">Service</span>
+        </div>
+        <div class="card-body">
+          <div class="stat-row">
+            <span class="stat-label">Address</span>
+            <span class="stat-value" id="res-address">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Plan</span>
+            <span class="stat-value" id="res-plan">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Meter ID</span>
+            <span class="stat-value mono" id="res-meter">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Next Read</span>
+            <span class="stat-value" id="res-next-read">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Customer Card -->
+      <div class="result-card" id="card-customer">
+        <div class="card-header">
+          <span class="card-icon">👤</span>
+          <span class="card-title">Customer</span>
+        </div>
+        <div class="card-body">
+          <div class="stat-row">
+            <span class="stat-label">Name</span>
+            <span class="stat-value" id="res-name">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Email</span>
+            <span class="stat-value mono" id="res-email">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Phone</span>
+            <span class="stat-value" id="res-phone">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Usage History Table -->
+    <div class="result-card full-width" id="card-usage-history">
+      <div class="card-header">
+        <span class="card-icon">📊</span>
+        <span class="card-title">Usage History</span>
+        <span class="card-count" id="usage-count">0 months</span>
+      </div>
+      <div class="card-body">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th>Usage (kWh)</th>
+              <th class="amount-col">Cost</th>
+              <th>Avg Temp</th>
+            </tr>
+          </thead>
+          <tbody id="usage-body">
+            <tr><td colspan="4" class="empty-row">Connect to see usage history</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Payment History Table -->
+    <div class="result-card full-width" id="card-payments">
+      <div class="card-header">
+        <span class="card-icon">💳</span>
+        <span class="card-title">Payment History</span>
+        <span class="card-count" id="payment-count">0 items</span>
+      </div>
+      <div class="card-body">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Description</th>
+              <th class="amount-col">Amount</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="payment-body">
+            <tr><td colspan="4" class="empty-row">Connect to see payments</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Raw JSON -->
+    <div class="result-card full-width">
+      <div class="card-header clickable" id="json-toggle">
+        <span class="card-icon">{ }</span>
+        <span class="card-title">Raw API Response</span>
+        <span class="toggle-arrow" id="json-arrow">▸</span>
+      </div>
+      <div class="card-body json-body" id="json-body" style="display: none;">
+        <pre><code id="raw-json">// Connect to see the API response</code></pre>
+      </div>
+    </div>
+
+    <!-- cURL Example -->
+    <div class="result-card full-width">
+      <div class="card-header clickable" id="request-toggle">
+        <span class="card-icon">📡</span>
+        <span class="card-title">cURL Equivalent</span>
+        <span class="toggle-arrow" id="request-arrow">▸</span>
+      </div>
+      <div class="card-body json-body" id="request-body" style="display: none;">
+        <pre><code id="curl-example">// Connect to see the equivalent cURL command</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── How It Works ─────────────────────────────────────── -->
+  <section class="how-it-works">
+    <h2>How it works</h2>
+    <div class="steps-row">
+      <div class="how-step">
+        <div class="how-icon">📋</div>
+        <h3>1. Blueprint</h3>
+        <p>A JSON file defines how to authenticate and where to find data on a site.</p>
+      </div>
+      <div class="how-step">
+        <div class="how-icon">🌐</div>
+        <h3>2. Browser</h3>
+        <p>Playwright launches a real Chromium browser and executes the auth flow.</p>
+      </div>
+      <div class="how-step">
+        <div class="how-icon">🔍</div>
+        <h3>3. Extract</h3>
+        <p>CSS selectors pull data from the page. Transforms normalize types.</p>
+      </div>
+      <div class="how-step">
+        <div class="how-icon">📦</div>
+        <h3>4. Return</h3>
+        <p>Clean, structured JSON is returned via the REST API. Ready to use.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Footer ───────────────────────────────────────────── -->
+  <footer class="footer">
+    <p>Plaidify is open-source under the MIT License. This demo runs entirely on localhost.</p>
+  </footer>
+
+  <script src="demo.js"></script>
+</body>
+</html>

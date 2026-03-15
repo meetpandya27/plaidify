@@ -284,15 +284,27 @@ class TestLoadBlueprint:
             assert bp.schema_version == "2.0"
 
     def test_load_test_bank_blueprint(self):
-        """Test that the new test_bank.json V2 blueprint loads."""
+        """Test that the test_bank.json V2 blueprint loads."""
         path = Path("connectors/test_bank.json")
         if path.exists():
             bp = load_blueprint(path)
-            assert bp.name == "Test Bank"
+            assert bp.name == "Test Site (Legacy)"
             assert bp.schema_version == "2.0"
             assert bp.mfa is not None
-            assert "balance" in bp.extract
-            assert "transactions" in bp.extract
+            assert "current_bill" in bp.extract
+            assert "usage_history" in bp.extract
+
+    def test_load_greengrid_blueprint(self):
+        """Test that the greengrid_energy.json V2 blueprint loads."""
+        path = Path("connectors/greengrid_energy.json")
+        if path.exists():
+            bp = load_blueprint(path)
+            assert bp.name == "GreenGrid Energy"
+            assert bp.schema_version == "2.0"
+            assert bp.mfa is not None
+            assert "current_bill" in bp.extract
+            assert "usage_history" in bp.extract
+            assert "payments" in bp.extract
 
     def test_invalid_json_raises(self, tmp_path):
         bp_file = tmp_path / "bad.json"

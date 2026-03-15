@@ -1,8 +1,8 @@
 {
   "schema_version": "2.0",
-  "name": "Test Site (Legacy)",
+  "name": "GreenGrid Energy",
   "domain": "localhost:8080",
-  "tags": ["utility", "test", "demo"],
+  "tags": ["utility", "energy", "demo"],
 
   "auth": {
     "type": "form",
@@ -88,6 +88,10 @@
       "selector": "#customer-email",
       "type": "email"
     },
+    "customer_phone": {
+      "selector": "#customer-phone",
+      "type": "text"
+    },
     "usage_history": {
       "selector": ".usage-row",
       "type": "list",
@@ -105,6 +109,10 @@
           "selector": ".usage-cost",
           "type": "currency",
           "transform": "strip_dollar_sign"
+        },
+        "avg_temp": {
+          "selector": ".usage-temp",
+          "type": "text"
         }
       }
     },
@@ -124,6 +132,10 @@
           "selector": ".payment-amount",
           "type": "currency",
           "transform": "strip_dollar_sign"
+        },
+        "status": {
+          "selector": ".payment-status",
+          "type": "text"
         }
       }
     }

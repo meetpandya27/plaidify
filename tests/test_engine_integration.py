@@ -151,16 +151,20 @@ class TestDataExtraction:
             data = await extractor.extract(test_bank_blueprint.extract, site="test_bank")
 
             # Verify scalar fields
-            assert data["balance"] == 4521.30
-            assert data["account_status"] == "active"
-            assert data["profile_name"] == "John Doe"
-            assert data["profile_email"] == "john.doe@example.com"
+            assert data["current_bill"] == 142.57
+            assert "Active" in str(data["account_status"])
+            assert data["customer_name"] == "Alex Johnson"
+            assert data["customer_email"] == "alex.johnson@email.com"
 
-            # Verify transactions list
-            assert isinstance(data["transactions"], list)
-            assert len(data["transactions"]) == 5
-            assert data["transactions"][0]["description"] == "Coffee Shop"
-            assert data["transactions"][1]["description"] == "Direct Deposit - Payroll"
+            # Verify usage history list
+            assert isinstance(data["usage_history"], list)
+            assert len(data["usage_history"]) == 6
+            assert data["usage_history"][0]["month"] == "March 2026"
+
+            # Verify payments list
+            assert isinstance(data["payments"], list)
+            assert len(data["payments"]) == 4
+            assert "February Bill" in data["payments"][0]["description"]
 
             await context.close()
             await browser.close()
@@ -181,16 +185,16 @@ class TestDataExtraction:
             executor = StepExecutor(page, variables)
             await executor.execute_steps(test_bank_blueprint.auth.steps, context="auth")
 
-            # Extract only balance
+            # Extract only current_bill
             limited_fields = {
                 k: v for k, v in test_bank_blueprint.extract.items()
-                if k == "balance"
+                if k == "current_bill"
             }
             extractor = DataExtractor(page)
             data = await extractor.extract(limited_fields, site="test_bank")
 
-            assert "balance" in data
-            assert "transactions" not in data
+            assert "current_bill" in data
+            assert "usage_history" not in data
 
             await context.close()
             await browser.close()
@@ -290,8 +294,8 @@ class TestEngineIntegration:
 
                 assert result["status"] == "connected"
                 assert "data" in result
-                assert result["data"]["balance"] == 4521.30
-                assert isinstance(result["data"]["transactions"], list)
+                assert result["data"]["current_bill"] == 142.57
+                assert isinstance(result["data"]["usage_history"], list)
             finally:
                 if original_dir:
                     os.environ["CONNECTORS_DIR"] = original_dir
