@@ -12,6 +12,12 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_FORMAT=text
+      # CORS: Set specific origins in production
+      # - CORS_ORIGINS=https://app.example.com,https://admin.example.com
+      # Environment: 'development' (default), 'staging', or 'production'
+      # - ENV=production
+      # HTTPS: Auto-enabled in production, or force with:
+      # - ENFORCE_HTTPS=true
     command: gunicorn src.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --reload
 
 networks:

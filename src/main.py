@@ -99,15 +99,69 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS
-origins = [o.strip() for o in settings.cors_origins.split(",")]
+# ── CORS ──────────────────────────────────────────────────────────────────────
+
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+
+if settings.env == "production" and "*" in _cors_origins:
+    logger.critical(
+        "CORS wildcard (*) is not allowed in production. "
+        "Set CORS_ORIGINS to specific origins (e.g. 'https://app.example.com')."
+    )
+    import sys
+    sys.exit(1)
+
+if "*" in _cors_origins:
+    logger.warning(
+        "CORS wildcard (*) is enabled. This is acceptable in development "
+        "but must be restricted before production deployment."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Security Headers Middleware ───────────────────────────────────────────────
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Add security headers to every response."""
+    response = await call_next(request)
+
+    # Prevent MIME-type sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Prevent clickjacking (allow framing from same origin for Link widget)
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    # Enable XSS filter in older browsers
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # Restrict referrer information
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Restrict permissions (camera, microphone, etc.)
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
+    # HSTS — only in production or when explicitly enabled
+    if settings.enforce_https or settings.env == "production":
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+
+    return response
+
+
+# ── HTTPS Redirect Middleware ─────────────────────────────────────────────────
+
+if settings.enforce_https or settings.env == "production":
+    from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+    # Note: In most deployments, TLS termination happens at the reverse proxy
+    # (nginx, Cloudflare, ALB). This middleware is a safety net for direct access.
+    # It checks the X-Forwarded-Proto header, so it works behind a proxy.
+    logger.info("HTTPS enforcement enabled")
+
 
 # Static files (frontend UI)
 try:

@@ -41,14 +41,22 @@ class Settings(BaseSettings):
     # ── Server ────────────────────────────────────────────────
     app_name: str = Field(default="Plaidify", description="Application name.")
     app_version: str = Field(default="0.3.0a1", description="Application version.")
+    env: str = Field(
+        default="development",
+        description="Environment: 'development', 'staging', or 'production'.",
+    )
     debug: bool = Field(default=False, description="Enable debug mode.")
     log_level: str = Field(default="INFO", description="Logging level.")
     log_format: str = Field(
         default="json", description="Logging format: 'json' or 'text'."
     )
     cors_origins: str = Field(
-        default="*",
-        description="Comma-separated list of allowed CORS origins. Use specific origins in production.",
+        default="http://localhost:3000,http://localhost:8000,http://localhost:8080",
+        description="Comma-separated list of allowed CORS origins. Must be explicit in production.",
+    )
+    enforce_https: bool = Field(
+        default=False,
+        description="Redirect HTTP to HTTPS and add HSTS header. Auto-enabled in production.",
     )
 
     # ── Connectors ────────────────────────────────────────────
@@ -104,6 +112,14 @@ class Settings(BaseSettings):
         default=True,
         description="Enable anti-detection measures (randomized viewport, user-agent).",
     )
+
+    @field_validator("env")
+    @classmethod
+    def validate_env(cls, v: str) -> str:
+        v = v.lower()
+        if v not in ("development", "staging", "production"):
+            raise ValueError("env must be 'development', 'staging', or 'production'")
+        return v
 
     @field_validator("log_level")
     @classmethod
