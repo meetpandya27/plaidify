@@ -15,14 +15,34 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, List, Optional, Type, Union
+from urllib.parse import urlparse
 
 from src.config import get_settings
 from src.core.connector_base import BaseConnector
-from src.core.blueprint import BlueprintV2, load_blueprint
+from src.core.blueprint import (
+    BlueprintV2,
+    ExtractionField,
+    ListExtractionField,
+    load_blueprint,
+)
 from src.core.browser_pool import get_browser_pool, BrowserPool
 from src.core.step_executor import StepExecutor
 from src.core.data_extractor import DataExtractor
+from src.core.dom_simplifier import DOMSimplifier
+from src.core.extraction_prompt import (
+    ExtractionPromptBuilder,
+    ExtractionResult,
+    fields_from_blueprint_extract,
+)
+from src.core.llm_provider import (
+    BaseLLMProvider,
+    FallbackChain,
+    LLMProviderError,
+    create_provider,
+)
+from src.core.multimodal_extractor import MultimodalExtractor
+from src.core.selector_cache import SelectorCache
 from src.core.mfa_manager import get_mfa_manager, MFAManager
 from src.exceptions import (
     AuthenticationError,
@@ -38,6 +58,19 @@ from src.logging_config import get_logger
 
 logger = get_logger("engine")
 settings = get_settings()
+
+# ── Module-Level Singletons ──────────────────────────────────────────────────
+
+_selector_cache: Optional[SelectorCache] = None
+
+
+def get_selector_cache() -> SelectorCache:
+    """Get or create the module-level selector cache singleton."""
+    global _selector_cache
+    if _selector_cache is None:
+        cache_path = os.environ.get("PLAIDIFY_SELECTOR_CACHE_PATH")
+        _selector_cache = SelectorCache(persist_path=cache_path)
+    return _selector_cache
 
 
 async def connect_to_site(
@@ -158,6 +191,361 @@ def _load_site_blueprint(site: str, connectors_dir: str) -> BlueprintV2:
         raise BlueprintValidationError(site=site, detail=str(e)) from e
 
 
+# ── LLM Extraction Pipeline ─────────────────────────────────────────────────
+
+
+def _create_llm_provider() -> Optional[BaseLLMProvider]:
+    """Create an LLM provider from settings. Returns None if not configured."""
+    if not settings.llm_api_key:
+        return None
+
+    primary = create_provider(
+        settings.llm_provider,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
+        max_tokens=settings.llm_max_tokens,
+        temperature=settings.llm_temperature,
+        timeout=settings.llm_timeout,
+    )
+
+    # If a fallback model is configured, create a FallbackChain
+    if settings.llm_fallback_model:
+        fallback = create_provider(
+            settings.llm_provider,
+            api_key=settings.llm_api_key,
+            model=settings.llm_fallback_model,
+            base_url=settings.llm_base_url,
+            max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature,
+            timeout=settings.llm_timeout,
+        )
+        return FallbackChain([primary, fallback])
+
+    return primary
+
+
+def _get_page_path(page: Any) -> str:
+    """Extract the URL path from a Playwright page for cache keying."""
+    try:
+        parsed = urlparse(page.url)
+        return parsed.path or "/"
+    except Exception:
+        return "/"
+
+
+async def _extract_with_cached_selectors(
+    page: Any,
+    cached_selectors: Dict[str, Any],
+    extraction_defs: Dict[str, Union[ExtractionField, ListExtractionField]],
+    site: str,
+    domain: str,
+    page_path: str,
+) -> Optional[Dict[str, Any]]:
+    """Try to extract data using cached CSS selectors.
+
+    Builds temporary ExtractionField defs from cached selectors and uses
+    DataExtractor. Returns None if extraction fails.
+    """
+    cache = get_selector_cache()
+
+    # Build temporary extraction defs with cached selectors
+    temp_defs: Dict[str, Union[ExtractionField, ListExtractionField]] = {}
+    for name, sel_info in cached_selectors.items():
+        if name not in extraction_defs:
+            continue
+
+        original = extraction_defs[name]
+
+        if isinstance(sel_info, dict) and "row" in sel_info:
+            # List field: sel_info = {"row": "...", "fields": {"col": "..."}}
+            if isinstance(original, ListExtractionField):
+                new_fields = {}
+                for col_name, col_def in original.fields.items():
+                    col_selector = sel_info.get("fields", {}).get(col_name)
+                    if col_selector:
+                        new_fields[col_name] = col_def.model_copy(
+                            update={"selector": col_selector}
+                        )
+                    else:
+                        new_fields[col_name] = col_def
+                temp_defs[name] = original.model_copy(
+                    update={"selector": sel_info["row"], "fields": new_fields}
+                )
+        else:
+            # Scalar field: sel_info is a CSS selector string
+            if isinstance(original, ExtractionField):
+                temp_defs[name] = original.model_copy(update={"selector": sel_info})
+
+    if not temp_defs:
+        return None
+
+    try:
+        extractor = DataExtractor(page)
+        result = await extractor.extract(temp_defs, site=site)
+        cache.record_success(domain, page_path)
+        return result
+    except (DataExtractionError, Exception) as e:
+        logger.warning(
+            "Cached selector extraction failed",
+            extra={"extra_data": {"site": site, "error": str(e)}},
+        )
+        cache.record_failure(domain, page_path)
+        return None
+
+
+async def _extract_with_llm(
+    page: Any,
+    blueprint: BlueprintV2,
+    extraction_defs: Dict[str, Union[ExtractionField, ListExtractionField]],
+    site: str,
+    domain: str,
+    page_path: str,
+) -> Optional[Dict[str, Any]]:
+    """Run full LLM extraction: simplify DOM → build prompt → call LLM → cache selectors.
+
+    Returns extracted data or None if LLM is unavailable / fails.
+    """
+    provider = _create_llm_provider()
+    if provider is None:
+        logger.warning("LLM extraction skipped — no API key configured")
+        return None
+
+    try:
+        # 1. Simplify DOM
+        simplifier = DOMSimplifier(token_budget=settings.llm_token_budget)
+        dom_result = await simplifier.simplify(page)
+
+        logger.info(
+            "DOM simplified",
+            extra={"extra_data": {
+                "site": site,
+                "token_estimate": dom_result.token_estimate,
+                "elements": len(dom_result.element_map),
+            }},
+        )
+
+        # 2. Convert blueprint extract config to field definitions
+        raw_extract = {}
+        for name, field_def in extraction_defs.items():
+            raw_extract[name] = field_def.model_dump(exclude_none=True)
+        field_defs = fields_from_blueprint_extract(raw_extract)
+
+        # 3. Build prompt
+        prompt_builder = ExtractionPromptBuilder()
+        prompt = prompt_builder.build_extraction_prompt(
+            dom_result.html,
+            field_defs,
+            page_context=blueprint.page_context,
+        )
+
+        # 4. Call LLM
+        response = await provider.extract(
+            prompt,
+            system_prompt=prompt_builder.system_prompt,
+        )
+
+        # 5. Parse response
+        result = prompt_builder.parse_response(response)
+
+        logger.info(
+            "LLM extraction complete",
+            extra={"extra_data": {
+                "site": site,
+                "confidence": result.confidence,
+                "fields": len(result.data),
+                "selectors": len(result.selectors),
+            }},
+        )
+
+        # 6. Cache selectors if confidence is adequate
+        if result.selectors and result.confidence >= 0.5:
+            cache = get_selector_cache()
+            cache.put(domain, page_path, result.selectors, confidence=result.confidence)
+
+        return result.data
+
+    except LLMProviderError as e:
+        logger.error(
+            "LLM extraction failed",
+            extra={"extra_data": {"site": site, "error": str(e)}},
+        )
+        return None
+    finally:
+        if provider:
+            await provider.close()
+
+
+async def _extract_with_multimodal(
+    page: Any,
+    blueprint: BlueprintV2,
+    extraction_defs: Dict[str, Union[ExtractionField, ListExtractionField]],
+    site: str,
+) -> Optional[Dict[str, Any]]:
+    """Fallback: use multimodal (screenshot) extraction.
+
+    Returns extracted data or None if unavailable / fails.
+    """
+    provider = _create_llm_provider()
+    if provider is None:
+        return None
+
+    try:
+        raw_extract = {}
+        for name, field_def in extraction_defs.items():
+            raw_extract[name] = field_def.model_dump(exclude_none=True)
+        field_defs = fields_from_blueprint_extract(raw_extract)
+
+        extractor = MultimodalExtractor(provider)
+        result = await extractor.extract_from_screenshot(
+            page,
+            field_defs,
+            page_context=blueprint.page_context,
+        )
+
+        logger.info(
+            "Multimodal extraction complete",
+            extra={"extra_data": {
+                "site": site,
+                "confidence": result.confidence,
+                "fields": len(result.data),
+                "screenshot_bytes": result.screenshot_size_bytes,
+            }},
+        )
+
+        if result.confidence >= 0.3:
+            return result.data
+
+        logger.warning(
+            "Multimodal confidence too low",
+            extra={"extra_data": {"site": site, "confidence": result.confidence}},
+        )
+        return None
+
+    except LLMProviderError as e:
+        logger.error(
+            "Multimodal extraction failed",
+            extra={"extra_data": {"site": site, "error": str(e)}},
+        )
+        return None
+    finally:
+        if provider:
+            await provider.close()
+
+
+async def _extract_with_fallback_selectors(
+    page: Any,
+    blueprint: BlueprintV2,
+    extraction_defs: Dict[str, Union[ExtractionField, ListExtractionField]],
+    site: str,
+) -> Optional[Dict[str, Any]]:
+    """Last resort: use blueprint fallback_selectors for critical fields.
+
+    Returns partial data or None if no fallback selectors are defined.
+    """
+    if not blueprint.fallback_selectors:
+        return None
+
+    temp_defs: Dict[str, Union[ExtractionField, ListExtractionField]] = {}
+    for name, selector in blueprint.fallback_selectors.items():
+        if name in extraction_defs and isinstance(extraction_defs[name], ExtractionField):
+            temp_defs[name] = extraction_defs[name].model_copy(
+                update={"selector": selector}
+            )
+
+    if not temp_defs:
+        return None
+
+    try:
+        extractor = DataExtractor(page)
+        return await extractor.extract(temp_defs, site=site)
+    except Exception as e:
+        logger.warning(
+            "Fallback selector extraction failed",
+            extra={"extra_data": {"site": site, "error": str(e)}},
+        )
+        return None
+
+
+async def _extract_llm_adaptive(
+    page: Any,
+    blueprint: BlueprintV2,
+    extraction_defs: Dict[str, Union[ExtractionField, ListExtractionField]],
+    site: str,
+) -> tuple[Dict[str, Any], str]:
+    """Full LLM-adaptive extraction pipeline with cascading fallbacks.
+
+    Tries in order:
+    1. Cached CSS selectors (fast, no LLM cost)
+    2. Full LLM extraction (DOM → prompt → LLM → parse)
+    3. Multimodal fallback (screenshot → vision LLM)
+    4. Blueprint fallback_selectors (hardcoded last-resort selectors)
+
+    Returns:
+        Tuple of (extracted_data, extraction_method).
+
+    Raises:
+        DataExtractionError: If all methods fail.
+    """
+    domain = blueprint.domain
+    page_path = _get_page_path(page)
+
+    # 1. Try cached selectors
+    cache = get_selector_cache()
+    cache_entry = cache.get(domain, page_path)
+
+    if cache_entry:
+        logger.info(
+            "Trying cached selectors",
+            extra={"extra_data": {
+                "site": site,
+                "confidence": cache_entry.confidence,
+                "hits": cache_entry.hit_count,
+            }},
+        )
+        cached_data = await _extract_with_cached_selectors(
+            page, cache_entry.selectors, extraction_defs, site, domain, page_path
+        )
+        if cached_data:
+            return cached_data, "cached_selectors"
+
+    # 2. Full LLM extraction
+    logger.info("Running LLM extraction", extra={"extra_data": {"site": site}})
+    llm_data = await _extract_with_llm(
+        page, blueprint, extraction_defs, site, domain, page_path
+    )
+    if llm_data:
+        return llm_data, "llm"
+
+    # 3. Multimodal fallback
+    logger.info(
+        "Trying multimodal fallback",
+        extra={"extra_data": {"site": site}},
+    )
+    multimodal_data = await _extract_with_multimodal(
+        page, blueprint, extraction_defs, site
+    )
+    if multimodal_data:
+        return multimodal_data, "multimodal"
+
+    # 4. Fallback selectors
+    logger.info(
+        "Trying fallback selectors",
+        extra={"extra_data": {"site": site}},
+    )
+    fallback_data = await _extract_with_fallback_selectors(
+        page, blueprint, extraction_defs, site
+    )
+    if fallback_data:
+        return fallback_data, "fallback_selectors"
+
+    # All methods exhausted
+    raise DataExtractionError(
+        site=site,
+        detail="All extraction methods failed (cached selectors, LLM, multimodal, fallback selectors).",
+    )
+
+
 async def _execute_blueprint(
     blueprint: BlueprintV2,
     site: str,
@@ -208,9 +596,20 @@ async def _execute_blueprint(
             }
 
         extracted_data: Dict[str, Any] = {}
+        extraction_method = "none"
+
         if extraction_defs:
-            extractor = DataExtractor(page)
-            extracted_data = await extractor.extract(extraction_defs, site=site)
+            if blueprint.is_llm_adaptive:
+                extracted_data, extraction_method = await _extract_llm_adaptive(
+                    page=page,
+                    blueprint=blueprint,
+                    extraction_defs=extraction_defs,
+                    site=site,
+                )
+            else:
+                extractor = DataExtractor(page)
+                extracted_data = await extractor.extract(extraction_defs, site=site)
+                extraction_method = "css_selectors"
 
         # ── Step 4: Cleanup (logout) ──────────────────────────────────────────
         if blueprint.cleanup:
@@ -224,12 +623,17 @@ async def _execute_blueprint(
 
         logger.info(
             "Connection successful",
-            extra={"extra_data": {"site": site, "fields_extracted": len(extracted_data)}},
+            extra={"extra_data": {
+                "site": site,
+                "fields_extracted": len(extracted_data),
+                "extraction_method": extraction_method,
+            }},
         )
 
         return {
             "status": "connected",
             "data": extracted_data,
+            "extraction_method": extraction_method,
         }
 
     except MFARequiredError:
