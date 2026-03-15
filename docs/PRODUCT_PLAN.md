@@ -1,7 +1,7 @@
 # Plaidify — Product Plan
 
-**Version:** 1.0  
-**Date:** March 14, 2026  
+**Version:** 2.0
+**Last Updated:** March 14, 2026
 **Vision:** Plaidify is the open-source infrastructure layer that lets any developer turn their product into a data accessibility platform — for human users and AI agents alike.
 
 ---
@@ -11,15 +11,15 @@
 1. [Product Vision & Positioning](#1-product-vision--positioning)
 2. [Target Users & Use Cases](#2-target-users--use-cases)
 3. [Architecture Overview](#3-architecture-overview)
-4. [Phase 0 — Foundation Hardening](#4-phase-0--foundation-hardening-weeks-1-6)
-5. [Phase 1 — Real Browser Engine](#5-phase-1--real-browser-engine-weeks-7-14)
-6. [Phase 2 — Developer SDK & Platform](#6-phase-2--developer-sdk--platform-weeks-15-24)
-7. [Phase 3 — AI Agent Protocol](#7-phase-3--ai-agent-protocol-weeks-25-34)
-8. [Phase 4 — Browser Actions (Write)](#8-phase-4--browser-actions-write-operations-weeks-35-44)
-9. [Phase 5 — Enterprise & Scale](#9-phase-5--enterprise--scale-weeks-45-56)
-10. [Team Structure](#10-team-structure)
+4. [✅ Phase 0 — Foundation (COMPLETE)](#4--phase-0--foundation-complete)
+5. [✅ Phase 1 — Browser Engine (COMPLETE)](#5--phase-1--browser-engine-complete)
+6. [🔥 Phase 2 — Developer SDK & Platform (Weeks 1-3)](#6--phase-2--developer-sdk--platform-weeks-1-3)
+7. [Phase 3 — AI Agent Protocol (Weeks 3-5)](#7-phase-3--ai-agent-protocol-weeks-3-5)
+8. [Phase 4 — Browser Actions / Write Ops (Weeks 5-7)](#8-phase-4--browser-actions--write-ops-weeks-5-7)
+9. [Phase 5 — Enterprise & Scale (Weeks 7-10)](#9-phase-5--enterprise--scale-weeks-7-10)
+10. [Week-by-Week Execution Calendar](#10-week-by-week-execution-calendar)
 11. [Risk Matrix](#11-risk-matrix)
-12. [Success Metrics per Phase](#12-success-metrics-per-phase)
+12. [Success Metrics](#12-success-metrics)
 13. [Open Source & Community Strategy](#13-open-source--community-strategy)
 
 ---
@@ -34,7 +34,7 @@ AI agents face an even worse version of this problem. They need authenticated ac
 ### The Solution
 Plaidify is **open-source infrastructure** that:
 
-1. **For Developers:** Drop a JSON blueprint into your project → get a REST API that authenticates to any site and returns structured data. Any developer can turn their app into a data aggregation platform.
+1. **For Developers:** Drop a JSON blueprint into your project → get a REST API that authenticates to any site and returns structured data.
 
 2. **For AI Agents:** A standardized protocol (MCP-compatible) that allows AI agents to safely request, receive, and act on authenticated web data with user consent.
 
@@ -56,19 +56,14 @@ Plaidify is **open-source infrastructure** that:
 ## 2. Target Users & Use Cases
 
 ### User Persona 1: The App Developer
-**Name:** Sarah, Full-Stack Developer  
-**Goal:** She's building a personal finance app and needs to pull transaction data from 5 regional banks that have no API.
+**Name:** Sarah, Full-Stack Developer
+**Goal:** Building a personal finance app. Needs to pull transaction data from 5 regional banks with no API.
 
 **How she uses Plaidify:**
-```bash
-pip install plaidify
-```
 ```python
 from plaidify import Plaidify
 
 pfy = Plaidify()
-
-# Her app's backend calls this when a user connects their bank
 result = await pfy.connect(
     blueprint="us_regional_bank",
     credentials={"username": "user@bank.com", "password": "***"},
@@ -77,71 +72,45 @@ result = await pfy.connect(
 # result = {"status": "connected", "data": {"balance": 4521.30, "transactions": [...]}}
 ```
 
-She never writes a scraper. She just picks a blueprint from the community registry (or writes a 20-line JSON file for her specific bank) and ships.
-
----
-
 ### User Persona 2: The AI Agent Builder
-**Name:** Marcus, AI Engineer at an agent startup  
-**Goal:** He's building an AI assistant that helps users manage their insurance. The agent needs to log into the user's insurance portal, read their policy, and summarize it.
+**Name:** Marcus, AI Engineer at an agent startup
+**Goal:** Building an AI assistant that manages insurance. Agent needs to read the user's policy from their insurance portal.
 
 **How he uses Plaidify:**
 ```python
-# Marcus's AI agent uses Plaidify as a tool
 from plaidify.agent import PlaidifyTool
 
 tool = PlaidifyTool(
-    consent_mode="explicit",      # User must approve each access
-    data_scope=["policy_summary", "premium_amount"],  # Agent can only see these fields
-    session_ttl=300               # Session expires in 5 minutes
+    consent_mode="explicit",
+    data_scope=["policy_summary", "premium_amount"],
+    session_ttl=300
 )
-
-# The agent calls this during a conversation
-data = await tool.fetch(
-    blueprint="state_farm_insurance",
-    user_token="usr_abc123"       # Pre-authorized by user via Plaidify Link
-)
-# Agent receives ONLY the scoped fields, nothing else
+data = await tool.fetch(blueprint="state_farm_insurance", user_token="usr_abc123")
 ```
-
-The agent never sees raw credentials. The user authorized access via a Plaidify Link flow (like Plaid Link), and the agent only sees the fields it was scoped to.
-
----
 
 ### User Persona 3: The Data Accessibility Startup
-**Name:** Priya, CTO of a startup that aggregates utility bills  
-**Goal:** She wants to build "Plaid for utilities" without building scraping infrastructure from scratch.
+**Name:** Priya, CTO of a utility bill aggregation startup
+**Goal:** Build "Plaid for utilities" without building scraping infrastructure from scratch.
 
-**How she uses Plaidify:**
-```yaml
-# Her docker-compose.yml
-services:
-  plaidify:
-    image: plaidify/server:latest
-    environment:
-      - VAULT_URL=https://vault.company.com
-      - DATABASE_URL=postgres://...
-      - REDIS_URL=redis://...
-      - LICENSE_KEY=...  # Optional commercial license for enterprise features
-    volumes:
-      - ./blueprints:/connectors  # Her proprietary blueprints
-```
-
-She self-hosts Plaidify, writes blueprints for 50 utility companies, and exposes a white-labeled API to her customers. Her entire scraping infrastructure is Plaidify.
-
----
-
-### User Persona 4: The Enterprise
-**Name:** A large bank's innovation team  
-**Goal:** They need to aggregate customer data from 200 external sources for an open-banking product.
-
-**Requirements:** SOC 2, audit logs, credential vaulting, rate limiting, multi-region deployment.
-
-**How they use Plaidify:** Plaidify Enterprise (commercial license on top of the open-source core) with Vault integration, audit logging, and a management dashboard.
+**How she uses Plaidify:** Self-hosts Plaidify, writes blueprints for 50 utility companies, exposes a white-labeled API to her customers.
 
 ---
 
 ## 3. Architecture Overview
+
+### Current Architecture (Phase 1 Complete)
+
+```
+┌──────────────────┐        ┌─────────────────────────────────────┐
+│                  │        │            Plaidify v0.2.0           │
+│   Your App /     │  POST  │                                     │
+│   AI Agent /     ├───────►│  1. Load Blueprint (JSON V2)        │
+│   MCP Client     │        │  2. Launch Browser (Playwright)     │
+│                  │◄───────┤  3. Authenticate + Handle MFA       │
+│                  │  JSON  │  4. Extract Typed Data               │
+│                  │        │  5. Return Structured Response       │
+└──────────────────┘        └─────────────────────────────────────┘
+```
 
 ### Target Architecture (End of Phase 5)
 
@@ -150,522 +119,274 @@ She self-hosts Plaidify, writes blueprints for 50 utility companies, and exposes
 │                          PLAIDIFY PLATFORM                              │
 │                                                                         │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
-│  │  REST API     │  │  Python SDK  │  │  Agent Proto │  │  Link UI   │ │
-│  │  (FastAPI)    │  │  (pip pkg)   │  │  (MCP/A2A)   │  │  (React)   │ │
+│  │  REST API     │  │  Python SDK  │  │  MCP Server  │  │  Link UI   │ │
+│  │  (FastAPI)    │  │  (pip pkg)   │  │  (Agents)    │  │  (React)   │ │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └─────┬──────┘ │
-│         │                 │                 │                 │         │
 │         └─────────────────┼─────────────────┼─────────────────┘         │
 │                           ▼                                             │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │                     ORCHESTRATION LAYER                          │   │
 │  │  • Session Manager    • Consent Engine    • Rate Limiter         │   │
-│  │  • Retry/Circuit Breaker   • Queue (Celery/Redis)               │   │
+│  │  • Retry/Circuit Breaker   • Queue (Redis)                      │   │
 │  └──────────────────────────────┬──────────────────────────────────┘   │
 │                                 ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                      BROWSER ENGINE                              │   │
+│  │                      BROWSER ENGINE  ✅                          │   │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐     │   │
-│  │  │  Playwright   │  │  HTTP Client │  │  Headless Pool    │     │   │
-│  │  │  Driver       │  │  Driver      │  │  (Browser Mgmt)   │     │   │
+│  │  │  Playwright   │  │  Step        │  │  Browser Pool     │     │   │
+│  │  │  Driver  ✅   │  │  Executor ✅ │  │  Manager ✅       │     │   │
 │  │  └──────────────┘  └──────────────┘  └───────────────────┘     │   │
 │  └──────────────────────────────┬──────────────────────────────────┘   │
 │                                 ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                    BLUEPRINT REGISTRY                            │   │
-│  │  • JSON Blueprints   • Python Connectors   • Community Registry │   │
-│  │  • Blueprint Validator   • Auto-Generator (AI)                  │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                     DATA & SECURITY LAYER                        │   │
-│  │  • PostgreSQL/SQLite  • Credential Vault  • Encryption (Fernet) │   │
-│  │  • Audit Log          • Consent Records   • Session Store       │   │
+│  │                    DATA & SECURITY LAYER  ✅                     │   │
+│  │  • PostgreSQL/SQLite ✅  • AES-256-GCM ✅  • JWT Auth ✅       │   │
+│  │  • Alembic Migrations ✅  • Audit Log       • Consent Records   │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 4. Phase 0 — Foundation Hardening (Weeks 1-6)
+## 4. ✅ Phase 0 — Foundation (COMPLETE)
 
-**Goal:** Take what exists today and make it production-quality. No new features — just make the current code rock-solid.
+**Status:** ✅ Shipped in v0.1.0
 
-### 4.1 Security Overhaul
-| Task | Details | Priority |
-|------|---------|----------|
-| Remove hardcoded secrets | `ENCRYPTION_KEY` and `JWT_SECRET_KEY` must ONLY come from env vars. Fail-fast if not set. | P0 |
-| Rotate default Fernet key | Remove the default key entirely. Require explicit configuration. | P0 |
-| Credential encryption at rest | Verify Fernet encryption is applied correctly. Add key rotation support. | P0 |
-| Input validation | Sanitize all user inputs. Add rate limiting on auth endpoints. | P0 |
-| HTTPS enforcement | Add HSTS headers, secure cookie flags. | P1 |
-| Dependency audit | Run `pip-audit` and `safety check`. Pin all dependency versions. | P1 |
-| CORS configuration | Lock down CORS to specific origins (currently wide open). | P1 |
+| Component | Status | Details |
+|-----------|--------|---------|
+| Security — no hardcoded secrets | ✅ | App fails to start without `ENCRYPTION_KEY` + `JWT_SECRET_KEY` |
+| AES-256-GCM encryption | ✅ | Upgraded from Fernet/AES-128-CBC to OWASP-recommended AEAD |
+| Input validation | ✅ | Pydantic models on all endpoints, password min length |
+| Custom exception hierarchy | ✅ | 15 exception types (`PlaidifyError`, `BlueprintNotFoundError`, etc.) |
+| Structured logging | ✅ | JSON (prod) / colored text (dev), correlation IDs |
+| Pydantic Settings | ✅ | All config from env vars, fail-fast on missing |
+| 98 unit tests | ✅ | 8 test suites, auth isolation verified |
+| CI pipeline | ✅ | GitHub Actions: lint, test (3.9–3.12), security audit, Docker |
+| Alembic migrations | ✅ | Initial schema: users, links, access_tokens |
+| Multi-stage Docker | ✅ | Non-root user, health check, <200MB image |
+| Health endpoint | ✅ | `GET /health` with DB connectivity check |
+| 19 API endpoints | ✅ | Full Swagger docs at `/docs` |
 
-### 4.2 Code Quality
-| Task | Details |
-|------|---------|
-| Type hints everywhere | Add full type annotations to all functions and methods. |
-| Docstrings | Google-style docstrings on every public function/class. |
-| Remove dead code | Unreachable `return response_data` after `raise` in `/connect`. Duplicate `from fastapi import HTTPException` imports inside functions. |
-| Error handling | Create custom exception hierarchy: `PlaidifyError`, `BlueprintNotFoundError`, `ConnectionFailedError`, `AuthenticationError`, etc. |
-| Logging | Replace all `print` statements with structured logging (JSON format). Add correlation IDs per request. |
-| Configuration | Move all config to a Pydantic `Settings` class with env var support. |
+---
 
-### 4.3 Testing
-| Task | Details | Target |
+## 5. ✅ Phase 1 — Browser Engine (COMPLETE)
+
+**Status:** ✅ Shipped in v0.2.0
+
+| Component | Status | Details |
+|-----------|--------|---------|
+| Playwright integration | ✅ | Headless Chromium, real browser automation |
+| Browser Pool Manager | ✅ | Configurable concurrency, idle timeout, cleanup |
+| Blueprint V2 schema | ✅ | Auth steps, MFA detection, typed extraction, cleanup |
+| Step Executor | ✅ | `goto`, `fill`, `click`, `wait`, variable interpolation |
+| Data Extractor | ✅ | Typed fields (text, currency, date, sensitive), list/table extraction |
+| MFA Manager | ✅ | Async event-based, detects challenges, pauses for user input |
+| GreenGrid Energy demo | ✅ | Full utility portal + interactive demo UI + one-command launcher |
+| 13-field extraction | ✅ | Account info, bills, usage history, payments — one API call |
+| Error handling | ✅ | Auth failures, timeouts, MFA required, blueprint errors |
+
+**Try it now:** `python run_demo.py` → http://localhost:8000/ui/demo.html
+
+---
+
+## 6. 🔥 Phase 2 — Developer SDK & Platform (Weeks 1-3)
+
+**Goal:** Make Plaidify embeddable. Developer installs SDK → first successful extraction in <30 minutes.
+
+**Start date:** March 17, 2026
+
+---
+
+### Week 1: Python SDK + CLI Foundation (Mar 17-21)
+
+#### Monday-Tuesday: Python SDK Core
+
+| Task | Details | Output |
 |------|---------|--------|
-| Unit tests | Test every endpoint, every model, every utility function. | 90%+ coverage |
-| Integration tests | Test full `/create_link` → `/submit_credentials` → `/fetch_data` flow. | All flows covered |
-| Blueprint validation tests | Test loading, parsing, and error handling for malformed blueprints. | Edge cases |
-| Auth tests | Test registration, login, token expiry, invalid tokens, OAuth2 flow. | All auth paths |
-| CI pipeline | GitHub Actions: lint (ruff), type check (mypy), test (pytest), security (pip-audit). | Green on every PR |
+| Package scaffold | `plaidify/` package: `__init__.py`, `client.py`, `config.py`, `exceptions.py` | PyPI-ready structure |
+| `PlaidifyClient` class | Async client wrapping all API endpoints | Singleton client |
+| `connect()` method | One-call connect + extract, wraps `POST /connect` | Returns typed `ConnectResult` |
+| MFA callback | Accept `mfa_handler` callback for inline MFA resolution | Async callback pattern |
+| Link flow methods | `create_link()`, `submit_credentials()`, `fetch_data()` | Full Plaid-style flow |
+| Type stubs | Full type annotations + `py.typed` marker | IDE autocomplete works |
 
-### 4.4 Database
-| Task | Details |
-|------|---------|
-| Alembic migrations | Add Alembic for database migrations. Never use `create_all()` in production. |
-| PostgreSQL support | Test and document PostgreSQL as the production database. SQLite for dev only. |
-| Connection pooling | Configure SQLAlchemy connection pool size, overflow, timeout. |
-| Indexes | Add indexes on frequently queried columns (`user_id`, `link_token`). |
-
-### 4.5 DevOps
-| Task | Details |
-|------|---------|
-| Multi-stage Dockerfile | Separate build and runtime stages. Minimize image size. |
-| Health check endpoint | `GET /health` that checks DB connectivity, returns version info. |
-| Graceful shutdown | Handle SIGTERM properly, drain connections. |
-| Environment configs | `.env.example` with all required variables documented. |
-
-### Deliverables
-- [ ] All hardcoded secrets removed
-- [ ] 90%+ test coverage
-- [ ] CI pipeline passing (lint, type check, test, security)
-- [ ] Alembic migrations working
-- [ ] Docker image < 200MB
-- [ ] `GET /health` endpoint returning system status
-
----
-
-## 5. Phase 1 — Real Browser Engine (Weeks 7-14)
-
-**Goal:** Replace the stub engine with a real browser automation layer that can actually log into websites.
-
-### 5.1 Engine Architecture
-```
-Blueprint (JSON) ──▶ Step Compiler ──▶ Execution Plan ──▶ Driver (Playwright)
-                                                              │
-                                                              ▼
-                                                        Browser Pool
-                                                     (managed instances)
-```
-
-### 5.2 Playwright Integration
-| Task | Details |
-|------|---------|
-| Install Playwright | Add `playwright` to requirements. Include browser install in Docker. |
-| Browser Pool Manager | Pool of reusable browser contexts. Configure max concurrency, idle timeout, cleanup. |
-| Session isolation | Each connection gets its own `BrowserContext` (cookies, storage isolated). |
-| Resource blocking | Block images, fonts, analytics scripts for speed. Configurable per blueprint. |
-| Proxy support | SOCKS5/HTTP proxy per connection. Rotate proxies from a pool. |
-| Stealth mode | Anti-detection: randomize viewport, user-agent, WebGL fingerprint. Use `playwright-stealth`. |
-
-### 5.3 Blueprint V2 Schema
-```json
-{
-  "schema_version": "2.0",
-  "name": "Example Bank",
-  "domain": "example-bank.com",
-  "tags": ["banking", "us", "regional"],
-  
-  "auth": {
-    "type": "form",
-    "steps": [
-      {
-        "action": "goto",
-        "url": "https://example-bank.com/login"
-      },
-      {
-        "action": "fill",
-        "selector": "#username",
-        "value": "{{username}}"
-      },
-      {
-        "action": "fill",
-        "selector": "#password",
-        "value": "{{password}}"
-      },
-      {
-        "action": "click",
-        "selector": "#login-btn"
-      },
-      {
-        "action": "wait",
-        "selector": "#dashboard",
-        "timeout": 10000
-      }
-    ]
-  },
-
-  "mfa": {
-    "detection": {
-      "selector": "#otp-input",
-      "timeout": 3000
-    },
-    "type": "otp_input",
-    "handler": "user_prompt"
-  },
-
-  "extract": {
-    "balance": {
-      "selector": "#account-balance",
-      "type": "currency",
-      "transform": "strip_dollar_sign"
-    },
-    "transactions": {
-      "selector": "#transaction-table tbody tr",
-      "type": "list",
-      "fields": {
-        "date": { "selector": "td:nth-child(1)", "type": "date" },
-        "description": { "selector": "td:nth-child(2)", "type": "text" },
-        "amount": { "selector": "td:nth-child(3)", "type": "currency" }
-      }
-    },
-    "account_number": {
-      "selector": "#account-num",
-      "type": "text",
-      "sensitive": true
-    }
-  },
-
-  "cleanup": {
-    "steps": [
-      { "action": "click", "selector": "#logout-btn" }
-    ]
-  },
-
-  "rate_limit": {
-    "max_requests_per_hour": 10,
-    "min_interval_seconds": 30
-  },
-
-  "health_check": {
-    "url": "https://example-bank.com",
-    "expected_status": 200
-  }
-}
-```
-
-### 5.4 Step Executor
-| Step Type | Description |
-|-----------|-------------|
-| `goto` | Navigate to URL. Wait for network idle. |
-| `fill` | Type text into input. Support `{{variable}}` interpolation. |
-| `click` | Click element. Wait for navigation if needed. |
-| `wait` | Wait for selector to appear. Configurable timeout. |
-| `screenshot` | Capture page state (for debugging, never stored in production). |
-| `extract` | Pull data from the page using selectors. Apply type transforms. |
-| `conditional` | If selector exists, branch to different steps (for MFA, error pages). |
-| `scroll` | Scroll to element or position (for lazy-loaded content). |
-| `select` | Choose option from dropdown. |
-| `iframe` | Switch context into an iframe. |
-| `wait_for_navigation` | Wait for page load after form submission. |
-| `execute_js` | Run JavaScript in page context (escape hatch, use sparingly). |
-
-### 5.5 Data Extraction & Normalization
-| Feature | Details |
-|---------|---------|
-| Type system | `text`, `currency`, `date`, `number`, `email`, `phone`, `list`, `table` |
-| Transforms | `strip_whitespace`, `strip_dollar_sign`, `parse_date(format)`, `to_lowercase`, `regex_extract(pattern)` |
-| Sensitive fields | Fields marked `sensitive: true` are encrypted in transit and never logged. |
-| Pagination | Support `next_page` action to extract across multiple pages. |
-
-### 5.6 Error Handling
-| Scenario | Response |
-|----------|----------|
-| Login failed (wrong creds) | `{"status": "auth_failed", "error": "Invalid credentials"}` |
-| MFA required | `{"status": "mfa_required", "mfa_type": "otp", "session_id": "..."}` |
-| Site unreachable | `{"status": "site_error", "error": "Connection timeout"}` |
-| Blueprint broken | `{"status": "blueprint_error", "error": "Selector #dashboard not found"}` |
-| Rate limited by site | `{"status": "rate_limited", "retry_after": 60}` |
-| CAPTCHA detected | `{"status": "captcha_required", "captcha_type": "recaptcha"}` |
-
-### 5.7 MFA Support (Basic)
-| MFA Type | Handling |
-|----------|----------|
-| OTP (SMS/Authenticator) | Return `mfa_required` status. Client submits OTP via `POST /mfa/submit`. Engine enters it and continues. |
-| Email code | Same as OTP, user retrieves code from email and submits. |
-| Security questions | Blueprint defines question selectors. Engine returns question text. Client submits answer. |
-| Push notification | Return `mfa_required` with `type: push`. Engine polls for page change (user approves on phone). |
-
-### Deliverables
-- [ ] Playwright engine replaces stub logic
-- [ ] Browser pool manager with configurable concurrency
-- [ ] Blueprint V2 schema with full step vocabulary
-- [ ] At least 5 working blueprints for real public sites (demo/test sites)
-- [ ] MFA flow working for OTP
-- [ ] Data extraction with type system and transforms
-- [ ] Error handling for all failure scenarios
-- [ ] Performance: < 10s average connection time, < 500MB memory per 10 concurrent sessions
-
----
-
-## 6. Phase 2 — Developer SDK & Platform (Weeks 15-24)
-
-**Goal:** Make Plaidify embeddable. A developer installs our SDK and integrates in under 30 minutes.
-
-### 6.1 Python SDK (`pip install plaidify`)
 ```python
-from plaidify import Plaidify, PlaidifyConfig
+# Target API by Tuesday:
+from plaidify import Plaidify
 
-# Initialize
-pfy = Plaidify(
-    config=PlaidifyConfig(
-        server_url="https://your-plaidify-instance.com",  # Or self-hosted
-        api_key="pk_live_...",
-        # OR run embedded (no server needed):
-        mode="embedded",  # Runs Playwright locally
-    )
-)
+pfy = Plaidify(server_url="http://localhost:8000")
 
-# Simple connection
-result = await pfy.connect(
-    blueprint="chase_bank",
-    credentials={"username": "user", "password": "pass"}
-)
+# Simple one-call
+result = await pfy.connect("greengrid_energy", username="demo_user", password="demo_pass")
+print(result.data["current_bill"])  # "$142.57"
 
-# With MFA callback
-async def handle_mfa(mfa_request):
-    code = input(f"Enter your {mfa_request.type} code: ")
-    return code
+# With MFA
+async def handle_mfa(challenge):
+    return input(f"Enter {challenge.type} code: ")
 
-result = await pfy.connect(
-    blueprint="chase_bank",
-    credentials={"username": "user", "password": "pass"},
-    mfa_handler=handle_mfa
-)
-
-# Link flow (Plaid-style)
-link = await pfy.create_link(site="chase_bank", user_id="usr_123")
-# → Returns link_url that you embed in your frontend
-
-# After user completes the link:
-data = await pfy.fetch(link_token=link.token, extract=["balance", "transactions"])
+result = await pfy.connect("greengrid_energy", username="mfa_user", password="mfa_pass", mfa_handler=handle_mfa)
 ```
 
-### 6.2 JavaScript/TypeScript SDK (`npm install plaidify`)
-```typescript
-import { Plaidify } from 'plaidify';
+#### Wednesday-Thursday: CLI Tool
 
-const pfy = new Plaidify({
-  serverUrl: 'https://your-plaidify-instance.com',
-  apiKey: 'pk_live_...',
-});
+| Task | Details | Output |
+|------|---------|--------|
+| CLI scaffold | Click-based CLI in `plaidify/cli.py` | `plaidify --help` |
+| `plaidify connect` | Test a blueprint from the terminal | Quick testing |
+| `plaidify blueprint validate` | Validate JSON schema + required fields | CI-friendly |
+| `plaidify blueprint test` | Run a blueprint against a live site, show results | Developer feedback loop |
+| `plaidify serve` | Start the Plaidify server | Replaces `uvicorn` command |
+| `plaidify demo` | Start both servers + open browser | One-word demo |
 
-// Create a link for frontend embedding
-const link = await pfy.createLink({
-  site: 'chase_bank',
-  userId: 'usr_123',
-  redirectUrl: 'https://yourapp.com/callback',
-});
-
-// In your frontend:
-// <PlaidifyLink token={link.token} onSuccess={handleSuccess} />
-```
-
-### 6.3 Plaidify Link (Frontend Component)
-Embeddable UI component (like Plaid Link) that handles the credential flow securely:
-
-```
-┌──────────────────────────────────────────┐
-│          Connect Your Account            │
-│                                          │
-│  ┌────────────────────────────────────┐  │
-│  │  Search for your bank or site...   │  │
-│  └────────────────────────────────────┘  │
-│                                          │
-│  🏦 Chase Bank                           │
-│  🏦 Bank of America                      │
-│  🏦 Wells Fargo                          │
-│  📱 T-Mobile                             │
-│  ⚡ PG&E                                 │
-│                                          │
-│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
-│                                          │
-│  Username: [___________________]         │
-│  Password: [___________________]         │
-│                                          │
-│         [ Connect Securely ]             │
-│                                          │
-│  🔒 Powered by Plaidify (open source)   │
-│  Your credentials are encrypted and      │
-│  never stored on the developer's server. │
-└──────────────────────────────────────────┘
-```
-
-**Key properties:**
-- Renders in an iframe/modal on the developer's site
-- Credentials go directly to the Plaidify server, never touch the developer's backend
-- Shows real-time connection progress
-- Handles MFA inline
-- Returns a `link_token` to the developer's callback
-
-### 6.4 Blueprint Registry
-| Feature | Details |
-|---------|---------|
-| Community registry | Public registry at `registry.plaidify.dev` where anyone can publish blueprints |
-| CLI tool | `plaidify registry search "bank"`, `plaidify registry install chase_bank` |
-| Blueprint validation | Automated testing: does the blueprint's login URL resolve? Are selectors valid? |
-| Versioning | Blueprints have semver versions. Breaking changes = major version bump. |
-| Auto-update | SDK can auto-update blueprints (with pinning support). |
-| Quality tiers | `community` (unverified), `tested` (CI-validated), `certified` (manually reviewed) |
-
-### 6.5 CLI Tool
 ```bash
-# Initialize a new Plaidify project
-plaidify init
-
-# Create a new blueprint interactively
-plaidify blueprint create
-# → Opens browser, you click elements, it generates the JSON
-
-# Test a blueprint locally
-plaidify blueprint test chase_bank --username test --password test
-
-# Validate blueprint syntax
-plaidify blueprint validate ./connectors/chase_bank.json
-
-# Start local server
-plaidify serve --port 8000
-
-# Publish blueprint to registry
-plaidify registry publish ./connectors/chase_bank.json
+# Target by Thursday:
+pip install plaidify
+plaidify demo                                          # launches everything
+plaidify connect greengrid_energy -u demo_user -p demo_pass
+plaidify blueprint validate ./connectors/my_site.json
+plaidify blueprint test ./connectors/my_site.json -u user -p pass
 ```
 
-### 6.6 Webhook System
-```python
-# Developer registers webhooks
-POST /webhooks/register
-{
-  "url": "https://yourapp.com/plaidify-webhook",
-  "events": ["connection.success", "connection.failed", "connection.mfa_required", "data.updated"],
-  "secret": "whsec_..."
-}
-```
+#### Friday: Tests + Publish to PyPI
 
-Events:
-| Event | When |
-|-------|------|
-| `connection.success` | Login succeeded, data extracted |
-| `connection.failed` | Login failed (bad creds, site down, etc.) |
-| `connection.mfa_required` | MFA challenge detected, awaiting user input |
-| `connection.expired` | Session expired, re-auth needed |
-| `data.updated` | Scheduled refresh found new data |
-| `blueprint.deprecated` | A blueprint the developer uses is being retired |
-
-### 6.7 Scheduled Data Refresh
-```python
-# Developer sets up recurring data pulls
-link = await pfy.create_link(
-    site="chase_bank",
-    user_id="usr_123",
-    refresh_schedule="daily",  # or "hourly", "weekly", cron expression
-    webhook_url="https://yourapp.com/webhook"
-)
-```
-
-### Deliverables
-- [ ] Python SDK published to PyPI
-- [ ] JavaScript SDK published to npm
-- [ ] Plaidify Link frontend component (React, vanilla JS)
-- [ ] Blueprint Registry with search, install, publish
-- [ ] CLI tool for blueprint development and testing
-- [ ] Webhook system with retry logic
-- [ ] Scheduled refresh with configurable intervals
-- [ ] Documentation site (Docusaurus/MkDocs) with quickstarts, guides, API reference
-- [ ] 25+ working blueprints in the registry
+| Task | Details |
+|------|---------|
+| Unit tests for SDK client | Mock server responses, test connect, link flow, error handling |
+| Integration test | SDK → live API → example site → data returned |
+| `pyproject.toml` for SDK | Package metadata, dependencies, entry points (`plaidify` CLI) |
+| Publish to PyPI | `pip install plaidify` works globally |
+| SDK README | Quickstart, full API reference, examples |
 
 ---
 
-## 7. Phase 3 — AI Agent Protocol (Weeks 25-34)
+### Week 2: JavaScript SDK + Plaidify Link UI (Mar 24-28)
 
-**Goal:** Make Plaidify the standard way AI agents access authenticated web data. Safe, scoped, auditable.
+#### Monday-Tuesday: JavaScript / TypeScript SDK
 
-### 7.1 The Problem for AI Agents
-AI agents today have no safe way to access user data behind login walls. Current approaches:
-- **Give the agent your password** — catastrophic security risk
-- **Screen sharing / computer use** — slow, brittle, no data structure
-- **Custom API integrations** — doesn't scale, most sites have no API
+| Task | Details | Output |
+|------|---------|--------|
+| TypeScript project | `tsconfig.json`, `rollup` bundler, ESM + CJS output | `npm install plaidify` |
+| `PlaidifyClient` class | `fetch`-based client matching Python API surface | Cross-platform |
+| `connect()` method | One-call connect + extract | Returns typed `ConnectResult` |
+| Link flow methods | `createLink()`, `submitCredentials()`, `fetchData()` | Mirror Python |
+| Browser + Node support | Works in both environments | Universal package |
+| Tests + publish to npm | Jest tests, publish to npm registry | `npm install plaidify` works |
 
-Plaidify solves this: the user authorizes access once via Plaidify Link, and the agent uses a scoped, time-limited token to fetch specific data fields.
-
-### 7.2 Consent & Scoping Model
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    USER CONSENT FLOW                         │
-│                                                              │
-│  1. Agent requests: "I need your bank balance and           │
-│     last 30 days of transactions from Chase"                │
-│                              │                               │
-│                              ▼                               │
-│  2. Plaidify shows consent screen to user:                  │
-│     ┌──────────────────────────────────────┐                │
-│     │  "BudgetBot" wants to access:        │                │
-│     │                                       │                │
-│     │  ✅ Account balance                   │                │
-│     │  ✅ Transactions (last 30 days)       │                │
-│     │  ❌ Account number (not requested)    │                │
-│     │  ❌ Personal info (not requested)     │                │
-│     │                                       │                │
-│     │  Access expires: 24 hours             │                │
-│     │                                       │                │
-│     │  [ Deny ]     [ Allow ]               │                │
-│     └──────────────────────────────────────┘                │
-│                              │                               │
-│  3. User approves → Agent receives scoped token             │
-│  4. Agent can ONLY read approved fields                     │
-│  5. Token expires automatically                              │
-└─────────────────────────────────────────────────────────────┘
+```typescript
+// Target by Tuesday:
+import { Plaidify } from 'plaidify';
+const pfy = new Plaidify({ serverUrl: 'http://localhost:8000' });
+const result = await pfy.connect('greengrid_energy', { username: 'demo_user', password: 'demo_pass' });
+console.log(result.data.current_bill); // "$142.57"
 ```
 
-### 7.3 Agent SDK
-```python
-from plaidify.agent import PlaidifyAgent
+#### Wednesday-Thursday: Plaidify Link UI Component
 
-agent_client = PlaidifyAgent(
-    agent_id="agent_budgetbot_123",
-    agent_name="BudgetBot",
-    api_key="pk_agent_...",
-    consent_mode="explicit",  # Always ask user
-)
+| Task | Details | Output |
+|------|---------|--------|
+| React component | `<PlaidifyLink>` embeddable widget | Drop-in for React apps |
+| Vanilla JS version | `PlaidifyLink.open({ ... })` for non-React apps | Universal |
+| Multi-step flow | Provider search → credentials → progress → MFA → success | Full UX |
+| Theming API | CSS custom properties for brand customization | White-labelable |
+| Event callbacks | `onSuccess`, `onError`, `onMFA`, `onClose` | Developer hooks |
+| Iframe security | Credentials go directly to Plaidify, never touch developer backend | Secure by default |
 
-# Request access (triggers user consent flow)
-consent = await agent_client.request_access(
-    user_id="usr_123",
-    site="chase_bank",
-    scopes=["balance", "transactions"],
-    duration="24h",
-    reason="To analyze your spending patterns"  # Shown to user
-)
-
-# After user approves:
-if consent.approved:
-    data = await agent_client.fetch(
-        consent_token=consent.token,
-        extract=["balance", "transactions"]
-    )
-    # data.balance = 4521.30
-    # data.transactions = [{"date": "...", "description": "...", "amount": ...}, ...]
-    
-    # Attempting to access a field not in scope raises ScopeViolationError
-    data = await agent_client.fetch(
-        consent_token=consent.token,
-        extract=["account_number"]  # ❌ Not in approved scope
-    )
-    # → raises plaidify.ScopeViolationError
+```jsx
+// Target by Thursday:
+<PlaidifyLink
+  serverUrl="http://localhost:8000"
+  onSuccess={(result) => console.log(result.data)}
+  onError={(err) => console.error(err)}
+  theme={{ primaryColor: '#22c55e' }}
+/>
 ```
 
-### 7.4 MCP (Model Context Protocol) Server
-Plaidify runs as an MCP server that any MCP-compatible AI agent can use:
+#### Friday: Cross-platform Testing + Polish
+
+| Task | Details |
+|------|---------|
+| E2E test | JS SDK → API → example site → Link UI renders results |
+| Cross-browser | Chrome, Firefox, Safari verification |
+| Bundle size | Tree-shake to <20KB gzipped |
+| Storybook | Interactive component docs for Link UI |
+| npm README | Quickstart, API reference, Storybook link |
+
+---
+
+### Week 3: Blueprint Registry + Webhooks + Ship v0.3.0 (Mar 31 - Apr 4)
+
+#### Monday-Tuesday: Blueprint Registry
+
+| Task | Details | Output |
+|------|---------|--------|
+| Registry data model | Blueprint metadata table: name, domain, version, author, tags, quality tier | DB migration |
+| `POST /registry/publish` | Upload + validate a blueprint | API endpoint |
+| `GET /registry/search` | Search by name, domain, tag | API endpoint |
+| `GET /registry/{name}` | Download blueprint JSON | API endpoint |
+| CLI integration | `plaidify registry search "utility"`, `plaidify registry install greengrid_energy` | CLI commands |
+| Quality tiers | `community` → `tested` (CI-validated) → `certified` (reviewed) | Trust levels |
+
+#### Wednesday-Thursday: Webhook System
+
+| Task | Details | Output |
+|------|---------|--------|
+| `POST /webhooks` | Register webhook URL + events + HMAC secret | Registration |
+| Event types | `connection.success`, `connection.failed`, `connection.mfa_required`, `data.updated` | 4 events |
+| HMAC-signed delivery | Payloads signed with shared secret, retry 3x with backoff | Reliable delivery |
+| Webhook CRUD | `GET /webhooks`, `DELETE /webhooks/{id}`, `POST /webhooks/{id}/test` | Management |
+| SDK integration | `pfy.on("connection.success", handler)` in Python and JS | Developer-friendly |
+
+#### Friday: Scheduled Refresh + v0.3.0 Release
+
+| Task | Details |
+|------|---------|
+| Scheduled refresh | `refresh_schedule` param on `create_link` (hourly/daily/weekly/cron) |
+| Background worker | Celery/Redis or APScheduler for scheduled jobs |
+| `data.updated` webhook | Fires when scheduled refresh finds new data |
+| **Tag v0.3.0** | Python SDK + JS SDK + Link UI + Registry + Webhooks |
+| CHANGELOG | Full release notes |
+
+### Phase 2 Deliverables
+
+- [ ] Python SDK on PyPI (`pip install plaidify`)
+- [ ] CLI tool (`plaidify connect`, `plaidify demo`, `plaidify blueprint`)
+- [ ] JavaScript/TypeScript SDK on npm (`npm install plaidify`)
+- [ ] `<PlaidifyLink>` React component + vanilla JS
+- [ ] Blueprint Registry with search, publish, install
+- [ ] Webhook system with HMAC signing + retries
+- [ ] Scheduled data refresh
+- [ ] v0.3.0 released
+
+---
+
+## 7. Phase 3 — AI Agent Protocol (Weeks 3-5)
+
+**Goal:** Make Plaidify the standard way AI agents access authenticated web data. Scoped, consented, auditable.
+
+**Overlaps with Phase 2 Week 3 — MCP work starts Thursday of Week 3.**
+
+---
+
+### Week 3-4: MCP Server + Consent Engine (Mar 31 - Apr 11)
+
+#### Week 3 Thursday-Friday: MCP Server Scaffold
+
+| Task | Details | Output |
+|------|---------|--------|
+| FastMCP server | MCP server exposing Plaidify as tools | `plaidify mcp serve` |
+| `plaidify_connect` tool | Wraps `POST /connect` | Agents can extract data |
+| `plaidify_list_blueprints` tool | Wraps `GET /blueprints` | Agents discover available sites |
+| `plaidify_submit_mfa` tool | Wraps `POST /mfa/submit` | Agents handle MFA |
+
+#### Week 4 Monday-Tuesday: Full MCP Implementation
+
+| Task | Details | Output |
+|------|---------|--------|
+| `plaidify_fetch_data` tool | Fetch from existing connection | Read without re-auth |
+| `plaidify_list_connections` tool | List user's active connections | Connection management |
+| Scope enforcement | Agent only accesses fields it was granted | Server-side enforcement |
+| Session management | Agent connections auto-expire, configurable TTL | Cleanup |
+| Error mapping | MCP-compatible error responses | Agent-friendly errors |
 
 ```json
 {
@@ -673,443 +394,556 @@ Plaidify runs as an MCP server that any MCP-compatible AI agent can use:
   "version": "1.0",
   "tools": [
     {
-      "name": "plaidify_request_access",
-      "description": "Request user consent to access data from an authenticated website",
+      "name": "plaidify_connect",
+      "description": "Connect to an authenticated website and extract data",
       "parameters": {
-        "site": "string — The site blueprint name",
-        "scopes": "string[] — Data fields to request access to",
-        "duration": "string — How long access should last",
-        "reason": "string — Why the agent needs this data (shown to user)"
+        "site": "string — Blueprint name",
+        "username": "string",
+        "password": "string",
+        "fields": "string[] — Specific fields to extract (optional)"
       }
+    },
+    {
+      "name": "plaidify_list_blueprints",
+      "description": "List available site blueprints",
+      "parameters": { "search": "string (optional)" }
+    },
+    {
+      "name": "plaidify_submit_mfa",
+      "description": "Submit MFA code for a pending connection",
+      "parameters": { "session_id": "string", "code": "string" }
     },
     {
       "name": "plaidify_fetch_data",
-      "description": "Fetch authorized data from a connected site",
-      "parameters": {
-        "consent_token": "string — Token from approved access request",
-        "fields": "string[] — Which approved fields to retrieve"
-      }
+      "description": "Fetch data from an existing connection",
+      "parameters": { "connection_id": "string", "fields": "string[]" }
     },
     {
       "name": "plaidify_list_connections",
-      "description": "List the user's active Plaidify connections",
-      "parameters": {
-        "user_id": "string"
-      }
+      "description": "List active connections for current user",
+      "parameters": {}
     }
   ]
 }
 ```
 
-### 7.5 Google A2A (Agent-to-Agent) Support
-```json
-{
-  "name": "Plaidify Data Agent",
-  "description": "Securely access authenticated web data on behalf of users",
-  "capabilities": ["data_retrieval", "authenticated_browsing"],
-  "authentication": {
-    "type": "oauth2",
-    "flows": ["authorization_code"]
-  },
-  "skills": [
-    {
-      "name": "fetch_financial_data",
-      "description": "Retrieve bank balances, transactions from connected accounts"
-    },
-    {
-      "name": "fetch_utility_data", 
-      "description": "Retrieve utility bills, usage data from connected providers"
-    }
-  ]
-}
+#### Week 4 Wednesday-Thursday: Consent Engine
+
+| Task | Details | Output |
+|------|---------|--------|
+| Consent data model | `ConsentRequest` → user approves → `ConsentToken` with scoped fields | DB migration |
+| `POST /consent/request` | Agent requests access to specific fields | API endpoint |
+| Consent approval UI | User sees agent name, requested fields, duration → approve/deny | Web page |
+| Token expiry | All consent tokens auto-expire (configurable, max 30 days) | Auto-cleanup |
+| `DELETE /consent/{token}` | Instant revocation by user | User control |
+| Scope system | Field-level: `read:current_bill`, `read:usage_history`, etc. | Granular |
+
+```
+┌──────────────────────────────────────────┐
+│  "BudgetBot" wants to access:            │
+│                                          │
+│  ✅ Current bill                          │
+│  ✅ Usage history (last 6 months)         │
+│  ❌ Account number (not requested)        │
+│                                          │
+│  Access expires: 24 hours                │
+│                                          │
+│  [ Deny ]        [ Allow ]               │
+└──────────────────────────────────────────┘
 ```
 
-### 7.6 Audit Trail
-Every agent access is logged:
+#### Week 4 Friday: Agent SDK
+
+| Task | Details | Output |
+|------|---------|--------|
+| `PlaidifyAgent` class | Python SDK for agent developers | `from plaidify.agent import PlaidifyAgent` |
+| `request_access()` | Triggers consent flow, returns consent request | Async |
+| `fetch()` with consent token | Fetch data within approved scope | Scope-enforced |
+| `ScopeViolationError` | Raised when agent requests unauthorized fields | Fail-safe |
+| Agent registration | `POST /agents/register` with name, description, default scopes | Identity |
+
+```python
+from plaidify.agent import PlaidifyAgent
+
+agent = PlaidifyAgent(agent_id="budgetbot", api_key="pk_agent_...")
+
+# Request scoped access
+consent = await agent.request_access(
+    user_id="usr_123",
+    site="greengrid_energy",
+    scopes=["current_bill", "usage_history"],
+    duration="24h",
+    reason="To analyze your energy spending"
+)
+
+if consent.approved:
+    data = await agent.fetch(consent_token=consent.token)
+    # data.current_bill = "$142.57"
+    # data.usage_history = [...]
+```
+
+---
+
+### Week 5: Audit Trail + Safety Guardrails + Ship v0.4.0 (Apr 14-18)
+
+#### Monday-Tuesday: Audit Trail
+
+| Task | Details | Output |
+|------|---------|--------|
+| Audit log model | agent_id, user_id, site, fields_accessed, timestamp, status | DB table |
+| `GET /audit-log` | Users view who accessed their data and when | API endpoint |
+| Audit dashboard | Simple web UI showing access history | `/audit` page |
+| Agent access log | `GET /agents/{id}/log` — what did this agent access? | API endpoint |
+
 ```json
 {
   "event_id": "evt_abc123",
-  "timestamp": "2026-03-14T12:00:00Z",
-  "agent_id": "agent_budgetbot_123",
+  "timestamp": "2026-04-15T12:00:00Z",
+  "agent_id": "budgetbot",
   "agent_name": "BudgetBot",
   "user_id": "usr_123",
   "action": "fetch_data",
-  "site": "chase_bank",
-  "fields_requested": ["balance", "transactions"],
-  "fields_returned": ["balance", "transactions"],
-  "consent_token": "ct_xyz789",
-  "consent_expires": "2026-03-15T12:00:00Z",
-  "ip_address": "203.0.113.1",
+  "site": "greengrid_energy",
+  "fields_accessed": ["current_bill", "usage_history"],
   "duration_ms": 3400,
   "status": "success"
 }
 ```
 
-Users can view their audit trail:
-```
-GET /user/audit-log?user_id=usr_123
+#### Wednesday-Thursday: Safety Guardrails
 
-[
-  "BudgetBot accessed your Chase balance 2 hours ago",
-  "BudgetBot accessed your Chase transactions 2 hours ago",
-  "TaxHelper requested access to your ADP payroll — DENIED by you"
-]
-```
+| Task | Details | Output |
+|------|---------|--------|
+| Rate limiting | Per-agent, per-user token bucket (configurable) | Server-side |
+| Kill switch | `POST /consent/revoke-all` — user kills all agent access instantly | Emergency stop |
+| Anomaly flags | Log warnings for bulk access, off-hours, unusual patterns | Alerting |
+| Data redaction | Sensitive fields (SSN, full account #) require elevated consent | Consent tiers |
+| Agent verification | Verified vs unverified agents, different rate limits | Trust levels |
 
-### 7.7 Agent Safety Guardrails
-| Guardrail | Details |
-|-----------|---------|
-| Scope enforcement | Agents can ONLY access fields they were approved for. Server-side enforcement. |
-| Time-limited tokens | All consent tokens expire. Max 30 days. |
-| Rate limiting | Per-agent, per-user rate limits. Prevent abuse. |
-| Data redaction | Sensitive fields (SSN, account numbers) require elevated consent. |
-| Anomaly detection | Flag unusual patterns: agent requesting all users' data, accessing at 3am, etc. |
-| Kill switch | User can revoke all agent access instantly via dashboard. |
-| Agent verification | Agents must register and verify identity before accessing production data. |
+#### Friday: Framework Integrations + v0.4.0 Release
 
-### Deliverables
+| Task | Details |
+|------|---------|
+| LangChain tool | Plaidify as a LangChain `Tool` with working example |
+| CrewAI integration | Plaidify as a CrewAI tool with working example |
+| E2E test | Agent SDK → MCP → consent → fetch → audit logged |
+| **Tag v0.4.0** | MCP server + Consent engine + Agent SDK + Audit trail |
+| CHANGELOG + announcement | Release notes |
+
+### Phase 3 Deliverables
+
+- [ ] MCP server with 5 tools
+- [ ] Consent engine with user-facing approval UI
+- [ ] Field-level scope enforcement
 - [ ] Agent SDK (Python) with consent flow
-- [ ] MCP server implementation
-- [ ] A2A agent card
-- [ ] Consent UI (user-facing approval screen)
-- [ ] Audit trail with user-facing dashboard
-- [ ] Scope enforcement engine
-- [ ] Agent registration and verification
+- [ ] Agent registration system
+- [ ] Audit trail with user dashboard
 - [ ] Rate limiting per agent
-- [ ] 3 demo agents (finance assistant, tax helper, insurance analyzer)
-- [ ] Security audit by external firm
+- [ ] LangChain + CrewAI integration examples
+- [ ] `plaidify mcp serve` CLI command
+- [ ] v0.4.0 released
 
 ---
 
-## 8. Phase 4 — Browser Actions / Write Operations (Weeks 35-44)
+## 8. Phase 4 — Browser Actions / Write Ops (Weeks 5-7)
 
-**Goal:** Go beyond reading data. Let developers and agents take actions on websites — fill forms, submit payments, upload documents — with user authorization.
+**Goal:** Go beyond reading. Let apps and agents fill forms, make payments, upload documents — with explicit user authorization and safety rails.
 
-### 8.1 Action Blueprint Schema
+---
+
+### Week 5-6: Action Framework (Apr 14 - Apr 25)
+
+#### Week 5 Thursday-Friday: Action Schema + Engine Foundation
+
+| Task | Details | Output |
+|------|---------|--------|
+| Blueprint v3 schema | Add `actions` block alongside existing `extract` | Schema extension |
+| New step types | `select` (dropdown), `upload` (file), `confirm` (pre-submit check) | Step executor |
+| Action parameters | Typed, validated inputs per action (amount, method, etc.) | Validation engine |
+
 ```json
 {
   "schema_version": "3.0",
-  "name": "Pay Utility Bill",
-  "domain": "pge.com",
+  "name": "Pay GreenGrid Bill",
   "type": "action",
-  
-  "auth": { "...same as v2..." },
-  
   "actions": {
     "pay_bill": {
       "description": "Pay the current utility bill",
+      "risk_level": "high",
       "requires_consent": "explicit_per_action",
       "parameters": {
-        "payment_method": {
-          "type": "enum",
-          "values": ["bank_account", "credit_card"],
-          "required": true
-        },
-        "amount": {
-          "type": "currency",
-          "required": true,
-          "max": 10000
-        }
+        "amount": { "type": "currency", "required": true, "max": 10000 }
       },
       "steps": [
-        { "action": "goto", "url": "https://pge.com/pay" },
-        { "action": "select", "selector": "#payment-method", "value": "{{payment_method}}" },
+        { "action": "goto", "url": "{{base_url}}/pay" },
         { "action": "fill", "selector": "#amount", "value": "{{amount}}" },
         { "action": "click", "selector": "#pay-now" },
         { "action": "wait", "selector": "#confirmation" },
-        { "action": "extract", "fields": {
-            "confirmation_number": { "selector": "#conf-num" },
-            "amount_paid": { "selector": "#amount-paid" }
-          }
-        }
+        { "action": "extract", "fields": { "confirmation": { "selector": "#conf-num" } } }
       ],
       "confirmation": {
-        "require_user_approval_before_submit": true,
-        "screenshot_before_submit": true,
-        "fields_to_show_user": ["amount", "payment_method"]
+        "require_user_approval": true,
+        "screenshot_before_submit": true
       }
     }
   }
 }
 ```
 
-### 8.2 Action Consent Model (Stricter than Read)
+#### Week 6 Monday-Tuesday: Action Execution Engine
+
+| Task | Details | Output |
+|------|---------|--------|
+| `POST /actions/execute` | Execute an action from a blueprint | API endpoint |
+| Dry-run mode | Fill fields, don't submit — return screenshot | `?dry_run=true` |
+| Pre-flight screenshot | Capture page before irreversible click, show to user | Safety net |
+| Parameter validation | Type-check, range-check all inputs before execution | Fail-fast |
+| Action result model | Success with confirmation data, or failure with reason | Typed responses |
+
+#### Week 6 Wednesday-Thursday: Action Consent + Safety
+
+| Task | Details | Output |
+|------|---------|--------|
+| Action consent UI | Shows action details, amount, screenshot — stricter than read consent | Web page |
+| Risk classification | `low` (read), `medium` (form fill), `high` (payment), `critical` (delete) | Per-action |
+| Spending limits | Per-agent, per-user caps on financial actions | Config |
+| Cooldown periods | Min time between repeated actions (prevent rapid-fire) | Config |
+| Transaction logging | Every action: params, screenshot, outcome, timestamp | Audit |
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                  ACTION CONSENT FLOW                         │
-│                                                              │
-│  Agent: "I'd like to pay your PG&E bill of $142.50"        │
-│                              │                               │
-│  ┌──────────────────────────────────────────┐               │
-│  │  🔴 ACTION REQUIRED                      │               │
-│  │                                           │               │
-│  │  "BudgetBot" wants to TAKE AN ACTION:    │               │
-│  │                                           │               │
-│  │  Action: Pay utility bill                 │               │
-│  │  Site: PG&E (pge.com)                    │               │
-│  │  Amount: $142.50                          │               │
-│  │  Payment: Bank account ending in 4521    │               │
-│  │                                           │               │
-│  │  [Screenshot of payment page]            │               │
-│  │                                           │               │
-│  │  ⚠️ This will submit a real payment.     │               │
-│  │  This action cannot be undone.            │               │
-│  │                                           │               │
-│  │  [ Cancel ]     [ Approve & Pay ]         │               │
-│  └──────────────────────────────────────────┘               │
-│                              │                               │
-│  User approves → Action executes → Confirmation returned    │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  🔴 ACTION REQUIRED                      │
+│                                          │
+│  "BudgetBot" wants to:                   │
+│  Pay GreenGrid Energy bill               │
+│                                          │
+│  Amount: $142.57                         │
+│  [Screenshot of payment page]            │
+│                                          │
+│  ⚠️ This will submit a real payment.     │
+│                                          │
+│  [ Cancel ]     [ Approve & Pay ]        │
+└──────────────────────────────────────────┘
 ```
 
-### 8.3 Safety Architecture for Actions
-| Layer | Description |
-|-------|-------------|
-| **Parameter validation** | Every action parameter has a type, range, and validation rule. Amount can't exceed max. |
-| **Pre-flight screenshot** | Before any irreversible action, capture a screenshot and show the user exactly what will happen. |
-| **Dry-run mode** | Fill all fields but DON'T click submit. Return screenshot for user review. |
-| **Rollback support** | Where possible, define undo steps (e.g., cancel a reservation). |
-| **Transaction logging** | Every action is logged with full parameters, screenshots, and outcome. |
-| **Spending limits** | Per-agent, per-user spending limits for financial actions. |
-| **Cooldown periods** | Configurable delay between actions (prevent rapid-fire submissions). |
-| **Two-party approval** | For high-value actions, require approval from both user and a second party. |
+#### Week 6 Friday: Action SDK + MCP Extension
 
-### 8.4 Action Categories
-| Category | Examples | Risk Level |
-|----------|----------|------------|
-| **Read** | Check balance, view policy, download statement | Low |
-| **Fill** | Pre-fill a form (don't submit) | Low |
-| **Submit** | Submit a form, file a claim, send a message | Medium |
-| **Financial** | Make a payment, transfer funds, change plan | High |
-| **Destructive** | Cancel account, delete data, close position | Critical |
-
-Each category has increasing consent requirements and safety checks.
-
-### Deliverables
-- [ ] Action blueprint schema (v3)
-- [ ] Pre-flight screenshot and dry-run mode
-- [ ] Action consent UI with risk-level indicators
-- [ ] Parameter validation engine
-- [ ] Transaction logging with screenshots
-- [ ] Spending limits and cooldown periods
-- [ ] 10 action blueprints (bill pay, form fill, document download)
-- [ ] Agent action SDK
-- [ ] Rollback support for reversible actions
+| Task | Details |
+|------|---------|
+| SDK `execute_action()` | Python + JS SDK methods for triggering actions |
+| `pfy.execute_action("pay_bill", ..., dry_run=True)` | Dry-run from SDK |
+| MCP `plaidify_execute_action` tool | Agents can request actions via MCP |
+| MCP `plaidify_list_actions` tool | Agents discover available actions |
 
 ---
 
-## 9. Phase 5 — Enterprise & Scale (Weeks 45-56)
+### Week 7: Action Blueprints + Polish + Ship v0.5.0 (Apr 28 - May 2)
 
-**Goal:** Make Plaidify enterprise-ready and scalable to millions of connections.
+#### Monday-Tuesday: Write Action Blueprints
 
-### 9.1 Infrastructure
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| API Gateway | Kong / AWS API Gateway | Rate limiting, API key management, request routing |
-| Browser Farm | Kubernetes + Playwright containers | Horizontally scalable browser instances |
-| Job Queue | Celery + Redis (or BullMQ) | Async connection jobs, scheduled refreshes |
-| Cache | Redis | Session cache, blueprint cache, rate limit counters |
-| Database | PostgreSQL (primary) + Redis (sessions) | Persistent storage with connection pooling |
-| Object Storage | S3 / MinIO | Screenshots, audit logs, exported data |
-| Secrets | HashiCorp Vault / AWS Secrets Manager | Credential encryption keys, API keys |
-| Monitoring | Prometheus + Grafana | Metrics, alerts, dashboards |
-| Logging | ELK Stack / Loki | Centralized structured logging |
-| CDN | CloudFront / Cloudflare | Plaidify Link UI, documentation site |
+| Task | Details |
+|------|---------|
+| Pay bill action | Demo action for GreenGrid Energy portal |
+| Update account info | Change email, phone, address on demo site |
+| Download statement | Export PDF/CSV from demo site |
+| Extend demo site | Add payment page, settings page, download page to example_site |
 
-### 9.2 Scaling Architecture
-```
-                    ┌──────────────┐
-                    │   CDN/LB     │
-                    └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │ API Pod 1│ │ API Pod 2│ │ API Pod N│
-        └────┬─────┘ └────┬─────┘ └────┬─────┘
-             │             │             │
-             └─────────────┼─────────────┘
-                           ▼
-                    ┌──────────────┐
-                    │  Job Queue   │
-                    │  (Redis)     │
-                    └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │ Browser  │ │ Browser  │ │ Browser  │
-        │ Worker 1 │ │ Worker 2 │ │ Worker N │
-        │(Playwright│ │(Playwright│ │(Playwright│
-        └──────────┘ └──────────┘ └──────────┘
-```
+#### Wednesday: Rollback + Error Recovery
 
-### 9.3 Enterprise Features
-| Feature | Details |
-|---------|---------|
-| **SSO / SAML** | Enterprise customers authenticate via their identity provider. |
-| **Tenant isolation** | Multi-tenant architecture. Each customer's data is fully isolated. |
-| **Custom blueprints** | Private blueprint registry per tenant. |
-| **SLA dashboard** | Real-time connection success rates, latency percentiles, uptime. |
-| **Admin console** | Manage connections, view audit logs, configure policies, manage API keys. |
-| **Compliance** | SOC 2 Type II audit, GDPR data deletion, CCPA compliance. |
-| **Data residency** | Choose where data is stored (US, EU, APAC). |
-| **IP allowlisting** | Restrict API access to specific IP ranges. |
-| **Custom encryption** | Bring your own encryption keys (BYOK). |
-| **Priority support** | Dedicated support channel, SLA guarantees. |
+| Task | Details |
+|------|---------|
+| Rollback support | `undo_steps` in action schema for reversible actions |
+| Error detection | Detect failed actions (payment declined, form validation error) |
+| Structured errors | `ActionFailedError` with reason, screenshot, suggested fix |
+| Retry logic | Configurable retries for transient failures |
 
-### 9.4 Commercial Model
-| Tier | Price | Features |
-|------|-------|----------|
-| **Open Source** | Free forever | Core engine, JSON blueprints, REST API, community blueprints, self-hosted |
-| **Cloud** | Pay-per-connection | Hosted Plaidify, managed browser farm, 99.9% SLA, email support |
-| **Enterprise** | Custom pricing | SSO, tenant isolation, compliance, SLA dashboard, dedicated support, BYOK |
+#### Thursday-Friday: v0.5.0 Release
 
-Open-source core stays MIT licensed forever. Commercial features are additive, not restrictive.
+| Task | Details |
+|------|---------|
+| E2E test | Agent → request action → consent → dry-run → execute → confirm → audit |
+| 5 action blueprints working | Pay, update, download, cancel, reschedule |
+| **Tag v0.5.0** | Action framework + consent + SDK + MCP |
+| CHANGELOG | Release notes |
 
-### Deliverables
-- [ ] Kubernetes deployment manifests (Helm chart)
-- [ ] Browser worker auto-scaling
+### Phase 4 Deliverables
+
+- [ ] Action blueprint schema v3
+- [ ] `POST /actions/execute` with dry-run mode
+- [ ] Pre-flight screenshots
+- [ ] Action consent UI with risk levels
+- [ ] Spending limits + cooldown periods
+- [ ] Transaction logging
+- [ ] Python + JS SDK `execute_action()` methods
+- [ ] MCP `plaidify_execute_action` tool
+- [ ] 5 action blueprints for demo site
+- [ ] Rollback support
+- [ ] v0.5.0 released
+
+---
+
+## 9. Phase 5 — Enterprise & Scale (Weeks 7-10)
+
+**Goal:** Make Plaidify production-grade for teams deploying at scale. Ship v1.0.
+
+---
+
+### Week 7-8: Infrastructure + Multi-Tenancy (Apr 28 - May 9)
+
+#### Week 7 Thursday-Friday: Redis + Background Workers
+
+| Task | Details |
+|------|---------|
+| Redis integration | Session cache, rate limit counters, job queue backend |
+| Celery worker setup | Async connection jobs, scheduled refreshes |
+| Connection pooling | Redis + PostgreSQL connection pool tuning |
+
+#### Week 8 Monday-Tuesday: Kubernetes + Scaling
+
+| Task | Details | Output |
+|------|---------|--------|
+| Helm chart | API pods + browser workers + Redis + PostgreSQL | `helm install plaidify` |
+| Browser worker HPA | Auto-scale based on queue depth | Elastic capacity |
+| Health probes | Liveness, readiness, startup probes | K8s-native |
+| Resource limits | CPU/memory per pod, tested under load | Predictable costs |
+
+#### Week 8 Wednesday-Thursday: Multi-Tenancy
+
+| Task | Details | Output |
+|------|---------|--------|
+| Tenant model | Org → Users → API Keys → Connections | DB migration |
+| Row-level isolation | `tenant_id` on all tables, enforced in queries | Data isolation |
+| API key management | Create, rotate, revoke per tenant | `POST /org/api-keys` |
+| Usage tracking | Per-tenant: connection counts, API calls, bandwidth | Billing foundation |
+
+#### Week 8 Friday: Monitoring
+
+| Task | Details |
+|------|---------|
+| Prometheus metrics | Connection latency, success rate, queue depth, browser pool utilization |
+| Grafana dashboard template | Pre-built dashboard JSON |
+| Status page | Blueprint health, API uptime |
+
+---
+
+### Week 9: Admin Console + Compliance (May 12-16)
+
+#### Monday-Tuesday: Admin Console
+
+| Task | Details | Output |
+|------|---------|--------|
+| Admin web UI | React SPA at `/admin` | Management dashboard |
+| Connection manager | View, retry, cancel connections | Operations |
+| Blueprint manager | Upload, edit, enable/disable blueprints | CRUD |
+| User + tenant management | View users, connections, audit logs per tenant | Admin tools |
+| API key dashboard | Create, view, rotate keys (self-service) | Dev portal |
+
+#### Wednesday-Thursday: Compliance
+
+| Task | Details | Output |
+|------|---------|--------|
+| `DELETE /user/{id}/data` | GDPR — purge all user data | Right to deletion |
+| `GET /user/{id}/export` | GDPR — download user data as JSON | Data portability |
+| Retention policies | Auto-delete connection data after configurable period | Background job |
+| Key rotation | Rotate AES-256-GCM keys without downtime | Zero-downtime |
+| SOC 2 prep | Document security controls, access policies, incident response | Compliance docs |
+
+#### Friday: SSO / SAML
+
+| Task | Details |
+|------|---------|
+| SAML 2.0 | Enterprise SSO via Okta, Azure AD |
+| OIDC support | OpenID Connect for modern IdPs |
+| Role-based access | Admin, Developer, Viewer roles per org |
+
+---
+
+### Week 10: Load Test + Docs + v1.0 Launch 🚀 (May 19-23)
+
+#### Monday-Tuesday: Load Testing
+
+| Task | Target |
+|------|--------|
+| Locust load test — concurrent connections | 1,000+ concurrent |
+| Browser pool stress test — max Playwright instances | 50 per node |
+| API latency — P50, P95, P99 | P95 < 500ms (API), <10s (connection) |
+| Memory profiling — sustained load | Stable at 1GB per worker |
+| Fix bottlenecks | Optimize based on profiling results |
+
+#### Wednesday: Documentation Site
+
+| Task | Details |
+|------|---------|
+| MkDocs / Docusaurus site | Hosted at docs.plaidify.dev |
+| Sections | Quickstart, Blueprint guide, SDK reference, Agent guide, Self-hosting |
+| API reference | Auto-generated from OpenAPI schema |
+| Video walkthrough | 5-minute demo video embedded in README |
+| Architecture deep-dive | Technical blog post |
+
+#### Thursday-Friday: 🚀 v1.0.0 Launch
+
+| Task | Details |
+|------|---------|
+| Version bump | Semantic versioning commitment: v1.0.0 |
+| CHANGELOG | Full history: v0.1.0 → v0.2.0 → v0.3.0 → v0.4.0 → v0.5.0 → v1.0.0 |
+| GitHub Release | Detailed release notes with highlights |
+| Launch post | Blog + Twitter + Reddit + Hacker News |
+| Product Hunt | Launch listing |
+| Discord | Open community server |
+
+### Phase 5 Deliverables
+
+- [ ] Kubernetes Helm chart with auto-scaling
+- [ ] Redis + Celery background workers
 - [ ] Multi-tenant data isolation
-- [ ] Admin console (web UI)
-- [ ] SOC 2 Type II readiness (policies, controls, evidence)
-- [ ] SLA dashboard with real-time metrics
-- [ ] SSO/SAML integration
-- [ ] Data residency support (multi-region)
-- [ ] Commercial licensing framework
-- [ ] Load testing: 10,000 concurrent connections
+- [ ] Admin console web UI
+- [ ] Prometheus + Grafana monitoring
+- [ ] GDPR data deletion + export
+- [ ] SSO / SAML / OIDC
+- [ ] Load tested to 1,000 concurrent connections
+- [ ] Documentation site
+- [ ] **v1.0.0 released and announced** 🚀
 
 ---
 
-## 10. Team Structure
+## 10. Week-by-Week Execution Calendar
 
-### Phase 0-1 (1-5 people — You + early contributors)
-| Role | Responsibility |
-|------|---------------|
-| **You (Founder/Lead)** | Architecture, core engine, blueprint design, community |
-| **Backend Engineer** | FastAPI, database, auth, security |
-| **Browser Automation Engineer** | Playwright integration, stealth, anti-detection |
-| **DevOps** | CI/CD, Docker, testing infrastructure |
-| **Community Manager** | Docs, issues, Discord, blueprint contributions |
+Starting **March 17, 2026:**
 
-### Phase 2-3 (10-25 people)
-| Team | Size | Focus |
-|------|------|-------|
-| **Core Engine** | 4 | Browser engine, step executor, error handling |
-| **SDK & Developer Experience** | 4 | Python SDK, JS SDK, CLI, docs |
-| **AI Agent Platform** | 4 | MCP server, consent engine, agent SDK |
-| **Blueprint Engineering** | 3 | Building + maintaining blueprints, registry |
-| **Security** | 2 | Encryption, audit, penetration testing |
-| **Frontend** | 2 | Plaidify Link, consent UI, admin dashboard |
-| **QA** | 2 | Test automation, blueprint validation |
-| **DevOps** | 2 | Infrastructure, monitoring, deployment |
-| **Product/Design** | 2 | UX, product strategy, user research |
+| Week | Dates | Focus | Ship |
+|------|-------|-------|------|
+| **1** | Mar 17-21 | Python SDK + CLI tool | SDK on PyPI |
+| **2** | Mar 24-28 | JavaScript SDK + Plaidify Link UI | npm package + React component |
+| **3** | Mar 31 - Apr 4 | Blueprint Registry + Webhooks + MCP scaffold | **v0.3.0** |
+| **4** | Apr 7-11 | Full MCP Server + Consent Engine + Agent SDK | MCP live |
+| **5** | Apr 14-18 | Audit trail + Safety guardrails + Action scaffold | **v0.4.0** |
+| **6** | Apr 21-25 | Action engine + Action consent + Action SDK | Actions working |
+| **7** | Apr 28 - May 2 | Action blueprints + Redis + K8s start | **v0.5.0** |
+| **8** | May 5-9 | Multi-tenancy + Monitoring + API keys | Enterprise infra |
+| **9** | May 12-16 | Admin console + Compliance + SSO | Admin live |
+| **10** | May 19-23 | Load testing + Docs site + Launch | **🚀 v1.0.0** |
 
-### Phase 4-5 (50-100 people)
-Add: Sales, Customer Success, Legal/Compliance, Data Science (anomaly detection), dedicated teams per vertical (financial, healthcare, utilities, government).
+### Key Milestones
+
+| Date | Milestone |
+|------|-----------|
+| **Mar 21** | `pip install plaidify` works |
+| **Mar 28** | `npm install plaidify` works, Link UI embeddable |
+| **Apr 4** | Blueprint Registry live, **v0.3.0 shipped** |
+| **Apr 18** | MCP server + Agent SDK, **v0.4.0 shipped** |
+| **May 2** | Write operations working, **v0.5.0 shipped** |
+| **May 23** | **🚀 v1.0.0 launched** |
 
 ---
 
 ## 11. Risk Matrix
 
-| Risk | Probability | Impact | Mitigation |
-|------|------------|--------|------------|
-| **Legal: ToS violations** | High | High | Partner with sites, focus on user-consented access, legal review per vertical |
-| **Technical: Anti-bot detection** | High | High | Playwright stealth, residential proxies, browser fingerprint rotation, headless detection evasion |
-| **Technical: Blueprint maintenance** | High | Medium | Automated health checks, community maintenance, AI-assisted blueprint repair |
-| **Security: Credential breach** | Low | Critical | HSM-backed encryption, zero-knowledge architecture, SOC 2, bug bounty program |
-| **Business: Plaid/MX compete** | Medium | Medium | Stay open-source, focus on non-financial verticals, build community moat |
-| **Technical: Scale limits** | Medium | Medium | Kubernetes auto-scaling, browser pool optimization, connection queuing |
-| **Community: Low adoption** | Medium | High | Great docs, easy quickstart, active Discord, blueprint bounties |
-| **Regulatory: New data laws** | Medium | Medium | Modular compliance engine, per-region consent flows |
+| Risk | Prob. | Impact | Mitigation |
+|------|-------|--------|------------|
+| **Legal: ToS violations** | High | High | Focus on user-consented access, legal review, open-source transparency |
+| **Technical: Anti-bot detection** | High | High | Playwright stealth, residential proxies, fingerprint rotation |
+| **Technical: Blueprint maintenance** | High | Medium | Automated health checks, community maintenance, AI-assisted repair |
+| **Security: Credential breach** | Low | Critical | AES-256-GCM, zero-knowledge architecture, external security audit |
+| **Business: Plaid/MX compete** | Medium | Medium | Stay open-source, focus on non-financial verticals, community moat |
+| **Timeline: Scope creep** | High | Medium | **Strict weekly milestones. Cut scope before slipping dates.** |
+| **Community: Low adoption** | Medium | High | Great docs, easy quickstart, Discord, blueprint bounties |
 
 ---
 
-## 12. Success Metrics per Phase
+## 12. Success Metrics
 
-### Phase 0 — Foundation
-- 90%+ test coverage
-- 0 critical security findings
-- CI pipeline < 5 min
-- Docker image builds and runs cleanly
+### Phase 2 — Developer SDK (End of Week 3)
+| Metric | Target |
+|--------|--------|
+| PyPI downloads (first week) | 100+ |
+| npm downloads (first week) | 50+ |
+| Install → first connection | < 30 minutes |
+| Blueprints in registry | 10+ |
+| SDK test coverage | 90%+ |
 
-### Phase 1 — Browser Engine
-- 5+ working blueprints for real sites
-- < 10s average connection time
-- < 5% connection failure rate (on healthy sites)
-- MFA flow works end-to-end
+### Phase 3 — AI Agent Protocol (End of Week 5)
+| Metric | Target |
+|--------|--------|
+| MCP tools available | 5+ |
+| Agent framework integrations | 2+ (LangChain, CrewAI) |
+| Consent completion rate | > 80% |
+| Unauthorized data access incidents | 0 |
 
-### Phase 2 — Developer SDK
-- 100+ GitHub stars
-- 25+ blueprints in registry
-- 10+ developers using SDK in projects
-- SDK install → first successful connection in < 30 minutes
-- Documentation NPS > 40
+### Phase 4 — Browser Actions (End of Week 7)
+| Metric | Target |
+|--------|--------|
+| Action blueprints | 5+ |
+| Action failure rate | < 2% |
+| Unauthorized actions | 0 |
+| Dry-run usage | > 50% of first-time actions |
 
-### Phase 3 — AI Agent Protocol
-- 3+ AI agent frameworks integrated (LangChain, CrewAI, AutoGen)
-- 100+ agents registered
-- < 1 security incident
-- User consent completion rate > 80%
-
-### Phase 4 — Browser Actions
-- 10+ action blueprints
-- 0 unauthorized actions (safety record)
-- < 2% action failure rate
-
-### Phase 5 — Enterprise
-- First paying enterprise customer
-- 99.9% API uptime
-- SOC 2 Type II certified
-- 10,000 concurrent connections supported
-- 1,000+ GitHub stars
+### Phase 5 — Enterprise & v1.0 (End of Week 10)
+| Metric | Target |
+|--------|--------|
+| Concurrent connections (load test) | 1,000+ |
+| API uptime | 99.9% |
+| GitHub stars | 500+ |
+| Documentation pages | 30+ |
+| Community members (Discord) | 50+ |
 
 ---
 
 ## 13. Open Source & Community Strategy
 
 ### Community Building
-| Activity | Cadence | Purpose |
-|----------|---------|---------|
-| Discord server | Always on | Real-time help, blueprint sharing, feature discussion |
-| Weekly office hours | Weekly | Live coding, Q&A, blueprint building |
-| Blueprint bounties | Ongoing | Pay contributors $50-200 per verified blueprint |
-| "Good first issue" labels | Ongoing | Onboard new contributors |
-| Monthly blog post | Monthly | Progress updates, technical deep-dives |
-| Conference talks | Quarterly | Visibility at PyCon, API World, AI conferences |
+
+| Activity | When | Purpose |
+|----------|------|---------|
+| Discord server | Week 1 | Real-time help, blueprint sharing |
+| "Good first issue" labels | Week 1 | Onboard new contributors |
+| Blueprint bounties ($50-200) | Week 3+ | Incentivize community blueprints |
+| Weekly office hours | Week 4+ | Live coding, Q&A |
+| Launch blog post | Week 10 | Tell the story, share the vision |
+| HN / Reddit / Product Hunt | Week 10 | Visibility + early adopters |
 
 ### Contribution Model
+
 ```
 Contributor writes blueprint → PR → Automated validation → Human review → Merge → Published to registry
 ```
 
 ### Governance
-- **Benevolent Dictator (You)** for Phase 0-2
-- **Core maintainer team** (3-5 people) by Phase 3
-- **Technical Steering Committee** by Phase 5
+
+- **Benevolent Dictator (Founder)** through v1.0
+- **Core maintainer team** (3-5 people) post-launch
 - All RFCs (design proposals) are public and open for comment
 
-### Documentation Priority
+### Documentation Priority (in order)
+
 1. **Quickstart** — First connection in 5 minutes
-2. **Blueprint guide** — How to write a blueprint from scratch
+2. **Blueprint guide** — Write a blueprint from scratch
 3. **SDK reference** — Auto-generated from docstrings
-4. **Security whitepaper** — How credentials are handled
-5. **Agent integration guide** — How to use Plaidify with AI agents
-6. **Self-hosting guide** — Deploy Plaidify on your infrastructure
+4. **Agent integration guide** — Plaidify + LangChain/CrewAI/MCP
+5. **Self-hosting guide** — Deploy on your infrastructure
+6. **Security whitepaper** — How credentials are handled
 
 ---
 
-## Appendix: Immediate Next Steps (This Week)
+## Appendix: What's Built vs What's Next
 
-1. **Commit and push** the current uncommitted changes to GitHub
-2. **Remove hardcoded secrets** (Fernet key, JWT secret)
-3. **Add CI pipeline** (GitHub Actions: ruff + pytest)
-4. **Fix the dead code** (unreachable return, duplicate imports)
-5. **Add Alembic** for database migrations
-6. **Write 3 unit tests** for the Link Token flow
-7. **Create a GitHub Project board** with Phase 0 tasks
-8. **Set up Discord** for early contributors
+```
+✅ DONE (v0.2.0)                          🔥 NEXT (Weeks 1-10 → v1.0.0)
+─────────────────                          ──────────────────────────────
+✅ FastAPI REST API (19 endpoints)         🔥 Python SDK (pip install plaidify)
+✅ Playwright browser engine               🔥 JavaScript SDK (npm install plaidify)
+✅ Blueprint V2 schema                     🔥 CLI tool (plaidify connect/demo)
+✅ MFA Manager (async, event-based)        🔥 Plaidify Link UI (React + vanilla)
+✅ Data Extractor (typed fields + lists)   🔥 Blueprint Registry (search/install)
+✅ Browser Pool Manager                    🔥 MCP Server (AI agent protocol)
+✅ AES-256-GCM encryption                  🔥 Consent Engine (scoped access)
+✅ JWT auth + user isolation               🔥 Agent SDK + audit trail
+✅ 98 tests across 8 suites               🔥 Write operations (actions/payments)
+✅ GreenGrid Energy demo                   🔥 Kubernetes + auto-scaling
+✅ Interactive demo UI                     🔥 Admin Console + multi-tenancy
+✅ CI/CD pipeline                          🔥 Documentation site
+✅ Docker multi-stage build                🚀 v1.0.0 launch — May 23, 2026
+```
 
 ---
 
-*This plan is a living document. Update it as priorities shift and learnings emerge.*
+*This plan is aggressive by design. Ship weekly. Cut scope before slipping dates. Every Friday is a potential release.*

@@ -371,13 +371,14 @@ We treat credential handling as the #1 priority.
 
 | Phase | Focus | Timeline |
 |-------|-------|----------|
-| **1** | ✅ ~~Real browser engine (Playwright), MFA, real blueprints~~ | **Complete** |
-| **2** | Python & JS SDKs, Plaidify Link UI, CLI, blueprint registry | Q3 2026 |
-| **3** | **MCP server**, AI agent SDK, consent model, audit trails | Q4 2026 |
-| **4** | Write operations — pay bills, fill forms, file submissions | Q1 2027 |
-| **5** | Enterprise — multi-tenant, SSO, SOC 2, admin dashboard | Q2 2027 |
+| **0** | ✅ ~~Foundation hardening, security, CI/CD, tests~~ | **Complete** |
+| **1** | ✅ ~~Real browser engine (Playwright), MFA, blueprints, demo~~ | **Complete** |
+| **2** | Python & JS SDKs, Plaidify Link UI, CLI, blueprint registry | **Weeks 1-3** (Mar 17 – Apr 4) |
+| **3** | MCP server, AI agent SDK, consent engine, audit trails | **Weeks 3-5** (Mar 31 – Apr 18) |
+| **4** | Write operations — pay bills, fill forms, action framework | **Weeks 5-7** (Apr 14 – May 2) |
+| **5** | Enterprise — multi-tenant, K8s, SSO, admin console, **v1.0** 🚀 | **Weeks 7-10** (Apr 28 – May 23) |
 
-> 📋 **Full 56-week product plan → [docs/PRODUCT_PLAN.md](docs/PRODUCT_PLAN.md)**
+> 📋 **Full 10-week execution plan → [docs/PRODUCT_PLAN.md](docs/PRODUCT_PLAN.md)**
 
 ---
 
