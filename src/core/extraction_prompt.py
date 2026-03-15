@@ -89,6 +89,59 @@ class ExtractionResult:
     raw_response: Dict[str, Any]
 
 
+# ── Shared Helpers ────────────────────────────────────────────────────────────
+
+
+def build_data_schema(
+    fields: List[FieldDefinition | ListFieldDefinition],
+) -> Dict[str, Any]:
+    """Build the data portion of an output schema from field definitions.
+
+    Shared by both text-based and multimodal extraction prompt builders.
+    """
+    schema: Dict[str, Any] = {}
+    for f in fields:
+        if isinstance(f, ListFieldDefinition):
+            row_schema = {sub.name: f"<{sub.type}>" for sub in f.fields}
+            schema[f.name] = [row_schema]
+        else:
+            type_hint = f"<{f.type}>"
+            if f.type == "currency":
+                type_hint = "<number>"
+            elif f.type == "date":
+                type_hint = "<ISO_date_string>"
+            elif f.type == "boolean":
+                type_hint = "<true/false>"
+            schema[f.name] = type_hint
+    return schema
+
+
+def parse_extraction_json(raw: Any) -> tuple[Dict[str, Any], Dict[str, Any], float]:
+    """Parse and validate an LLM extraction JSON response.
+
+    Accepts a dict, a JSON string, or an LLMResponse with .parse_json().
+    Returns (data, selectors, confidence) with confidence clamped to [0, 1].
+    """
+    if hasattr(raw, "parse_json"):
+        data = raw.parse_json()
+    elif isinstance(raw, str):
+        data = json.loads(raw)
+    else:
+        data = raw
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected dict from LLM, got {type(data).__name__}")
+
+    extracted = data.get("data", {})
+    selectors = data.get("selectors", {})
+    try:
+        confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    return extracted, selectors, confidence
+
+
 # ── Prompt Builder ────────────────────────────────────────────────────────────
 
 
@@ -176,63 +229,32 @@ class ExtractionPromptBuilder:
 
         Accepts either a dict (already parsed) or an LLMResponse object.
         """
-        if hasattr(response_data, "parse_json"):
-            data = response_data.parse_json()
-        elif isinstance(response_data, str):
-            data = json.loads(response_data)
-        else:
-            data = response_data
-
-        if not isinstance(data, dict):
-            raise ValueError(f"Expected dict from LLM, got {type(data).__name__}")
-
-        extracted = data.get("data", {})
-        selectors = data.get("selectors", {})
-        confidence = data.get("confidence", 0.0)
-
-        # Ensure confidence is a valid number in [0, 1]
-        try:
-            confidence = float(confidence)
-            confidence = max(0.0, min(1.0, confidence))
-        except (TypeError, ValueError):
-            confidence = 0.0
-
+        extracted, selectors, confidence = parse_extraction_json(response_data)
+        raw = response_data if isinstance(response_data, dict) else (
+            response_data.parse_json() if hasattr(response_data, "parse_json") else json.loads(response_data) if isinstance(response_data, str) else response_data
+        )
         return ExtractionResult(
             data=extracted,
             selectors=selectors,
             confidence=confidence,
-            raw_response=data,
+            raw_response=raw if isinstance(raw, dict) else {},
         )
 
     def _build_output_schema(
         self, fields: List[FieldDefinition | ListFieldDefinition]
     ) -> Dict[str, Any]:
         """Build the expected JSON output schema for the LLM."""
-        data_schema: Dict[str, Any] = {}
-        selector_schema: Dict[str, Any] = {}
+        data_schema = build_data_schema(fields)
 
+        # Add selector schema (text extraction also returns CSS selectors)
+        selector_schema: Dict[str, Any] = {}
         for f in fields:
             if isinstance(f, ListFieldDefinition):
-                # List fields have array values and a row selector
-                row_schema = {}
-                row_selectors = {}
-                for sub in f.fields:
-                    row_schema[sub.name] = f"<{sub.type}>"
-                    row_selectors[sub.name] = "<css_selector>"
-                data_schema[f.name] = [row_schema]
                 selector_schema[f.name] = {
                     "row": "<css_selector_for_each_row>",
-                    "fields": row_selectors,
+                    "fields": {sub.name: "<css_selector>" for sub in f.fields},
                 }
             else:
-                type_hint = f"<{f.type}>"
-                if f.type == "currency":
-                    type_hint = "<number>"
-                elif f.type == "date":
-                    type_hint = "<ISO_date_string>"
-                elif f.type == "boolean":
-                    type_hint = "<true/false>"
-                data_schema[f.name] = type_hint
                 selector_schema[f.name] = "<css_selector>"
 
         return {

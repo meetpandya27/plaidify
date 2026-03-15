@@ -21,6 +21,8 @@ from src.core.extraction_prompt import (
     ExtractionResult,
     FieldDefinition,
     ListFieldDefinition,
+    build_data_schema,
+    parse_extraction_json,
 )
 from src.core.llm_provider import (
     BaseLLMProvider,
@@ -224,54 +226,23 @@ class MultimodalExtractor:
     def _parse_vision_response(self, response: LLMResponse) -> ExtractionResult:
         """Parse the vision model's JSON response."""
         try:
-            data = response.parse_json()
+            extracted, _, confidence = parse_extraction_json(response)
         except (json.JSONDecodeError, ValueError) as e:
             logger.error("Failed to parse vision response: %s", e)
             raise LLMProviderError(f"Vision model returned invalid JSON: {e}") from e
-
-        if not isinstance(data, dict):
-            raise LLMProviderError(
-                f"Expected dict from vision model, got {type(data).__name__}"
-            )
-
-        extracted = data.get("data", {})
-        confidence = data.get("confidence", 0.0)
-
-        try:
-            confidence = max(0.0, min(1.0, float(confidence)))
-        except (TypeError, ValueError):
-            confidence = 0.0
 
         return ExtractionResult(
             data=extracted,
             selectors={},  # Vision doesn't produce CSS selectors
             confidence=confidence,
-            raw_response=data,
+            raw_response=response.parse_json() if hasattr(response, "parse_json") else {},
         )
 
     def _build_output_schema(
         self, fields: List[FieldDefinition | ListFieldDefinition]
     ) -> Dict[str, Any]:
         """Build the expected JSON output schema."""
-        data_schema: Dict[str, Any] = {}
-
-        for f in fields:
-            if isinstance(f, ListFieldDefinition):
-                row_schema = {}
-                for sub in f.fields:
-                    row_schema[sub.name] = f"<{sub.type}>"
-                data_schema[f.name] = [row_schema]
-            else:
-                type_hint = f"<{f.type}>"
-                if f.type == "currency":
-                    type_hint = "<number>"
-                elif f.type == "date":
-                    type_hint = "<ISO_date_string>"
-                elif f.type == "boolean":
-                    type_hint = "<true/false>"
-                data_schema[f.name] = type_hint
-
         return {
-            "data": data_schema,
+            "data": build_data_schema(fields),
             "confidence": "<float 0.0-1.0>",
         }

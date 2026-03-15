@@ -93,3 +93,82 @@ def second_user_headers(client):
     assert response.status_code == 200
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+# ── Shared LLM / Playwright Mocks ────────────────────────────────────────────
+
+
+import json
+from unittest.mock import AsyncMock, MagicMock
+
+from src.core.llm_provider import LLMResponse, TokenUsage
+
+
+FAKE_SCREENSHOT = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+
+
+def make_llm_response(
+    data: dict,
+    selectors: dict | None = None,
+    confidence: float = 0.9,
+    **overrides,
+) -> LLMResponse:
+    """Create a mock LLM response with optional selector map."""
+    payload: dict = {"data": data, "confidence": confidence}
+    if selectors is not None:
+        payload["selectors"] = selectors
+    return LLMResponse(
+        content=json.dumps(payload),
+        model=overrides.get("model", "gpt-4o-mini"),
+        usage=TokenUsage(
+            prompt_tokens=overrides.get("prompt_tokens", 500),
+            completion_tokens=overrides.get("completion_tokens", 200),
+            total_tokens=overrides.get("total_tokens", 700),
+        ),
+        latency_ms=overrides.get("latency_ms", 1234.5),
+        provider=overrides.get("provider", "openai"),
+    )
+
+
+def make_mock_llm_provider(response_data: dict) -> MagicMock:
+    """Create a mock LLM provider that returns the given data as an LLMResponse.
+
+    Args:
+        response_data: The full JSON response dict (e.g. {"data": {...}, "confidence": 0.9}).
+                       Serialized directly as the LLM response content.
+    """
+    from src.core.llm_provider import BaseLLMProvider
+
+    provider = MagicMock(spec=BaseLLMProvider)
+    provider.provider_name = "mock"
+    provider.model = "mock-vision"
+    provider.max_tokens = 4096
+    provider.temperature = 0.0
+    provider.timeout = 60.0
+
+    response = LLMResponse(
+        content=json.dumps(response_data),
+        model="mock-vision",
+        usage=TokenUsage(prompt_tokens=500, completion_tokens=200, total_tokens=700),
+        latency_ms=1234.5,
+        provider="mock",
+    )
+    provider._call = AsyncMock(return_value=response)
+    return provider
+
+
+def make_mock_playwright_page(
+    url: str = "http://example.com/dashboard",
+    viewport_width: int = 1280,
+    viewport_height: int = 800,
+) -> MagicMock:
+    """Create a mock Playwright page for testing."""
+    page = AsyncMock()
+    page.url = url
+    page.viewport_size = {"width": viewport_width, "height": viewport_height}
+    page.screenshot = AsyncMock(return_value=FAKE_SCREENSHOT)
+    page.set_viewport_size = AsyncMock()
+    page.content = AsyncMock(
+        return_value="<html><body><div id='balance'>$1,234.56</div></body></html>"
+    )
+    return page

@@ -32,7 +32,6 @@ from src.core.data_extractor import DataExtractor
 from src.core.dom_simplifier import DOMSimplifier
 from src.core.extraction_prompt import (
     ExtractionPromptBuilder,
-    ExtractionResult,
     fields_from_blueprint_extract,
 )
 from src.core.llm_provider import (
@@ -52,6 +51,7 @@ from src.exceptions import (
     ConnectionFailedError,
     DataExtractionError,
     MFARequiredError,
+    PlaidifyError,
     SiteUnavailableError,
 )
 from src.logging_config import get_logger
@@ -199,27 +199,18 @@ def _create_llm_provider() -> Optional[BaseLLMProvider]:
     if not settings.llm_api_key:
         return None
 
-    primary = create_provider(
-        settings.llm_provider,
+    common = dict(
         api_key=settings.llm_api_key,
-        model=settings.llm_model,
         base_url=settings.llm_base_url,
         max_tokens=settings.llm_max_tokens,
         temperature=settings.llm_temperature,
         timeout=settings.llm_timeout,
     )
 
-    # If a fallback model is configured, create a FallbackChain
+    primary = create_provider(settings.llm_provider, model=settings.llm_model, **common)
+
     if settings.llm_fallback_model:
-        fallback = create_provider(
-            settings.llm_provider,
-            api_key=settings.llm_api_key,
-            model=settings.llm_fallback_model,
-            base_url=settings.llm_base_url,
-            max_tokens=settings.llm_max_tokens,
-            temperature=settings.llm_temperature,
-            timeout=settings.llm_timeout,
-        )
+        fallback = create_provider(settings.llm_provider, model=settings.llm_fallback_model, **common)
         return FallbackChain([primary, fallback])
 
     return primary
@@ -232,6 +223,14 @@ def _get_page_path(page: Any) -> str:
         return parsed.path or "/"
     except Exception:
         return "/"
+
+
+def _defs_to_field_defs(
+    extraction_defs: Dict[str, Union[ExtractionField, ListExtractionField]],
+) -> List:
+    """Convert blueprint extraction defs to LLM FieldDefinition list."""
+    raw = {name: fd.model_dump(exclude_none=True) for name, fd in extraction_defs.items()}
+    return fields_from_blueprint_extract(raw)
 
 
 async def _extract_with_cached_selectors(
@@ -326,10 +325,7 @@ async def _extract_with_llm(
         )
 
         # 2. Convert blueprint extract config to field definitions
-        raw_extract = {}
-        for name, field_def in extraction_defs.items():
-            raw_extract[name] = field_def.model_dump(exclude_none=True)
-        field_defs = fields_from_blueprint_extract(raw_extract)
+        field_defs = _defs_to_field_defs(extraction_defs)
 
         # 3. Build prompt
         prompt_builder = ExtractionPromptBuilder()
@@ -391,10 +387,7 @@ async def _extract_with_multimodal(
         return None
 
     try:
-        raw_extract = {}
-        for name, field_def in extraction_defs.items():
-            raw_extract[name] = field_def.model_dump(exclude_none=True)
-        field_defs = fields_from_blueprint_extract(raw_extract)
+        field_defs = _defs_to_field_defs(extraction_defs)
 
         extractor = MultimodalExtractor(provider)
         result = await extractor.extract_from_screenshot(
@@ -638,8 +631,7 @@ async def _execute_blueprint(
 
     except MFARequiredError:
         raise
-    except (AuthenticationError, ConnectionFailedError, SiteUnavailableError,
-            DataExtractionError, BlueprintValidationError, CaptchaRequiredError):
+    except PlaidifyError:
         raise
     except Exception as e:
         logger.error(

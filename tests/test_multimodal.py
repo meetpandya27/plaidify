@@ -2,7 +2,6 @@
 
 import base64
 import json
-from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,6 +25,11 @@ from src.core.llm_provider import (
     LLMResponse,
     TokenUsage,
 )
+from tests.conftest import (
+    FAKE_SCREENSHOT,
+    make_mock_llm_provider as make_mock_provider,
+    make_mock_playwright_page as make_mock_page,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -47,37 +51,6 @@ SAMPLE_LIST_FIELDS = [
         ),
     ),
 ]
-
-FAKE_SCREENSHOT = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100  # Minimal fake PNG
-
-
-def make_mock_provider(response_data: dict) -> BaseLLMProvider:
-    """Create a mock LLM provider that returns the given data."""
-    provider = MagicMock(spec=BaseLLMProvider)
-    provider.provider_name = "mock"
-    provider.model = "mock-vision"
-    provider.max_tokens = 4096
-    provider.temperature = 0.0
-    provider.timeout = 60.0
-
-    response = LLMResponse(
-        content=json.dumps(response_data),
-        model="mock-vision",
-        usage=TokenUsage(prompt_tokens=500, completion_tokens=200, total_tokens=700),
-        latency_ms=1234.5,
-        provider="mock",
-    )
-    provider._call = AsyncMock(return_value=response)
-    return provider
-
-
-def make_mock_page(viewport_width: int = 1280, viewport_height: int = 800) -> MagicMock:
-    """Create a mock Playwright page."""
-    page = AsyncMock()
-    page.viewport_size = {"width": viewport_width, "height": viewport_height}
-    page.screenshot = AsyncMock(return_value=FAKE_SCREENSHOT)
-    page.set_viewport_size = AsyncMock()
-    return page
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

@@ -41,6 +41,10 @@ from src.core.llm_provider import (
 )
 from src.core.selector_cache import SelectorCache
 from src.exceptions import DataExtractionError
+from tests.conftest import (
+    make_llm_response,
+    make_mock_playwright_page as make_mock_page,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -74,32 +78,6 @@ def make_v3_blueprint(
         },
         page_context="Banking dashboard showing account details",
         fallback_selectors=fallback_selectors,
-    )
-
-
-def make_mock_page(url: str = "http://example.com/dashboard") -> MagicMock:
-    """Create a mock Playwright page."""
-    page = AsyncMock()
-    page.url = url
-    page.viewport_size = {"width": 1280, "height": 800}
-    page.screenshot = AsyncMock(return_value=b"\x89PNG" + b"\x00" * 100)
-    page.set_viewport_size = AsyncMock()
-    page.content = AsyncMock(return_value="<html><body><div id='balance'>$1,234.56</div></body></html>")
-    return page
-
-
-def make_llm_response(data: dict, selectors: dict, confidence: float = 0.9) -> LLMResponse:
-    """Create a mock LLM response."""
-    return LLMResponse(
-        content=json.dumps({
-            "data": data,
-            "selectors": selectors,
-            "confidence": confidence,
-        }),
-        model="gpt-4o-mini",
-        usage=TokenUsage(prompt_tokens=500, completion_tokens=200, total_tokens=700),
-        latency_ms=1234.5,
-        provider="openai",
     )
 
 
