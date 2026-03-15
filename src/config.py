@@ -125,6 +125,52 @@ class Settings(BaseSettings):
         description="Enable anti-detection measures (randomized viewport, user-agent).",
     )
 
+    # ── LLM Extraction ────────────────────────────────────────
+    llm_provider: str = Field(
+        default="openai",
+        description="LLM provider for adaptive extraction: 'openai' or 'anthropic'.",
+    )
+    llm_api_key: Optional[str] = Field(
+        default=None,
+        description="API key for the LLM provider. Required when using LLM extraction.",
+    )
+    llm_model: Optional[str] = Field(
+        default=None,
+        description="Model name override (e.g. 'gpt-4o', 'claude-sonnet-4-20250514'). Uses provider default if not set.",
+    )
+    llm_base_url: Optional[str] = Field(
+        default=None,
+        description="Override LLM API base URL (for Azure OpenAI, local servers, etc.).",
+    )
+    llm_max_tokens: int = Field(
+        default=4096,
+        description="Max completion tokens for LLM extraction responses.",
+    )
+    llm_temperature: float = Field(
+        default=0.0,
+        description="LLM temperature (0.0 = deterministic, recommended for extraction).",
+    )
+    llm_timeout: float = Field(
+        default=60.0,
+        description="HTTP timeout in seconds for LLM API calls.",
+    )
+    llm_token_budget: int = Field(
+        default=30000,
+        description="Max input tokens for DOM sent to LLM. Larger pages are truncated.",
+    )
+    llm_fallback_model: Optional[str] = Field(
+        default=None,
+        description="Fallback model if primary fails (e.g. 'gpt-4o' when primary is 'gpt-4o-mini').",
+    )
+
+    @field_validator("llm_provider")
+    @classmethod
+    def validate_llm_provider(cls, v: str) -> str:
+        v = v.lower().strip()
+        if v not in ("openai", "anthropic"):
+            raise ValueError("llm_provider must be 'openai' or 'anthropic'")
+        return v
+
     @field_validator("env")
     @classmethod
     def validate_env(cls, v: str) -> str:
