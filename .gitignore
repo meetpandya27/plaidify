@@ -27,3 +27,6 @@ htmlcov/
 
 # Alembic
 alembic/versions/__pycache__/
+
+# Dev utility scripts
+inspect_dashboard.py
