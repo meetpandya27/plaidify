@@ -271,9 +271,10 @@ class DataExtractor:
         site: str,
     ) -> Any:
         """Extract a single field value."""
+        field_timeout = getattr(field_def, 'timeout', None) or 15000
         try:
             element = await self.page.wait_for_selector(
-                field_def.selector, timeout=5000, state="attached"
+                field_def.selector, timeout=field_timeout, state="attached"
             )
         except PlaywrightTimeout:
             if field_def.default is not None:

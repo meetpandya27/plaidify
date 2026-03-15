@@ -221,6 +221,10 @@ class ExtractionField(BaseModel):
         None,
         description="Default value if selector not found.",
     )
+    timeout: Optional[int] = Field(
+        None,
+        description="Timeout in milliseconds for this field (overrides default).",
+    )
 
 
 class ListExtractionField(BaseModel):
