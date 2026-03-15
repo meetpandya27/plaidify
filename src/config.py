@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     # ── Encryption ────────────────────────────────────────────
     encryption_key: str = Field(
         ...,  # Required — no default
-        description="Fernet encryption key for credential storage. "
-        "Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"",
+        description="Base64url-encoded 256-bit key for AES-256-GCM credential encryption. "
+        "Generate with: python -c \"import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())\"",
     )
 
     # ── JWT / Auth ────────────────────────────────────────────
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # ── Server ────────────────────────────────────────────────
     app_name: str = Field(default="Plaidify", description="Application name.")
-    app_version: str = Field(default="0.1.0", description="Application version.")
+    app_version: str = Field(default="0.2.0", description="Application version.")
     debug: bool = Field(default=False, description="Enable debug mode.")
     log_level: str = Field(default="INFO", description="Logging level.")
     log_format: str = Field(
@@ -55,6 +55,36 @@ class Settings(BaseSettings):
     connectors_dir: str = Field(
         default="connectors",
         description="Path to the directory containing connector blueprints.",
+    )
+
+    # ── Browser Engine ────────────────────────────────────────
+    browser_headless: bool = Field(
+        default=True,
+        description="Run Playwright browsers in headless mode.",
+    )
+    browser_pool_size: int = Field(
+        default=5,
+        description="Maximum number of concurrent browser contexts in the pool.",
+    )
+    browser_idle_timeout: int = Field(
+        default=300,
+        description="Seconds before an idle browser context is closed.",
+    )
+    browser_navigation_timeout: int = Field(
+        default=30000,
+        description="Default navigation timeout in milliseconds.",
+    )
+    browser_action_timeout: int = Field(
+        default=10000,
+        description="Default timeout for individual actions (click, fill) in milliseconds.",
+    )
+    browser_block_resources: bool = Field(
+        default=True,
+        description="Block images, fonts, and analytics scripts for speed.",
+    )
+    browser_stealth: bool = Field(
+        default=True,
+        description="Enable anti-detection measures (randomized viewport, user-agent).",
     )
 
     @field_validator("log_level")
@@ -123,15 +153,15 @@ def get_settings() -> Settings:
             file=sys.stderr,
         )
         print(
-            '║  export ENCRYPTION_KEY="$(python -c \\                       ║',
+            '║  export ENCRYPTION_KEY="$(python -c                         ║',
             file=sys.stderr,
         )
         print(
-            "║    \"from cryptography.fernet import Fernet; \\               ║",
+            "║    \"import base64,os;                                       ║",
             file=sys.stderr,
         )
         print(
-            '║    print(Fernet.generate_key().decode())")"                  ║',
+            '║    print(base64.urlsafe_b64encode(os.urandom(32)).decode())" ║',
             file=sys.stderr,
         )
         print(

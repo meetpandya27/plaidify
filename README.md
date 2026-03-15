@@ -30,13 +30,11 @@
 
 ## The Problem
 
-> Every AI agent hits the same wall: **the world's most valuable data is locked behind login forms.**
+Bank balances, utility bills, insurance claims, medical records, academic transcripts, government portals — the most useful data on the web sits behind login forms with no APIs.
 
-Bank balances. Utility bills. Insurance policies. Medical records. Academic transcripts. Government portals. **None of them have APIs.** And the ones that do (Plaid) cost $500+/month and only cover finance.
+Services like Plaid cover banking and charge $500+/month. Everything else? You’re writing brittle Selenium scripts or paying per-connection fees to closed-source vendors.
 
-If you're building an AI agent, an agentic workflow, or any app that needs to access user data from the authenticated web — you're stuck writing fragile Selenium scripts or paying per-connection fees to closed-source vendors.
-
-**Plaidify fixes this.** One JSON blueprint per site. One REST API for everything.
+Plaidify is an attempt to fix this: one JSON blueprint per site, one REST API for everything.
 
 ---
 
@@ -116,7 +114,7 @@ Plaidify isn't just another Plaid alternative. It's **infrastructure for the nex
 **Why agents need this:**
 - Structured data from any authenticated site
 - User consent & scoped permissions
-- Credential encryption at rest
+- Credential encryption at rest (AES-256-GCM)
 - Full audit trail per agent action
 - Built-in rate limiting & error recovery
 
@@ -145,7 +143,7 @@ print(resp.json()["data"])
 **Why devs love this:**
 - Drop a JSON blueprint → get an API
 - No Selenium/Playwright code to write
-- Credential encryption handled for you
+- Credential encryption handled for you (AES-256-GCM)
 - Swagger docs at `/docs` out of the box
 - Docker-ready, CI included
 
@@ -283,7 +281,7 @@ We treat credential handling as the #1 priority.
 
 | Practice | Status |
 |----------|--------|
-| Fernet encryption at rest (AES-128-CBC) | ✅ |
+| AES-256-GCM encryption at rest | ✅ |
 | No hardcoded secrets — app fails to start without env vars | ✅ |
 | JWT auth with signed tokens + expiry | ✅ |
 | User data isolation (tested & verified) | ✅ |
@@ -307,9 +305,10 @@ We treat credential handling as the #1 priority.
 | **REST API** | FastAPI with 19 endpoints, full Swagger docs |
 | **Auth System** | Register, login, JWT tokens, OAuth2 placeholder |
 | **Link Token Flow** | Plaid-style multi-step: create_link → submit_credentials → fetch_data |
-| **Credential Encryption** | Fernet symmetric encryption, no plaintext storage |
+| **Credential Encryption** | AES-256-GCM authenticated encryption, no plaintext storage |
 | **Blueprint System** | JSON blueprints + Python connector plugins |
 | **Database** | SQLAlchemy ORM, Alembic migrations, SQLite/PostgreSQL |
+| **Security** | AES-256-GCM (OWASP-recommended AEAD), no plaintext credentials |
 | **Configuration** | Pydantic Settings, env vars, fails fast if misconfigured |
 | **CI/CD** | GitHub Actions: lint, test (3.9–3.12 matrix), security audit, Docker build |
 | **Test Suite** | 53 tests, 80% coverage, user isolation verified |
@@ -345,7 +344,7 @@ plaidify/
 ├── src/
 │   ├── main.py              # FastAPI app — all 19 endpoints
 │   ├── config.py            # Pydantic Settings — env var config
-│   ├── database.py          # SQLAlchemy + Fernet encryption
+│   ├── database.py          # SQLAlchemy + AES-256-GCM encryption
 │   ├── models.py            # Request/response Pydantic schemas
 │   ├── exceptions.py        # Custom error hierarchy (15 types)
 │   ├── logging_config.py    # JSON (prod) / colored text (dev) logging
@@ -367,7 +366,7 @@ plaidify/
 
 ## 🤝 Contributing
 
-We're building the open-source infrastructure layer for authenticated web data. **This is a big problem and we need help.**
+We’re building open-source infrastructure for authenticated web data. Contributions welcome — especially blueprints for real sites.
 
 ### Highest-Impact Contributions Right Now
 
@@ -448,15 +447,28 @@ Connect to internal portals, vendor dashboards, and legacy systems that lack API
 | Selenium/Playwright | Raw tools | Any (you write everything) | ❌ | ✅ | Free |
 | Huginn | Ruby agents | Any (complex setup) | ❌ | ✅ | Free |
 
-**Plaidify's sweet spot:** The abstraction of Plaid + the flexibility of Playwright + the openness of Woob + built for AI agents.
+**Plaidify's sweet spot:** The abstraction of Plaid + the flexibility of Playwright + the openness of Woob, designed with AI agents in mind.
 
 ---
 
 ## Star History
 
-If Plaidify is useful to you, a ⭐ helps others find it.
+If Plaidify is useful, a ⭐ helps others find it.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=meetpandya27/plaidify&type=Date)](https://star-history.com/#meetpandya27/plaidify&Date)
+
+---
+
+## ⚠️ Legal Disclaimer
+
+**Plaidify is a general-purpose browser automation infrastructure tool.** It is your responsibility to ensure that your use of Plaidify complies with the Terms of Service of any website you interact with, as well as all applicable local, state, and federal laws.
+
+- Many websites prohibit automated access in their Terms of Service. Using Plaidify with such sites may violate those terms and could result in account suspension or legal action.
+- Plaidify is **not** a licensed financial data aggregator. If you use it to access banking or financial sites, you do so at your own risk. Your financial institution may not cover losses related to credentials shared with third-party tools.
+- The authors and contributors of Plaidify accept **no liability** for misuse, data loss, account lockouts, or any other damages arising from use of this software.
+- Always obtain explicit user consent before accessing any account on their behalf.
+
+> **tl;dr** — This is a power tool. Use it responsibly, read the TOS of target sites, and don't do anything you wouldn't want done to your own accounts.
 
 ---
 

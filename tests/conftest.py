@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # Set test environment variables BEFORE importing app modules
-os.environ.setdefault("ENCRYPTION_KEY", "ZY58Cfm5vG7YuExWuJ7uG8eN9_A8v6uLEFncah56324=")
+os.environ.setdefault("ENCRYPTION_KEY", "s790nQg9kGoAVQGqXreKUbG8Q0OA-A4HASTbyd-ruuQ=")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-not-production")
 os.environ.setdefault("DATABASE_URL", "sqlite:///test_plaidify.db")
 os.environ.setdefault("LOG_LEVEL", "WARNING")

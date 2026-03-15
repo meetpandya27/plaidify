@@ -16,7 +16,7 @@ from src.exceptions import (
 
 
 class TestEncryption:
-    """Tests for Fernet credential encryption/decryption."""
+    """Tests for AES-256-GCM credential encryption/decryption."""
 
     def test_encrypt_decrypt_roundtrip(self):
         plaintext = "my-secret-password-123!"
@@ -26,11 +26,11 @@ class TestEncryption:
         assert decrypted == plaintext
 
     def test_encrypt_produces_different_ciphertexts(self):
-        """Fernet includes a timestamp, so same plaintext → different ciphertext."""
+        """GCM uses a random nonce, so same plaintext → different ciphertext."""
         plaintext = "same-password"
         encrypted1 = encrypt_credential(plaintext)
         encrypted2 = encrypt_credential(plaintext)
-        assert encrypted1 != encrypted2  # Different due to IV/timestamp
+        assert encrypted1 != encrypted2  # Different due to random nonce
 
     def test_encrypt_empty_string(self):
         encrypted = encrypt_credential("")
@@ -42,6 +42,14 @@ class TestEncryption:
         encrypted = encrypt_credential(plaintext)
         decrypted = decrypt_credential(encrypted)
         assert decrypted == plaintext
+
+    def test_ciphertext_is_base64url(self):
+        """Ciphertext should be valid base64url (nonce + ct + tag)."""
+        import base64
+        encrypted = encrypt_credential("test")
+        raw = base64.urlsafe_b64decode(encrypted)
+        # 12-byte nonce + at least 1 byte plaintext + 16-byte GCM tag
+        assert len(raw) >= 12 + 1 + 16
 
 
 class TestExceptions:

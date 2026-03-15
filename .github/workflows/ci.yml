@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  ENCRYPTION_KEY: "ZY58Cfm5vG7YuExWuJ7uG8eN9_A8v6uLEFncah56324="
+  ENCRYPTION_KEY: "s790nQg9kGoAVQGqXreKUbG8Q0OA-A4HASTbyd-ruuQ="
   JWT_SECRET_KEY: "ci-test-secret-key-not-for-production-use-1234567890abcdef"
   DATABASE_URL: "sqlite:///test_plaidify.db"
   LOG_LEVEL: "WARNING"
