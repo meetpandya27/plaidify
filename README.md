@@ -42,18 +42,22 @@ Plaidify is an attempt to fix this: one JSON blueprint per site, one REST API fo
 ## How It Works
 
 ```
-┌──────────────────┐        ┌─────────────────────────────────────┐
-│                  │        │            Plaidify                  │
-│   Your App /     │  POST  │                                     │
-│   AI Agent /     ├───────►│  1. Load Blueprint (JSON or Python) │
-│   MCP Client     │        │  2. Launch Browser (Playwright)     │
-│                  │◄───────┤  3. Authenticate & Extract Data     │
-│                  │  JSON  │  4. Return Structured Response      │
-│                  │        │                                     │
-└──────────────────┘        └─────────────────────────────────────┘
+┌──────────────────┐        ┌──────────────────────────────────────────────┐
+│                  │        │               Plaidify                        │
+│   Your App /     │  POST  │                                              │
+│   AI Agent /     ├───────►│  1. Rate Limit & Auth (JWT + refresh tokens) │
+│   MCP Client     │        │  2. Decrypt credentials (RSA → AES-256-GCM)  │
+│                  │◄───────┤  3. Load Blueprint (JSON or Python)           │
+│                  │  JSON  │  4. Launch Browser (Playwright)               │
+│                  │        │  5. Authenticate & Extract Data               │
+│                  │        │  6. Return Structured Response                │
+└──────────────────┘        └──────────────────────────────────────────────┘
+
+Security layers:  Rate limiting ─► CORS ─► JWT auth ─► RSA decrypt
+                  ─► Per-user DEK envelope encryption ─► Key rotation
 ```
 
-**One call. Structured JSON out. Any website.**
+**One call. Structured JSON out. Any website. Enterprise-grade security.**
 
 ```bash
 curl -X POST http://localhost:8000/connect \

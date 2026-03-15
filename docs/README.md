@@ -10,23 +10,27 @@
 Plaidify is a FastAPI application with a modular architecture designed to support multiple connection strategies and deployment patterns.
 
 ```
-Request → FastAPI Router → Auth Middleware → Endpoint Handler
-                                                    │
-                              ┌─────────────────────┼──────────────────────┐
-                              ▼                     ▼                      ▼
-                        Direct Connect        Link Token Flow         Auth Endpoints
-                        (POST /connect)       (multi-step)            (register/login)
-                              │                     │
-                              ▼                     ▼
-                        Connection Engine ◄─────────┘
-                              │
-                    ┌─────────┼─────────┐
-                    ▼                   ▼
-              Python Connector    JSON Blueprint
-              (BaseConnector)     (connectors/*.json)
-                    │                   │
-                    ▼                   ▼
-              Custom Logic        Stub Engine (→ Playwright in Phase 1)
+Request → Rate Limiter → CORS → Security Headers → FastAPI Router → JWT Auth → Endpoint Handler
+                                                                                        │
+                                                          ┌─────────────────────────────┼───────────────────────────┐
+                                                          ▼                             ▼                           ▼
+                                                    Direct Connect              Link Token Flow               Auth Endpoints
+                                                    (POST /connect)             (multi-step)                  (register/login/refresh)
+                                                          │                             │
+                                                    RSA Decrypt (optional)        RSA Decrypt (optional)
+                                                          │                             │
+                                                          ▼                             ▼
+                                                    Connection Engine ◄──────────────────┘
+                                                          │
+                                                ┌─────────┼─────────┐
+                                                ▼                   ▼
+                                          Python Connector    JSON Blueprint
+                                          (BaseConnector)     (connectors/*.json)
+                                                │                   │
+                                                ▼                   ▼
+                                          Custom Logic        Playwright Engine
+
+Credential storage: RSA-2048 in transit ─► AES-256-GCM per-user DEK at rest ─► Master key rotation
 ```
 
 ### Module Responsibilities
