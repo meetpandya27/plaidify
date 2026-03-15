@@ -46,6 +46,23 @@ def setup_test_db():
     Base.metadata.drop_all(bind=test_engine)
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Disable rate limiting by default in tests to prevent cross-test interference.
+
+    Tests that specifically test rate limiting should re-enable it via:
+        limiter.enabled = True
+    """
+    from limits.storage.memory import MemoryStorage
+    from src.main import limiter
+    limiter.enabled = False
+    # Replace storage with a fresh instance to guarantee no stale counters
+    limiter._limiter.storage = MemoryStorage()
+    yield
+    limiter.enabled = False
+    limiter._limiter.storage = MemoryStorage()
+
+
 @pytest.fixture
 def client():
     """FastAPI test client."""

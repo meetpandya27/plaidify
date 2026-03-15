@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # ── Server ────────────────────────────────────────────────
     app_name: str = Field(default="Plaidify", description="Application name.")
-    app_version: str = Field(default="0.2.0", description="Application version.")
+    app_version: str = Field(default="0.3.0a1", description="Application version.")
     debug: bool = Field(default=False, description="Enable debug mode.")
     log_level: str = Field(default="INFO", description="Logging level.")
     log_format: str = Field(
@@ -55,6 +55,24 @@ class Settings(BaseSettings):
     connectors_dir: str = Field(
         default="connectors",
         description="Path to the directory containing connector blueprints.",
+    )
+
+    # ── Rate Limiting ─────────────────────────────────────────
+    rate_limit_enabled: bool = Field(
+        default=True,
+        description="Enable rate limiting on API endpoints.",
+    )
+    rate_limit_auth: str = Field(
+        default="5/minute",
+        description="Rate limit for auth endpoints (login, register). Format: 'N/period'.",
+    )
+    rate_limit_connect: str = Field(
+        default="10/minute",
+        description="Rate limit for /connect endpoint. Format: 'N/period'.",
+    )
+    rate_limit_default: str = Field(
+        default="60/minute",
+        description="Default rate limit for all other endpoints. Format: 'N/period'.",
     )
 
     # ── Browser Engine ────────────────────────────────────────

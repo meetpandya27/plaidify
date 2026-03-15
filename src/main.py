@@ -20,6 +20,9 @@ from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
@@ -50,6 +53,14 @@ from src.core.mfa_manager import get_mfa_manager
 
 settings = get_settings()
 logger = get_logger("api")
+
+# ── Rate Limiter ─────────────────────────────────────────────────────────────────
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[settings.rate_limit_default] if settings.rate_limit_enabled else [],
+    enabled=settings.rate_limit_enabled,
+)
 
 # ── Application Lifecycle ─────────────────────────────────────────────────────
 
@@ -83,6 +94,10 @@ app = FastAPI(
     description="Open-source API for authenticated web data — for developers and AI agents.",
     lifespan=lifespan,
 )
+
+# Rate limiter state + error handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS
 origins = [o.strip() for o in settings.cors_origins.split(",")]
@@ -292,7 +307,8 @@ async def get_blueprint_info(site: str):
 
 
 @app.post("/connect", response_model=ConnectResponse)
-async def connect(request: ConnectRequest):
+@limiter.limit(settings.rate_limit_connect)
+async def connect(request: Request, body: ConnectRequest):
     """
     Connect to a site and extract data in a single step.
 
@@ -302,10 +318,10 @@ async def connect(request: ConnectRequest):
     """
     try:
         response_data = await connect_to_site(
-            site=request.site,
-            username=request.username,
-            password=request.password,
-            extract_fields=request.extract_fields,
+            site=body.site,
+            username=body.username,
+            password=body.password,
+            extract_fields=body.extract_fields,
         )
         return response_data
     except MFARequiredError as e:
@@ -463,16 +479,17 @@ async def fetch_data(
 
 
 @app.post("/auth/register", response_model=TokenResponse)
-def register_user(request: UserRegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+def register_user(request: Request, body: UserRegisterRequest, db: Session = Depends(get_db)):
     """Register a new user account."""
     existing = db.query(User).filter(
-        (User.username == request.username) | (User.email == request.email)
+        (User.username == body.username) | (User.email == body.email)
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="Username or email already registered")
 
-    hashed_pw = get_password_hash(request.password)
-    user = User(username=request.username, email=request.email, hashed_password=hashed_pw)
+    hashed_pw = get_password_hash(body.password)
+    user = User(username=body.username, email=body.email, hashed_password=hashed_pw)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -483,7 +500,8 @@ def register_user(request: UserRegisterRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/token", response_model=TokenResponse)
-def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+@limiter.limit(settings.rate_limit_auth)
+def login_user(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Log in and receive a JWT access token."""
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
@@ -505,16 +523,17 @@ def get_profile(user: User = Depends(get_current_user)):
 
 
 @app.post("/auth/oauth2", response_model=TokenResponse)
-def oauth2_login(request: OAuth2LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit(settings.rate_limit_auth)
+def oauth2_login(request: Request, body: OAuth2LoginRequest, db: Session = Depends(get_db)):
     """
     OAuth2 login endpoint (Google, GitHub, etc.).
 
     NOTE: This is a placeholder. In production, verify the token with the
     provider's API before creating/finding the user.
     """
-    provider = request.provider.lower()
+    provider = body.provider.lower()
     # In production: validate token with provider and extract real sub
-    oauth_sub = f"{provider}|{request.oauth_token[:8]}"
+    oauth_sub = f"{provider}|{body.oauth_token[:8]}"
 
     user = db.query(User).filter_by(oauth_provider=provider, oauth_sub=oauth_sub).first()
     if not user:
