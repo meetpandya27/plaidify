@@ -10,11 +10,19 @@ from typing import Any, Dict, Optional
 
 
 class ConnectRequest(BaseModel):
-    """Request body for POST /connect."""
+    """Request body for POST /connect.
+
+    Credentials can be sent as plaintext (username/password) or encrypted
+    (encrypted_username/encrypted_password + link_token). If encrypted fields
+    are present they take precedence.
+    """
 
     site: str = Field(..., description="Site identifier matching a blueprint name.")
-    username: str = Field(..., description="Username for the target site.")
-    password: str = Field(..., description="Password for the target site.")
+    username: Optional[str] = Field(default=None, description="Plaintext username (omit if encrypted).")
+    password: Optional[str] = Field(default=None, description="Plaintext password (omit if encrypted).")
+    encrypted_username: Optional[str] = Field(default=None, description="Base64-encoded RSA-OAEP encrypted username.")
+    encrypted_password: Optional[str] = Field(default=None, description="Base64-encoded RSA-OAEP encrypted password.")
+    link_token: Optional[str] = Field(default=None, description="Link token whose ephemeral key encrypts the credentials.")
     extract_fields: Optional[list[str]] = Field(
         default=None,
         description="Specific fields to extract (None = all defined in blueprint).",

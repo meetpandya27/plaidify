@@ -32,9 +32,24 @@ window.addEventListener("load", () => {
     const resultElement = document.getElementById("submit-credentials-result");
 
     try {
-      const response = await fetch(`/submit_credentials?link_token=${encodeURIComponent(linkToken)}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`, {
-        method: "POST"
-      });
+      // Try to get the public key for the link_token and encrypt
+      let url;
+      try {
+        const keyRes = await fetch(`/encryption/public_key/${encodeURIComponent(linkToken)}`);
+        if (keyRes.ok) {
+          const keyData = await keyRes.json();
+          const encUser = await encryptWithPublicKey(keyData.public_key, username);
+          const encPass = await encryptWithPublicKey(keyData.public_key, password);
+          url = `/submit_credentials?link_token=${encodeURIComponent(linkToken)}&encrypted_username=${encodeURIComponent(encUser)}&encrypted_password=${encodeURIComponent(encPass)}`;
+        } else {
+          throw new Error("no key");
+        }
+      } catch {
+        // Fallback to plaintext
+        url = `/submit_credentials?link_token=${encodeURIComponent(linkToken)}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+      }
+
+      const response = await fetch(url, { method: "POST" });
       if (!response.ok) {
         throw new Error(`Error submitting credentials: ${response.statusText}`);
       }
@@ -66,3 +81,35 @@ window.addEventListener("load", () => {
     }
   });
 });
+
+// ── Client-side Encryption (WebCrypto) ───────────────────────────────────────
+
+async function encryptWithPublicKey(pemPublicKey, plaintext) {
+  const pemBody = pemPublicKey
+    .replace(/-----BEGIN PUBLIC KEY-----/, "")
+    .replace(/-----END PUBLIC KEY-----/, "")
+    .replace(/\s/g, "");
+  const binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
+
+  const cryptoKey = await crypto.subtle.importKey(
+    "spki",
+    binaryDer.buffer,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["encrypt"]
+  );
+
+  const encoded = new TextEncoder().encode(plaintext);
+  const cipherBuffer = await crypto.subtle.encrypt(
+    { name: "RSA-OAEP" },
+    cryptoKey,
+    encoded
+  );
+
+  const cipherArray = new Uint8Array(cipherBuffer);
+  let binary = "";
+  for (let i = 0; i < cipherArray.length; i++) {
+    binary += String.fromCharCode(cipherArray[i]);
+  }
+  return btoa(binary);
+}

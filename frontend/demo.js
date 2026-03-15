@@ -158,14 +158,38 @@ async function doConnect(username, password) {
   try {
     await markActive("prog-auth", "Authenticating...");
 
-    const res = await fetch("/connect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    // Get ephemeral encryption session for client-side credential encryption
+    let connectBody;
+    try {
+      const encSession = await fetch("/encryption/session", { method: "POST" });
+      const encData = await encSession.json();
+      const pubKeyPem = encData.public_key;
+      const linkToken = encData.link_token;
+
+      const encUser = await encryptWithPublicKey(pubKeyPem, username);
+      const encPass = await encryptWithPublicKey(pubKeyPem, password);
+
+      connectBody = {
+        site: state.selectedSite,
+        encrypted_username: encUser,
+        encrypted_password: encPass,
+        link_token: linkToken,
+      };
+      log("Credentials encrypted with ephemeral RSA key", "info");
+    } catch (encErr) {
+      // Fallback to plaintext if encryption not available (e.g. older server)
+      log("Client-side encryption unavailable, using plaintext", "warn");
+      connectBody = {
         site: state.selectedSite,
         username,
         password,
-      }),
+      };
+    }
+
+    const res = await fetch("/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(connectBody),
     });
 
     const data = await res.json();
@@ -414,3 +438,47 @@ document.addEventListener("DOMContentLoaded", () => {
     })
     .catch(() => {});
 });
+
+// ── Client-side Encryption (WebCrypto) ───────────────────────────────────────
+
+/**
+ * Encrypt a plaintext string with an RSA-OAEP public key (PEM).
+ * Returns a base64-encoded ciphertext string.
+ *
+ * @param {string} pemPublicKey - PEM-encoded RSA public key (SPKI)
+ * @param {string} plaintext - The string to encrypt
+ * @returns {Promise<string>} base64-encoded ciphertext
+ */
+async function encryptWithPublicKey(pemPublicKey, plaintext) {
+  // Strip PEM header/footer and decode base64
+  const pemBody = pemPublicKey
+    .replace(/-----BEGIN PUBLIC KEY-----/, "")
+    .replace(/-----END PUBLIC KEY-----/, "")
+    .replace(/\s/g, "");
+  const binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
+
+  // Import as RSA-OAEP with SHA-256 (matches server-side)
+  const cryptoKey = await crypto.subtle.importKey(
+    "spki",
+    binaryDer.buffer,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["encrypt"]
+  );
+
+  // Encrypt the plaintext
+  const encoded = new TextEncoder().encode(plaintext);
+  const cipherBuffer = await crypto.subtle.encrypt(
+    { name: "RSA-OAEP" },
+    cryptoKey,
+    encoded
+  );
+
+  // Convert to base64
+  const cipherArray = new Uint8Array(cipherBuffer);
+  let binary = "";
+  for (let i = 0; i < cipherArray.length; i++) {
+    binary += String.fromCharCode(cipherArray[i]);
+  }
+  return btoa(binary);
+}

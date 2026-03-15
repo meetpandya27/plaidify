@@ -51,6 +51,13 @@ from src.models import (
 from src.core.engine import connect_to_site, submit_mfa_code
 from src.core.browser_pool import get_browser_pool, shutdown_browser_pool
 from src.core.mfa_manager import get_mfa_manager
+from src.crypto import (
+    generate_keypair,
+    get_public_key,
+    decrypt_with_session_key,
+    destroy_session_key,
+    cleanup_expired_keys,
+)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -386,6 +393,70 @@ async def get_blueprint_info(site: str):
 # ── Connection Endpoints ──────────────────────────────────────────────────────
 
 
+def _resolve_credentials(body: ConnectRequest) -> tuple[str, str]:
+    """Extract plaintext credentials from a ConnectRequest.
+
+    Supports both plaintext and client-side encrypted credentials.
+    If encrypted fields are present, they are decrypted using the ephemeral
+    session key associated with the link_token.
+
+    Returns:
+        (username, password) as plaintext strings.
+
+    Raises:
+        HTTPException: If credentials are missing or decryption fails.
+    """
+    import base64
+
+    if body.encrypted_username and body.encrypted_password and body.link_token:
+        try:
+            enc_user = base64.b64decode(body.encrypted_username)
+            enc_pass = base64.b64decode(body.encrypted_password)
+            username = decrypt_with_session_key(body.link_token, enc_user)
+            password = decrypt_with_session_key(body.link_token, enc_pass)
+            # Destroy the key after single use
+            destroy_session_key(body.link_token)
+            return username, password
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Failed to decrypt credentials.")
+
+    if body.username and body.password:
+        return body.username, body.password
+
+    raise HTTPException(
+        status_code=422,
+        detail="Provide either (username + password) or (encrypted_username + encrypted_password + link_token).",
+    )
+
+
+@app.get("/encryption/public_key/{link_token}")
+async def get_encryption_key(link_token: str):
+    """Get the ephemeral public key for a link session.
+
+    Clients use this for the one-shot /connect flow: create a temporary
+    link_token just to get the public key, then encrypt credentials before
+    calling /connect.
+    """
+    pub_key = get_public_key(link_token)
+    if not pub_key:
+        raise HTTPException(status_code=404, detail="No encryption key found for this link token.")
+    return {"link_token": link_token, "public_key": pub_key}
+
+
+@app.post("/encryption/session")
+async def create_encryption_session():
+    """Create a temporary encryption session for one-shot /connect usage.
+
+    Returns a link_token and public key without requiring authentication.
+    The link_token is only used for credential encryption — not stored in DB.
+    """
+    link_token = str(uuid.uuid4())
+    public_key_pem = generate_keypair(link_token)
+    return {"link_token": link_token, "public_key": public_key_pem}
+
+
 @app.post("/connect", response_model=ConnectResponse)
 @limiter.limit(settings.rate_limit_connect)
 async def connect(request: Request, body: ConnectRequest):
@@ -393,14 +464,16 @@ async def connect(request: Request, body: ConnectRequest):
     Connect to a site and extract data in a single step.
 
     This is the simplest integration path — send credentials, get data back.
+    Credentials can be sent encrypted (recommended) or plaintext.
     If MFA is required, returns status='mfa_required' with a session_id.
     The client then calls POST /mfa/submit with the code.
     """
+    username, password = _resolve_credentials(body)
     try:
         response_data = await connect_to_site(
             site=body.site,
-            username=body.username,
-            password=body.password,
+            username=username,
+            password=password,
             extract_fields=body.extract_fields,
         )
         return response_data
@@ -471,15 +544,21 @@ async def create_link(
     new_link = Link(link_token=link_token, site=site, user_id=user.id)
     db.add(new_link)
     db.commit()
+
+    # Generate ephemeral RSA keypair for client-side encryption
+    public_key_pem = generate_keypair(link_token)
+
     logger.info("Link created", extra={"extra_data": {"site": site, "user_id": user.id}})
-    return {"link_token": link_token}
+    return {"link_token": link_token, "public_key": public_key_pem}
 
 
 @app.post("/submit_credentials")
 async def submit_credentials(
     link_token: str,
-    username: str,
-    password: str,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    encrypted_username: Optional[str] = None,
+    encrypted_password: Optional[str] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -487,20 +566,38 @@ async def submit_credentials(
     Submit credentials for a link token.
 
     Step 2 of the multi-step flow. Credentials are encrypted at rest.
+    Accepts plaintext or RSA-OAEP encrypted credentials.
     """
     existing_link = db.query(Link).filter_by(link_token=link_token, user_id=user.id).first()
     if not existing_link:
         raise HTTPException(status_code=404, detail="Invalid link token.")
 
-    encrypted_username = encrypt_credential(username)
-    encrypted_password = encrypt_credential(password)
+    # Resolve credentials — encrypted takes precedence
+    import base64
+    if encrypted_username and encrypted_password:
+        try:
+            plain_user = decrypt_with_session_key(link_token, base64.b64decode(encrypted_username))
+            plain_pass = decrypt_with_session_key(link_token, base64.b64decode(encrypted_password))
+            destroy_session_key(link_token)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    elif username and password:
+        plain_user, plain_pass = username, password
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide either (username + password) or (encrypted_username + encrypted_password).",
+        )
+
+    encrypted_username_stored = encrypt_credential(plain_user)
+    encrypted_password_stored = encrypt_credential(plain_pass)
     access_token = str(uuid.uuid4())
 
     new_token = AccessToken(
         token=access_token,
         link_token=link_token,
-        username_encrypted=encrypted_username,
-        password_encrypted=encrypted_password,
+        username_encrypted=encrypted_username_stored,
+        password_encrypted=encrypted_password_stored,
         user_id=user.id,
     )
     db.add(new_token)
