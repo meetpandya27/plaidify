@@ -1,0 +1,8 @@
+/* PlaidifyLink widget — minimal overlay styles.
+   The actual link page styles are in link-page.css (served inside the iframe).
+   This file is provided for consumers who want to include it in their page,
+   though link.js injects styles inline so it's optional. */
+
+[data-plaidify-overlay] {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
+}

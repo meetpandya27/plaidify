@@ -46,10 +46,13 @@ from plaidify.models import (
     BlueprintListResult,
     ConnectResult,
     HealthStatus,
+    LinkEvent,
     LinkResult,
+    LinkSession,
     MFAChallenge,
     MFASubmitResult,
     UserProfile,
+    WebhookRegistration,
 )
 
 # Type alias for the MFA handler callback
@@ -557,6 +560,165 @@ class Plaidify:
         _raise_for_api_error(r)
         return r.json()
 
+    # ── Hosted Link (agent integration) ───────────────────────────────────────
+
+    async def create_link_session(self, site: Optional[str] = None) -> LinkSession:
+        """Create a hosted link session and return the link URL.
+
+        The returned ``link_url`` can be opened in a browser or embedded via
+        the PlaidifyLink widget for the user to authenticate.
+
+        Args:
+            site: Optional blueprint identifier to pre-select.
+
+        Returns:
+            LinkSession with ``link_token``, ``link_url``, and ``public_key``.
+        """
+        params = {}
+        if site:
+            params["site"] = site
+        try:
+            r = await self._http.post("/link/sessions", params=params)
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return LinkSession(
+            link_token=d["link_token"],
+            link_url=d.get("link_url", ""),
+            public_key=d.get("public_key"),
+            expires_in=d.get("expires_in", 1800),
+        )
+
+    def get_link_url(self, link_token: str) -> str:
+        """Return the full hosted link page URL for a link token.
+
+        Args:
+            link_token: Token from :meth:`create_link_session`.
+
+        Returns:
+            Absolute URL string for the hosted link page.
+        """
+        return f"{self._config.server_url}/link?token={link_token}"
+
+    async def register_webhook(
+        self,
+        link_token: str,
+        url: str,
+        secret: str,
+    ) -> WebhookRegistration:
+        """Register a webhook URL for a link session.
+
+        The server will POST events (LINK_COMPLETE, LINK_ERROR, MFA_REQUIRED)
+        to the provided URL with an HMAC-SHA256 signature.
+
+        Args:
+            link_token: Token identifying the link session.
+            url: HTTPS callback URL to receive events.
+            secret: Shared secret for HMAC signature verification.
+
+        Returns:
+            WebhookRegistration with ``webhook_id``.
+        """
+        try:
+            r = await self._http.post(
+                "/webhooks/register",
+                json={"link_token": link_token, "url": url, "secret": secret},
+            )
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return WebhookRegistration(webhook_id=d["webhook_id"], status=d.get("status", "registered"))
+
+    async def poll_link_status(
+        self,
+        link_token: str,
+        *,
+        timeout: float = 300.0,
+        interval: float = 2.0,
+    ) -> LinkSession:
+        """Poll a link session until it completes or times out.
+
+        Args:
+            link_token: Token identifying the link session.
+            timeout: Maximum seconds to wait (default 300).
+            interval: Seconds between polls (default 2).
+
+        Returns:
+            LinkSession with final status.
+
+        Raises:
+            PlaidifyError: If the session times out.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                r = await self._http.get(f"/link/sessions/{link_token}/status")
+            except httpx.ConnectError as e:
+                raise ConnectionError() from e
+            _raise_for_api_error(r)
+            d = r.json()
+            status = d.get("status", "unknown")
+            if status in ("completed", "error", "expired"):
+                return LinkSession(
+                    link_token=link_token,
+                    status=status,
+                    site=d.get("site"),
+                    events=d.get("events", []),
+                )
+            await asyncio.sleep(interval)
+
+        raise PlaidifyError(message="Link session timed out.", status_code=408)
+
+    async def stream_link_events(self, link_token: str):
+        """Async generator that yields real-time events from a link session SSE stream.
+
+        Yields:
+            LinkEvent objects for each event in the stream.
+
+        Example::
+
+            async for event in pfy.stream_link_events(link_token):
+                print(event.event, event.data)
+                if event.event in ("CONNECTED", "ERROR"):
+                    break
+        """
+        import json as json_mod
+
+        url = f"{self._config.server_url}/link/events/{link_token}"
+        headers = dict(self._config.base_headers())
+        headers["Accept"] = "text/event-stream"
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                if not response.is_success:
+                    _raise_for_api_error(response)
+
+                event_name = ""
+                data_buf = ""
+                async for line in response.aiter_lines():
+                    if line.startswith("event:"):
+                        event_name = line[6:].strip()
+                    elif line.startswith("data:"):
+                        data_buf = line[5:].strip()
+                    elif line == "":
+                        # End of event block
+                        if event_name and event_name != "ping":
+                            parsed = {}
+                            if data_buf:
+                                try:
+                                    parsed = json_mod.loads(data_buf)
+                                except (json_mod.JSONDecodeError, ValueError):
+                                    parsed = {"raw": data_buf}
+                            yield LinkEvent(
+                                event=event_name,
+                                timestamp=parsed.get("timestamp"),
+                                data=parsed.get("data"),
+                            )
+                        event_name = ""
+                        data_buf = ""
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -690,3 +852,23 @@ class PlaidifySync:
 
     def delete_token(self, token: str) -> Dict[str, str]:
         return self._run(self._async_client.delete_token(token))
+
+    def create_link_session(self, site: Optional[str] = None) -> LinkSession:
+        return self._run(self._async_client.create_link_session(site))
+
+    def get_link_url(self, link_token: str) -> str:
+        return self._async_client.get_link_url(link_token)
+
+    def register_webhook(self, link_token: str, url: str, secret: str) -> WebhookRegistration:
+        return self._run(self._async_client.register_webhook(link_token, url, secret))
+
+    def poll_link_status(
+        self,
+        link_token: str,
+        *,
+        timeout: float = 300.0,
+        interval: float = 2.0,
+    ) -> LinkSession:
+        return self._run(
+            self._async_client.poll_link_status(link_token, timeout=timeout, interval=interval)
+        )

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plaidify Link</title>
+  <link rel="stylesheet" href="link-page.css" />
+</head>
+<body>
+  <div class="link-container">
+    <div class="link-card">
+
+      <!-- Header -->
+      <div class="link-header">
+        <div class="link-logo">&#9670; <span class="accent">Plaidify</span></div>
+        <button class="link-close-btn" id="close-btn" title="Close">&times;</button>
+      </div>
+
+      <!-- Step indicators -->
+      <div class="step-indicator">
+        <div class="step-dot current" id="dot-1"></div>
+        <div class="step-dot" id="dot-2"></div>
+        <div class="step-dot" id="dot-3"></div>
+      </div>
+
+      <!-- Step 1: Select Provider -->
+      <div class="link-step active" id="step-select">
+        <div class="step-content">
+          <input
+            type="text"
+            class="institution-search"
+            id="institution-search"
+            placeholder="Search providers..."
+            autocomplete="off"
+          />
+          <div class="institution-list" id="institution-list">
+            <div class="institution-empty">Loading providers...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2: Enter Credentials -->
+      <div class="link-step" id="step-credentials">
+        <div class="step-content">
+          <div class="selected-provider">
+            <span class="provider-icon" id="provider-icon">&#9889;</span>
+            <span class="provider-name" id="provider-name">Provider</span>
+            <button class="provider-change-btn" id="change-provider-btn">Change</button>
+          </div>
+          <form id="credentials-form" autocomplete="off">
+            <div class="form-group">
+              <label for="link-username">Username</label>
+              <input type="text" id="link-username" placeholder="Enter username" required />
+            </div>
+            <div class="form-group">
+              <label for="link-password">Password</label>
+              <input type="password" id="link-password" placeholder="Enter password" required />
+            </div>
+            <button type="submit" class="submit-btn" id="connect-btn">Connect</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Step 3a: MFA -->
+      <div class="link-step" id="step-mfa">
+        <div class="step-content">
+          <div class="mfa-info">
+            <div class="mfa-label">Verification Required</div>
+            <div class="mfa-message" id="mfa-message">Enter the code sent to your device.</div>
+          </div>
+          <form id="mfa-form" autocomplete="off">
+            <input
+              type="text"
+              class="mfa-input"
+              id="mfa-code"
+              placeholder="000000"
+              maxlength="8"
+              autocomplete="one-time-code"
+              inputmode="numeric"
+              required
+            />
+            <button type="submit" class="submit-btn" id="mfa-submit-btn">Verify</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Step 3b: Connecting (progress) -->
+      <div class="link-step" id="step-connecting">
+        <div class="connecting-status">
+          <div class="spinner"></div>
+          <div class="connecting-text" id="connecting-text">Connecting...</div>
+          <div class="connecting-sub" id="connecting-sub">Securely logging in to your account</div>
+        </div>
+      </div>
+
+      <!-- Step 4: Success -->
+      <div class="link-step" id="step-success">
+        <div class="success-content">
+          <div class="success-icon">&#10003;</div>
+          <div class="success-title">Connected!</div>
+          <div class="success-message">Your account has been linked successfully.</div>
+          <div class="access-token-display" id="access-token-display"></div>
+          <button class="done-btn" id="done-btn">Done</button>
+        </div>
+      </div>
+
+      <!-- Step 5: Error -->
+      <div class="link-step" id="step-error">
+        <div class="error-content">
+          <div class="error-icon">&#10007;</div>
+          <div class="error-title">Connection Failed</div>
+          <div class="error-message" id="error-message">Something went wrong. Please try again.</div>
+          <button class="retry-btn" id="retry-btn">Try Again</button>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="link-footer">
+        <span class="powered-by">Secured by</span>
+        <span>&#9670; Plaidify</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="link-page.js"></script>
+</body>
+</html>

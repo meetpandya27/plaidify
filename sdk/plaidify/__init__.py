@@ -16,6 +16,9 @@ __all__ = [
     "ConnectResult",
     "BlueprintInfo",
     "LinkResult",
+    "LinkSession",
+    "LinkEvent",
+    "WebhookRegistration",
     "MFAChallenge",
     "PlaidifyError",
     "ConnectionError",
@@ -26,7 +29,15 @@ __all__ = [
 ]
 
 from plaidify.client import Plaidify, PlaidifySync
-from plaidify.models import ConnectResult, BlueprintInfo, LinkResult, MFAChallenge
+from plaidify.models import (
+    ConnectResult,
+    BlueprintInfo,
+    LinkResult,
+    LinkSession,
+    LinkEvent,
+    WebhookRegistration,
+    MFAChallenge,
+)
 from plaidify.exceptions import (
     PlaidifyError,
     ConnectionError,

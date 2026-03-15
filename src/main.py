@@ -9,15 +9,20 @@ Provides endpoints for:
 """
 
 import uuid
+import asyncio
+import hashlib
+import hmac
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Any, Dict, Optional
 
+import httpx
 import jwt
 from fastapi import FastAPI, HTTPException, Depends, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
@@ -25,6 +30,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse
 
 from src.config import get_settings
 from src.database import (
@@ -812,3 +818,341 @@ async def delete_token(
     db.delete(token_obj)
     db.commit()
     return {"status": "Token deleted."}
+
+
+# ── Link Session Store (in-memory for link flow) ─────────────────────────────
+
+# Stores ephemeral link sessions keyed by link_token.
+# Each session tracks: status, site, events list, created_at, access_token, subscribers.
+_link_sessions: Dict[str, Dict[str, Any]] = {}
+_link_session_lock = asyncio.Lock()
+
+# TTL for link sessions (30 minutes)
+_LINK_SESSION_TTL = 1800
+
+
+def _get_link_session(token: str) -> Optional[Dict[str, Any]]:
+    """Return a link session if it exists and hasn't expired."""
+    session = _link_sessions.get(token)
+    if not session:
+        return None
+    if time.time() - session["created_at"] > _LINK_SESSION_TTL:
+        session["status"] = "expired"
+    return session
+
+
+# ── Hosted Link Page ──────────────────────────────────────────────────────────
+
+
+@app.get("/link", response_class=HTMLResponse)
+async def hosted_link_page(token: Optional[str] = None):
+    """Serve the hosted Link page.
+
+    The page validates the token client-side via the /link/sessions API.
+    """
+    from pathlib import Path
+
+    link_html = Path("frontend/link.html")
+    if not link_html.exists():
+        raise HTTPException(status_code=500, detail="Link page not found.")
+    return HTMLResponse(content=link_html.read_text(encoding="utf-8"))
+
+
+# ── Link Session Endpoints ────────────────────────────────────────────────────
+
+
+@app.post("/link/sessions")
+async def create_link_session(
+    site: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new link session for the hosted Link page.
+
+    Returns a link_token that can be used with /link?token=xxx.
+    Also generates an ephemeral encryption keypair for the session.
+    """
+    link_token = str(uuid.uuid4())
+
+    # Store in DB if site is provided
+    if site:
+        new_link = Link(link_token=link_token, site=site, user_id=user.id)
+        db.add(new_link)
+        db.commit()
+
+    # Generate ephemeral keypair
+    public_key_pem = generate_keypair(link_token)
+
+    # Create ephemeral session state
+    async with _link_session_lock:
+        _link_sessions[link_token] = {
+            "status": "awaiting_institution",
+            "site": site,
+            "user_id": user.id,
+            "events": [],
+            "created_at": time.time(),
+            "access_token": None,
+            "subscribers": [],
+        }
+
+    logger.info("Link session created", extra={"extra_data": {"link_token": link_token}})
+    return {
+        "link_token": link_token,
+        "link_url": f"/link?token={link_token}",
+        "public_key": public_key_pem,
+        "expires_in": _LINK_SESSION_TTL,
+    }
+
+
+@app.get("/link/sessions/{link_token}/status")
+async def get_link_session_status(link_token: str):
+    """Get the current status of a link session."""
+    session = _get_link_session(link_token)
+    if not session:
+        raise HTTPException(status_code=404, detail="Link session not found.")
+    return {
+        "link_token": link_token,
+        "status": session["status"],
+        "site": session.get("site"),
+        "events": [e["event"] for e in session["events"]],
+    }
+
+
+@app.post("/link/sessions/{link_token}/event")
+async def post_link_session_event(link_token: str, request: Request):
+    """Record an event for a link session (called by the link page)."""
+    session = _get_link_session(link_token)
+    if not session:
+        raise HTTPException(status_code=404, detail="Link session not found.")
+    if session["status"] == "expired":
+        raise HTTPException(status_code=410, detail="Link session has expired.")
+
+    body = await request.json()
+    event_name = body.get("event", "UNKNOWN")
+    event_data = {
+        "event": event_name,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": {k: v for k, v in body.items() if k != "event"},
+    }
+
+    async with _link_session_lock:
+        session["events"].append(event_data)
+        if event_name == "INSTITUTION_SELECTED":
+            session["status"] = "awaiting_credentials"
+            session["site"] = body.get("site", session.get("site"))
+        elif event_name == "CREDENTIALS_SUBMITTED":
+            session["status"] = "connecting"
+        elif event_name == "MFA_REQUIRED":
+            session["status"] = "mfa_required"
+        elif event_name == "MFA_SUBMITTED":
+            session["status"] = "verifying_mfa"
+        elif event_name == "CONNECTED":
+            session["status"] = "completed"
+            session["access_token"] = body.get("access_token")
+        elif event_name == "ERROR":
+            session["status"] = "error"
+
+        # Notify SSE subscribers
+        for queue in session["subscribers"]:
+            await queue.put(event_data)
+
+    # Fire webhooks for terminal events
+    webhook_event_map = {
+        "CONNECTED": "LINK_COMPLETE",
+        "ERROR": "LINK_ERROR",
+        "MFA_REQUIRED": "MFA_REQUIRED",
+    }
+    if event_name in webhook_event_map:
+        await fire_webhooks_for_session(
+            link_token, webhook_event_map[event_name], event_data.get("data")
+        )
+
+    return {"status": "ok"}
+
+
+# ── SSE Event Stream ──────────────────────────────────────────────────────────
+
+
+@app.get("/link/events/{link_token}")
+async def link_event_stream(link_token: str):
+    """SSE stream for real-time link session events.
+
+    Agents can subscribe to this to get notified of each step in the Link flow.
+    Events: INSTITUTION_SELECTED, CREDENTIALS_SUBMITTED, MFA_REQUIRED,
+    MFA_SUBMITTED, CONNECTED, ERROR.
+    """
+    session = _get_link_session(link_token)
+    if not session:
+        raise HTTPException(status_code=404, detail="Link session not found.")
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async with _link_session_lock:
+        session["subscribers"].append(queue)
+
+    async def event_generator():
+        try:
+            # Send any existing events as replay
+            for past_event in session["events"]:
+                yield {
+                    "event": past_event["event"],
+                    "data": __import__("json").dumps(past_event),
+                }
+
+            # Stream new events
+            while True:
+                try:
+                    event_data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield {
+                        "event": event_data["event"],
+                        "data": __import__("json").dumps(event_data),
+                    }
+                    # Close stream when session completes
+                    if event_data["event"] in ("CONNECTED", "ERROR"):
+                        return
+                except asyncio.TimeoutError:
+                    # Send keep-alive ping
+                    yield {"event": "ping", "data": ""}
+                    # Check if session expired
+                    if _get_link_session(link_token) is None or session["status"] in ("completed", "error", "expired"):
+                        return
+        finally:
+            async with _link_session_lock:
+                if queue in session["subscribers"]:
+                    session["subscribers"].remove(queue)
+
+    return EventSourceResponse(event_generator())
+
+
+# ── Webhook System ────────────────────────────────────────────────────────────
+
+# In-memory webhook registry (production would use DB)
+_webhook_registry: Dict[str, Dict[str, Any]] = {}
+
+
+@app.post("/webhooks/register")
+async def register_webhook(request: Request):
+    """Register a webhook URL for a link_token.
+
+    The webhook will be called when events occur on the link session.
+    Payload includes an HMAC-SHA256 signature for verification.
+    """
+    body = await request.json()
+    link_token = body.get("link_token")
+    url = body.get("url")
+    webhook_secret = body.get("secret")
+
+    if not link_token or not url or not webhook_secret:
+        raise HTTPException(status_code=422, detail="link_token, url, and secret are required.")
+
+    # Validate URL format
+    if not url.startswith("https://") and not url.startswith("http://localhost"):
+        raise HTTPException(
+            status_code=422,
+            detail="Webhook URL must use HTTPS (http://localhost allowed for development).",
+        )
+
+    session = _get_link_session(link_token)
+    if not session:
+        raise HTTPException(status_code=404, detail="Link session not found.")
+
+    webhook_id = str(uuid.uuid4())
+    _webhook_registry[webhook_id] = {
+        "webhook_id": webhook_id,
+        "link_token": link_token,
+        "url": url,
+        "secret": webhook_secret,
+        "created_at": time.time(),
+        "deliveries": [],
+    }
+
+    logger.info("Webhook registered", extra={"extra_data": {"webhook_id": webhook_id, "link_token": link_token}})
+    return {"webhook_id": webhook_id, "status": "registered"}
+
+
+@app.post("/webhooks/test")
+async def test_webhook(request: Request):
+    """Send a test event to a registered webhook URL."""
+    body = await request.json()
+    webhook_id = body.get("webhook_id")
+
+    if not webhook_id or webhook_id not in _webhook_registry:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+
+    webhook = _webhook_registry[webhook_id]
+    test_payload = {
+        "event": "TEST",
+        "link_token": webhook["link_token"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": {"message": "This is a test webhook event."},
+    }
+
+    success = await _deliver_webhook(webhook, test_payload)
+    return {"status": "delivered" if success else "failed"}
+
+
+async def _deliver_webhook(
+    webhook: Dict[str, Any],
+    payload: Dict[str, Any],
+    retries: int = 3,
+) -> bool:
+    """Deliver a webhook payload with HMAC signature and retry logic."""
+    import json as json_mod
+
+    payload_bytes = json_mod.dumps(payload, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(
+        webhook["secret"].encode("utf-8"),
+        payload_bytes,
+        hashlib.sha256,
+    ).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Plaidify-Signature": f"sha256={signature}",
+        "X-Plaidify-Event": payload.get("event", "UNKNOWN"),
+        "User-Agent": "Plaidify-Webhook/1.0",
+    }
+
+    for attempt in range(retries):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(webhook["url"], content=payload_bytes, headers=headers)
+                delivery = {
+                    "attempt": attempt + 1,
+                    "status_code": resp.status_code,
+                    "timestamp": time.time(),
+                    "success": resp.is_success,
+                }
+                webhook["deliveries"].append(delivery)
+                if resp.is_success:
+                    return True
+        except Exception as e:
+            webhook["deliveries"].append({
+                "attempt": attempt + 1,
+                "error": str(e),
+                "timestamp": time.time(),
+                "success": False,
+            })
+
+        if attempt < retries - 1:
+            await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
+
+    return False
+
+
+async def fire_webhooks_for_session(link_token: str, event: str, data: Optional[Dict] = None):
+    """Fire all registered webhooks for a link session event."""
+    payload = {
+        "event": event,
+        "link_token": link_token,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": data or {},
+    }
+
+    session = _get_link_session(link_token)
+    if session and event == "LINK_COMPLETE":
+        payload["access_token"] = session.get("access_token")
+
+    for wh in _webhook_registry.values():
+        if wh["link_token"] == link_token:
+            asyncio.create_task(_deliver_webhook(wh, payload))
