@@ -94,6 +94,123 @@ def decrypt_credential(ciphertext: str) -> str:
 encrypt_password = encrypt_credential
 decrypt_password = decrypt_credential
 
+
+# ── Envelope Encryption (per-user DEK) ────────────────────────────────────────
+
+def generate_dek() -> bytes:
+    """Generate a random 256-bit Data Encryption Key."""
+    return os.urandom(32)
+
+
+def wrap_dek(dek: bytes) -> str:
+    """Encrypt (wrap) a DEK with the master key using AES-256-GCM.
+
+    Returns a base64url-encoded string: nonce‖ciphertext‖tag.
+    """
+    nonce = os.urandom(_GCM_NONCE_BYTES)
+    ct = _get_aesgcm().encrypt(nonce, dek, None)
+    return base64.urlsafe_b64encode(nonce + ct).decode("ascii")
+
+
+def unwrap_dek(wrapped_dek: str) -> bytes:
+    """Decrypt (unwrap) a DEK using the master key.
+
+    Returns the raw 32-byte DEK.
+    """
+    raw = base64.urlsafe_b64decode(wrapped_dek)
+    nonce = raw[:_GCM_NONCE_BYTES]
+    ct = raw[_GCM_NONCE_BYTES:]
+    return _get_aesgcm().decrypt(nonce, ct, None)
+
+
+def create_user_dek() -> str:
+    """Generate a new DEK and return it wrapped (ready to store in DB)."""
+    dek = generate_dek()
+    return wrap_dek(dek)
+
+
+def encrypt_credential_for_user(user: 'User', plaintext: str) -> str:
+    """Encrypt a credential using the user's per-user DEK.
+
+    Falls back to the global master key if the user has no DEK yet
+    (migration path for existing users).
+    """
+    if user.encrypted_dek:
+        dek = unwrap_dek(user.encrypted_dek)
+        aesgcm = AESGCM(dek)
+        nonce = os.urandom(_GCM_NONCE_BYTES)
+        ct = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
+        return base64.urlsafe_b64encode(nonce + ct).decode("ascii")
+    # Fallback: encrypt with master key (legacy path)
+    return encrypt_credential(plaintext)
+
+
+def decrypt_credential_for_user(user: 'User', ciphertext: str) -> str:
+    """Decrypt a credential using the user's per-user DEK.
+
+    Falls back to master-key decryption for data encrypted before
+    envelope encryption was enabled (migration compatibility).
+    """
+    if user.encrypted_dek:
+        dek = unwrap_dek(user.encrypted_dek)
+        aesgcm = AESGCM(dek)
+        raw = base64.urlsafe_b64decode(ciphertext)
+        try:
+            nonce = raw[:_GCM_NONCE_BYTES]
+            ct = raw[_GCM_NONCE_BYTES:]
+            return aesgcm.decrypt(nonce, ct, None).decode("utf-8")
+        except Exception:
+            pass  # Fall through to legacy master-key decryption
+    # Fallback: decrypt with master key (legacy data)
+    return decrypt_credential(ciphertext)
+
+
+def ensure_user_dek(user: 'User', db: 'Session') -> None:
+    """Ensure a user has a DEK. Creates one if missing (lazy migration)."""
+    if not user.encrypted_dek:
+        user.encrypted_dek = create_user_dek()
+        db.commit()
+        logger.info("Generated DEK for user", extra={"extra_data": {"user_id": user.id}})
+
+
+def rotate_master_key(old_key: str, new_key: str, db: 'Session') -> int:
+    """Re-wrap all user DEKs with a new master key.
+
+    This does NOT re-encrypt any data — it only re-wraps the DEK envelopes.
+    After calling this, update ENCRYPTION_KEY to the new key value.
+
+    Args:
+        old_key: Current ENCRYPTION_KEY (base64url-encoded).
+        new_key: New ENCRYPTION_KEY (base64url-encoded).
+        db: Database session.
+
+    Returns:
+        Number of DEKs re-wrapped.
+    """
+    old_key_bytes = base64.urlsafe_b64decode(old_key.encode("ascii"))
+    new_key_bytes = base64.urlsafe_b64decode(new_key.encode("ascii"))
+    old_aesgcm = AESGCM(old_key_bytes)
+    new_aesgcm = AESGCM(new_key_bytes)
+
+    users = db.query(User).filter(User.encrypted_dek.isnot(None)).all()
+    count = 0
+    for user in users:
+        # Unwrap with old key
+        raw = base64.urlsafe_b64decode(user.encrypted_dek)
+        nonce = raw[:_GCM_NONCE_BYTES]
+        ct = raw[_GCM_NONCE_BYTES:]
+        dek = old_aesgcm.decrypt(nonce, ct, None)
+
+        # Re-wrap with new key
+        new_nonce = os.urandom(_GCM_NONCE_BYTES)
+        new_ct = new_aesgcm.encrypt(new_nonce, dek, None)
+        user.encrypted_dek = base64.urlsafe_b64encode(new_nonce + new_ct).decode("ascii")
+        count += 1
+
+    db.commit()
+    logger.info(f"Master key rotation complete: {count} DEK(s) re-wrapped")
+    return count
+
 # ── SQLAlchemy Setup ──────────────────────────────────────────────────────────
 
 engine = create_engine(
@@ -141,6 +258,8 @@ class User(Base):
     oauth_sub = Column(String, nullable=True)  # Provider's user ID
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Envelope encryption: per-user DEK wrapped by master key (base64url)
+    encrypted_dek = Column(Text, nullable=True)
 
 
 class Link(Base):

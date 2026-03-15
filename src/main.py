@@ -36,6 +36,10 @@ from src.database import (
     RefreshToken,
     encrypt_credential,
     decrypt_credential,
+    create_user_dek,
+    encrypt_credential_for_user,
+    decrypt_credential_for_user,
+    ensure_user_dek,
 )
 from src.exceptions import PlaidifyError, InvalidTokenError, UserNotFoundError, MFARequiredError
 from src.logging_config import setup_logging, get_logger
@@ -589,8 +593,8 @@ async def submit_credentials(
             detail="Provide either (username + password) or (encrypted_username + encrypted_password).",
         )
 
-    encrypted_username_stored = encrypt_credential(plain_user)
-    encrypted_password_stored = encrypt_credential(plain_pass)
+    encrypted_username_stored = encrypt_credential_for_user(user, plain_user)
+    encrypted_password_stored = encrypt_credential_for_user(user, plain_pass)
     access_token = str(uuid.uuid4())
 
     new_token = AccessToken(
@@ -642,8 +646,8 @@ async def fetch_data(
     if not site:
         raise HTTPException(status_code=401, detail="Linked data not found.")
 
-    username = decrypt_credential(token_record.username_encrypted)
-    password = decrypt_credential(token_record.password_encrypted)
+    username = decrypt_credential_for_user(user, token_record.username_encrypted)
+    password = decrypt_credential_for_user(user, token_record.password_encrypted)
     user_instructions = token_record.instructions
 
     response_data = await connect_to_site(site.site, username, password)
@@ -666,7 +670,12 @@ def register_user(request: Request, body: UserRegisterRequest, db: Session = Dep
         raise HTTPException(status_code=400, detail="Username or email already registered")
 
     hashed_pw = get_password_hash(body.password)
-    user = User(username=body.username, email=body.email, hashed_password=hashed_pw)
+    user = User(
+        username=body.username,
+        email=body.email,
+        hashed_password=hashed_pw,
+        encrypted_dek=create_user_dek(),
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -682,6 +691,9 @@ def login_user(request: Request, form_data: OAuth2PasswordRequestForm = Depends(
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
+
+    # Lazy migration: ensure existing users get a DEK
+    ensure_user_dek(user, db)
 
     return _issue_token_pair(user.id, db)
 
@@ -718,6 +730,7 @@ def oauth2_login(request: Request, body: OAuth2LoginRequest, db: Session = Depen
             hashed_password=None,
             oauth_provider=provider,
             oauth_sub=oauth_sub,
+            encrypted_dek=create_user_dek(),
         )
         db.add(user)
         db.commit()
