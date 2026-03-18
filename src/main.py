@@ -40,6 +40,8 @@ from src.database import (
     Link,
     AccessToken,
     RefreshToken,
+    Webhook,
+    PublicToken,
     encrypt_credential,
     decrypt_credential,
     create_user_dek,
@@ -910,12 +912,15 @@ async def get_link_session_status(link_token: str):
     session = _get_link_session(link_token)
     if not session:
         raise HTTPException(status_code=404, detail="Link session not found.")
-    return {
+    result = {
         "link_token": link_token,
         "status": session["status"],
         "site": session.get("site"),
         "events": [e["event"] for e in session["events"]],
     }
+    if session["status"] == "completed" and session.get("public_token"):
+        result["public_token"] = session["public_token"]
+    return result
 
 
 @app.post("/link/sessions/{link_token}/event")
@@ -935,6 +940,7 @@ async def post_link_session_event(link_token: str, request: Request):
         "data": {k: v for k, v in body.items() if k != "event"},
     }
 
+    public_token_value = None
     async with _link_session_lock:
         session["events"].append(event_data)
         if event_name == "INSTITUTION_SELECTED":
@@ -949,6 +955,25 @@ async def post_link_session_event(link_token: str, request: Request):
         elif event_name == "CONNECTED":
             session["status"] = "completed"
             session["access_token"] = body.get("access_token")
+            # Generate a one-time public_token for the 3-token exchange flow
+            access_token = body.get("access_token")
+            user_id = session.get("user_id")
+            if access_token and user_id:
+                public_token_value = f"public-{uuid.uuid4()}"
+                db = next(get_db())
+                try:
+                    pt = PublicToken(
+                        token=public_token_value,
+                        link_token=link_token,
+                        access_token=access_token,
+                        user_id=user_id,
+                        expires_at=datetime.now(timezone.utc) + timedelta(minutes=_PUBLIC_TOKEN_TTL_MINUTES),
+                    )
+                    db.add(pt)
+                    db.commit()
+                finally:
+                    db.close()
+                session["public_token"] = public_token_value
         elif event_name == "ERROR":
             session["status"] = "error"
 
@@ -967,7 +992,10 @@ async def post_link_session_event(link_token: str, request: Request):
             link_token, webhook_event_map[event_name], event_data.get("data")
         )
 
-    return {"status": "ok"}
+    response = {"status": "ok"}
+    if public_token_value:
+        response["public_token"] = public_token_value
+    return response
 
 
 # ── SSE Event Stream ──────────────────────────────────────────────────────────
@@ -1026,12 +1054,16 @@ async def link_event_stream(link_token: str):
 
 # ── Webhook System ────────────────────────────────────────────────────────────
 
-# In-memory webhook registry (production would use DB)
-_webhook_registry: Dict[str, Dict[str, Any]] = {}
+# In-memory delivery log (not critical — lost on restart is acceptable)
+_webhook_delivery_log: Dict[str, list] = {}
 
 
 @app.post("/webhooks/register")
-async def register_webhook(request: Request):
+async def register_webhook(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Register a webhook URL for a link_token.
 
     The webhook will be called when events occur on the link session.
@@ -1057,42 +1089,87 @@ async def register_webhook(request: Request):
         raise HTTPException(status_code=404, detail="Link session not found.")
 
     webhook_id = str(uuid.uuid4())
-    _webhook_registry[webhook_id] = {
-        "webhook_id": webhook_id,
-        "link_token": link_token,
-        "url": url,
-        "secret": webhook_secret,
-        "created_at": time.time(),
-        "deliveries": [],
-    }
+    db_webhook = Webhook(
+        id=webhook_id,
+        link_token=link_token,
+        url=url,
+        secret=webhook_secret,
+        user_id=user.id,
+    )
+    db.add(db_webhook)
+    db.commit()
 
     logger.info("Webhook registered", extra={"extra_data": {"webhook_id": webhook_id, "link_token": link_token}})
     return {"webhook_id": webhook_id, "status": "registered"}
 
 
+@app.get("/webhooks")
+async def list_webhooks(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all webhooks registered by the current user."""
+    webhooks = db.query(Webhook).filter_by(user_id=user.id).all()
+    return {
+        "webhooks": [
+            {
+                "webhook_id": wh.id,
+                "link_token": wh.link_token,
+                "url": wh.url,
+                "created_at": wh.created_at.isoformat() if wh.created_at else None,
+            }
+            for wh in webhooks
+        ],
+        "count": len(webhooks),
+    }
+
+
+@app.delete("/webhooks/{webhook_id}")
+async def delete_webhook(
+    webhook_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a registered webhook."""
+    wh = db.query(Webhook).filter_by(id=webhook_id, user_id=user.id).first()
+    if not wh:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    db.delete(wh)
+    db.commit()
+    _webhook_delivery_log.pop(webhook_id, None)
+    return {"status": "deleted"}
+
+
 @app.post("/webhooks/test")
-async def test_webhook(request: Request):
+async def test_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+):
     """Send a test event to a registered webhook URL."""
     body = await request.json()
     webhook_id = body.get("webhook_id")
 
-    if not webhook_id or webhook_id not in _webhook_registry:
+    if not webhook_id:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    wh = db.query(Webhook).filter_by(id=webhook_id).first()
+    if not wh:
         raise HTTPException(status_code=404, detail="Webhook not found.")
 
-    webhook = _webhook_registry[webhook_id]
     test_payload = {
         "event": "TEST",
-        "link_token": webhook["link_token"],
+        "link_token": wh.link_token,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": {"message": "This is a test webhook event."},
     }
 
-    success = await _deliver_webhook(webhook, test_payload)
+    success = await _deliver_webhook(wh.id, wh.url, wh.secret, test_payload)
     return {"status": "delivered" if success else "failed"}
 
 
 async def _deliver_webhook(
-    webhook: Dict[str, Any],
+    webhook_id: str,
+    url: str,
+    secret: str,
     payload: Dict[str, Any],
     retries: int = 3,
 ) -> bool:
@@ -1101,7 +1178,7 @@ async def _deliver_webhook(
 
     payload_bytes = json_mod.dumps(payload, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(
-        webhook["secret"].encode("utf-8"),
+        secret.encode("utf-8"),
         payload_bytes,
         hashlib.sha256,
     ).hexdigest()
@@ -1113,21 +1190,22 @@ async def _deliver_webhook(
         "User-Agent": "Plaidify-Webhook/1.0",
     }
 
+    deliveries = _webhook_delivery_log.setdefault(webhook_id, [])
     for attempt in range(retries):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(webhook["url"], content=payload_bytes, headers=headers)
+                resp = await client.post(url, content=payload_bytes, headers=headers)
                 delivery = {
                     "attempt": attempt + 1,
                     "status_code": resp.status_code,
                     "timestamp": time.time(),
                     "success": resp.is_success,
                 }
-                webhook["deliveries"].append(delivery)
+                deliveries.append(delivery)
                 if resp.is_success:
                     return True
         except Exception as e:
-            webhook["deliveries"].append({
+            deliveries.append({
                 "attempt": attempt + 1,
                 "error": str(e),
                 "timestamp": time.time(),
@@ -1153,6 +1231,56 @@ async def fire_webhooks_for_session(link_token: str, event: str, data: Optional[
     if session and event == "LINK_COMPLETE":
         payload["access_token"] = session.get("access_token")
 
-    for wh in _webhook_registry.values():
-        if wh["link_token"] == link_token:
-            asyncio.create_task(_deliver_webhook(wh, payload))
+    # Query webhooks from DB using a fresh session
+    db = next(get_db())
+    try:
+        webhooks = db.query(Webhook).filter_by(link_token=link_token).all()
+        for wh in webhooks:
+            asyncio.create_task(_deliver_webhook(wh.id, wh.url, wh.secret, payload))
+    finally:
+        db.close()
+
+
+# ── Public Token Exchange (3-Token Flow) ──────────────────────────────────────
+
+# Duration for which a public_token is valid (10 minutes).
+_PUBLIC_TOKEN_TTL_MINUTES = 10
+
+
+@app.post("/exchange/public_token")
+async def exchange_public_token(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Exchange a one-time public_token for a permanent access_token.
+
+    This implements the Plaid-style 3-token exchange flow:
+      link_token → public_token (short-lived, client-safe) → access_token (permanent, server-only)
+
+    The public_token can only be exchanged once and expires after 10 minutes.
+    """
+    body = await request.json()
+    public_token = body.get("public_token")
+    if not public_token:
+        raise HTTPException(status_code=422, detail="public_token is required.")
+
+    pt = db.query(PublicToken).filter_by(token=public_token).first()
+    if not pt:
+        raise HTTPException(status_code=404, detail="Invalid public_token.")
+    if pt.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to exchange this token.")
+    if pt.exchanged:
+        raise HTTPException(status_code=410, detail="public_token has already been exchanged.")
+    expires_at = pt.expires_at.replace(tzinfo=timezone.utc) if pt.expires_at.tzinfo is None else pt.expires_at
+    if datetime.now(timezone.utc) > expires_at:
+        raise HTTPException(status_code=410, detail="public_token has expired.")
+
+    # Mark as exchanged (single-use)
+    pt.exchanged = True
+    db.commit()
+
+    logger.info("Public token exchanged", extra={
+        "extra_data": {"link_token": pt.link_token, "user_id": user.id},
+    })
+    return {"access_token": pt.access_token}

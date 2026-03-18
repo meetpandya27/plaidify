@@ -365,3 +365,34 @@ class RefreshToken(Base):
     expires_at = Column(DateTime, nullable=False)
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Webhook(Base):
+    """A registered webhook endpoint for link session events."""
+
+    __tablename__ = "webhooks"
+
+    id = Column(String, primary_key=True, index=True)
+    link_token = Column(String, nullable=False, index=True)
+    url = Column(Text, nullable=False)
+    secret = Column(Text, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class PublicToken(Base):
+    """A one-time-use public token exchangeable for an access token.
+
+    Implements the 3-token exchange flow: link_token → public_token → access_token.
+    The public_token is short-lived and can only be exchanged once.
+    """
+
+    __tablename__ = "public_tokens"
+
+    token = Column(String, primary_key=True, index=True)
+    link_token = Column(String, nullable=False)
+    access_token = Column(String, ForeignKey("access_tokens.token"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    exchanged = Column(Boolean, default=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

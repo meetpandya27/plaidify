@@ -222,6 +222,69 @@ async def fetch_data(access_token: str) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+async def submit_mfa(session_id: str, code: str) -> str:
+    """Submit an MFA verification code for a pending connection.
+
+    Use this when check_connection_status() shows 'mfa_required'.
+    The user must provide the code from their authenticator app, SMS, or email.
+
+    Args:
+        session_id: The session ID from the connection that requires MFA.
+        code: The MFA verification code entered by the user.
+
+    Returns:
+        Result of the MFA submission (success or error).
+    """
+    try:
+        data = await _api("POST", "/mfa/submit", json={
+            "session_id": session_id,
+            "code": code,
+        })
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return f"MFA session '{session_id}' not found. It may have expired."
+        return f"Error submitting MFA code: {e.response.text}"
+
+    status = data.get("status", "unknown")
+    if status == "connected":
+        access_token = data.get("data", {}).get("access_token", "")
+        return (
+            f"MFA verified successfully! Connection is now complete.\n"
+            f"Use fetch_data('{access_token}') to retrieve the extracted data."
+            if access_token
+            else "MFA verified successfully! Connection is now complete."
+        )
+
+    return f"MFA submission result: {status}"
+
+
+@mcp.tool()
+async def list_connections() -> str:
+    """List all active connections (links) for the current user.
+
+    Returns a list of connected sites with their link tokens and status.
+    Requires authentication via PLAIDIFY_API_KEY.
+    """
+    try:
+        data = await _api("GET", "/links")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in (401, 403):
+            return "Authentication required. Set PLAIDIFY_API_KEY to a valid JWT token."
+        return f"Error listing connections: {e.response.text}"
+
+    links = data.get("links", [])
+    if not links:
+        return "No active connections found."
+
+    lines = [f"Active connections ({len(links)}):\n"]
+    for link in links:
+        lines.append(f"  • {link.get('site', 'unknown')} — token: {link.get('link_token', 'N/A')}")
+        if link.get("created_at"):
+            lines.append(f"    Created: {link['created_at']}")
+    return "\n".join(lines)
+
+
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
