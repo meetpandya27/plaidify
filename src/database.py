@@ -396,3 +396,34 @@ class PublicToken(Base):
     exchanged = Column(Boolean, default=False)
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class BlueprintRecord(Base):
+    """A published blueprint in the registry.
+
+    Quality tiers:
+    - community: user-submitted, unverified
+    - tested: passes automated CI validation
+    - certified: manually reviewed and approved
+    """
+
+    __tablename__ = "blueprint_registry"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    site = Column(String, unique=True, nullable=False, index=True)
+    domain = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    author = Column(String, nullable=True)
+    version = Column(String, nullable=False, default="1.0.0")
+    schema_version = Column(String, nullable=False, default="2")
+    tags = Column(Text, nullable=True)  # JSON array stored as text
+    has_mfa = Column(Boolean, default=False)
+    quality_tier = Column(String, nullable=False, default="community")
+    blueprint_json = Column(Text, nullable=False)  # Full blueprint JSON
+    extract_fields = Column(Text, nullable=True)  # JSON array of field names
+    downloads = Column(Integer, default=0)
+    published_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))

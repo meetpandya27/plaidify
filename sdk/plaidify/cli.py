@@ -410,6 +410,183 @@ def blueprint_test(ctx: click.Context, filepath: str, username: str, password: s
     _run_async(_test())
 
 
+# ── plaidify registry ────────────────────────────────────────────────────────
+
+
+@cli.group()
+def registry():
+    """Browse and manage the blueprint registry."""
+    pass
+
+
+@registry.command("search")
+@click.argument("query", required=False, default=None)
+@click.option("--tag", "-t", default=None, help="Filter by tag.")
+@click.option("--tier", default=None, help="Filter by quality tier (community/tested/certified).")
+@click.pass_context
+def registry_search(ctx: click.Context, query: Optional[str], tag: Optional[str],
+                    tier: Optional[str]):
+    """Search the blueprint registry.
+
+    Example:
+        plaidify registry search energy
+        plaidify registry search --tag utilities
+        plaidify registry search --tier certified
+    """
+    client = _get_client(ctx.obj["server"], ctx.obj["api_key"])
+
+    async def _search():
+        try:
+            params = {}
+            if query:
+                params["q"] = query
+            if tag:
+                params["tag"] = tag
+            if tier:
+                params["tier"] = tier
+
+            r = await client._http.get("/registry/search", params=params)
+            if r.status_code != 200:
+                _echo_error(f"Search failed: {r.text}")
+                sys.exit(1)
+            data = r.json()
+
+            results = data.get("results", [])
+            count = data.get("count", 0)
+
+            if count == 0:
+                _echo_warn("No blueprints found.")
+                return
+
+            click.echo()
+            click.echo(f"  Registry Results ({count}):")
+            click.echo(f"  {'─' * 60}")
+            for bp in results:
+                tier_badge = click.style(f" [{bp['quality_tier']}]", fg="blue")
+                mfa_badge = click.style(" [MFA]", fg="yellow") if bp.get("has_mfa") else ""
+                tags = click.style(f" ({', '.join(bp['tags'])})", fg="bright_black") if bp.get("tags") else ""
+                click.echo(f"  {click.style(bp['site'], bold=True, fg='green')}{tier_badge}{mfa_badge}{tags}")
+                click.echo(f"    {bp['name']} — {bp['domain']}  (v{bp['version']}, {bp.get('downloads', 0)} downloads)")
+            click.echo()
+        except Exception as e:
+            _echo_error(str(e))
+            sys.exit(1)
+        finally:
+            await client.close()
+
+    _run_async(_search())
+
+
+@registry.command("install")
+@click.argument("site")
+@click.option("-o", "--output", default=None, type=click.Path(), help="Output file path.")
+@click.pass_context
+def registry_install(ctx: click.Context, site: str, output: Optional[str]):
+    """Download a blueprint from the registry and save it locally.
+
+    Example:
+        plaidify registry install greengrid_energy
+        plaidify registry install greengrid_energy -o ./connectors/greengrid.json
+    """
+    client = _get_client(ctx.obj["server"], ctx.obj["api_key"])
+
+    async def _install():
+        try:
+            _echo_info(f"Downloading blueprint: {site}")
+            r = await client._http.get(f"/registry/{site}")
+            if r.status_code == 404:
+                _echo_error(f"Blueprint '{site}' not found in registry.")
+                sys.exit(1)
+            if r.status_code != 200:
+                _echo_error(f"Download failed: {r.text}")
+                sys.exit(1)
+
+            data = r.json()
+            blueprint_data = data.get("blueprint", {})
+
+            # Determine output path
+            if output:
+                out_path = Path(output)
+            else:
+                connectors_dir = Path("connectors")
+                connectors_dir.mkdir(exist_ok=True)
+                out_path = connectors_dir / f"{site}.json"
+
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w") as f:
+                json.dump(blueprint_data, f, indent=2)
+
+            _echo_success(f"Installed to {out_path}")
+            click.echo(f"    Name:      {data.get('name', 'N/A')}")
+            click.echo(f"    Version:   v{data.get('version', '?')}")
+            click.echo(f"    Tier:      {data.get('quality_tier', 'N/A')}")
+            click.echo(f"    Downloads: {data.get('downloads', 0)}")
+            click.echo()
+        except Exception as e:
+            _echo_error(str(e))
+            sys.exit(1)
+        finally:
+            await client.close()
+
+    _run_async(_install())
+
+
+@registry.command("publish")
+@click.argument("filepath", type=click.Path(exists=True))
+@click.option("--description", "-d", default="", help="Description for the blueprint.")
+@click.pass_context
+def registry_publish(ctx: click.Context, filepath: str, description: str):
+    """Publish a blueprint to the registry.
+
+    Requires authentication (--api-key or PLAIDIFY_API_KEY).
+
+    Example:
+        plaidify registry publish ./connectors/my_site.json -d "My utility provider"
+    """
+    if not ctx.obj.get("api_key"):
+        _echo_error("Authentication required. Provide --api-key or set PLAIDIFY_API_KEY.")
+        sys.exit(1)
+
+    path = Path(filepath)
+    try:
+        with open(path) as f:
+            blueprint_data = json.load(f)
+    except json.JSONDecodeError as e:
+        _echo_error(f"Invalid JSON: {e}")
+        sys.exit(1)
+
+    client = _get_client(ctx.obj["server"], ctx.obj["api_key"])
+
+    async def _publish():
+        try:
+            _echo_info(f"Publishing {path.name}...")
+            r = await client._http.post("/registry/publish", json={
+                "blueprint": blueprint_data,
+                "description": description,
+            })
+            if r.status_code == 422:
+                _echo_error(f"Validation error: {r.json().get('detail', r.text)}")
+                sys.exit(1)
+            if r.status_code == 403:
+                _echo_error(r.json().get("detail", "Forbidden"))
+                sys.exit(1)
+            if r.status_code != 200:
+                _echo_error(f"Publish failed: {r.text}")
+                sys.exit(1)
+
+            data = r.json()
+            status = data.get("status", "unknown")
+            _echo_success(f"Blueprint {status}: {data.get('site', 'N/A')} (v{data.get('version', '?')})")
+            click.echo()
+        except Exception as e:
+            _echo_error(str(e))
+            sys.exit(1)
+        finally:
+            await client.close()
+
+    _run_async(_publish())
+
+
 # ── plaidify serve ───────────────────────────────────────────────────────────
 
 

@@ -488,3 +488,22 @@ def load_blueprint(path: Path) -> BlueprintV2:
         return convert_v1_to_v2(data)
 
     return BlueprintV2.model_validate(data)
+
+
+def load_blueprint_from_dict(data: dict) -> BlueprintV2:
+    """Load and validate a blueprint from a dictionary.
+
+    Identical to load_blueprint() but accepts a dict instead of a file path.
+
+    Args:
+        data: Blueprint data as a dictionary.
+
+    Returns:
+        Validated BlueprintV2 model.
+    """
+    schema_version = data.get("schema_version", "1.0")
+
+    if schema_version == "1.0" or "login_url" in data:
+        return convert_v1_to_v2(data)
+
+    return BlueprintV2.model_validate(data)
