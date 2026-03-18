@@ -398,6 +398,37 @@ class PublicToken(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class ConsentRequest(Base):
+    """An agent's request for user consent to access specific data fields."""
+
+    __tablename__ = "consent_requests"
+
+    id = Column(String, primary_key=True, index=True)
+    agent_name = Column(String, nullable=False)
+    agent_description = Column(Text, nullable=True)
+    scopes = Column(Text, nullable=False)  # JSON array of scope strings e.g. ["read:current_bill"]
+    duration_seconds = Column(Integer, nullable=False, default=3600)
+    access_token = Column(String, ForeignKey("access_tokens.token"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String, nullable=False, default="pending")  # pending, approved, denied, expired
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ConsentGrant(Base):
+    """An approved consent grant — a time-limited, scoped token for data access."""
+
+    __tablename__ = "consent_grants"
+
+    token = Column(String, primary_key=True, index=True)
+    consent_request_id = Column(String, ForeignKey("consent_requests.id"), nullable=False)
+    scopes = Column(Text, nullable=False)  # JSON array — copied from request on approval
+    access_token = Column(String, ForeignKey("access_tokens.token"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class BlueprintRecord(Base):
     """A published blueprint in the registry.
 

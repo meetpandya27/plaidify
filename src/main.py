@@ -42,6 +42,8 @@ from src.database import (
     RefreshToken,
     Webhook,
     PublicToken,
+    ConsentRequest,
+    ConsentGrant,
     BlueprintRecord,
     encrypt_credential,
     decrypt_credential,
@@ -830,6 +832,7 @@ async def submit_instructions(
 @app.get("/fetch_data")
 async def fetch_data(
     access_token: str,
+    consent_token: Optional[str] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -838,6 +841,9 @@ async def fetch_data(
 
     Step 3 of the multi-step flow. Decrypts credentials, connects to the site,
     and returns extracted data.
+
+    If a consent_token is provided, the returned data is filtered to only the
+    scopes granted by that consent.
     """
     token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user.id).first()
     if not token_record:
@@ -847,6 +853,31 @@ async def fetch_data(
     if not site:
         raise HTTPException(status_code=401, detail="Linked data not found.")
 
+    # Validate consent token if provided
+    allowed_fields = None
+    if consent_token:
+        import json as json_mod
+        grant = db.query(ConsentGrant).filter_by(token=consent_token, user_id=user.id).first()
+        if not grant:
+            raise HTTPException(status_code=401, detail="Invalid consent token.")
+        if grant.revoked:
+            raise HTTPException(status_code=403, detail="Consent has been revoked.")
+        grant_expires = grant.expires_at
+        if grant_expires.tzinfo is None:
+            grant_expires = grant_expires.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > grant_expires:
+            raise HTTPException(status_code=403, detail="Consent token has expired.")
+        if grant.access_token != access_token:
+            raise HTTPException(status_code=403, detail="Consent token does not match the access token.")
+        scopes = json_mod.loads(grant.scopes)
+        # Extract field names from scopes like "read:current_bill" -> "current_bill"
+        allowed_fields = set()
+        for scope in scopes:
+            if ":" in scope:
+                allowed_fields.add(scope.split(":", 1)[1])
+            else:
+                allowed_fields.add(scope)
+
     username = decrypt_credential_for_user(user, token_record.username_encrypted)
     password = decrypt_credential_for_user(user, token_record.password_encrypted)
     user_instructions = token_record.instructions
@@ -854,7 +885,188 @@ async def fetch_data(
     response_data = await connect_to_site(site.site, username, password)
     if user_instructions:
         response_data["instructions_applied"] = user_instructions
+
+    # Filter data by consent scopes if applicable
+    if allowed_fields is not None and "data" in response_data:
+        response_data["data"] = {
+            k: v for k, v in response_data["data"].items() if k in allowed_fields
+        }
+        response_data["consent_scopes"] = sorted(allowed_fields)
+
     return response_data
+
+
+# ── Consent Engine ────────────────────────────────────────────────────────────
+
+_MAX_CONSENT_DURATION = 30 * 24 * 3600  # 30 days in seconds
+
+
+@app.post("/consent/request")
+async def consent_request(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Request user consent for scoped, time-limited data access.
+
+    An AI agent calls this endpoint to ask for permission to read specific fields.
+    The returned request_id is used by the user to approve or deny.
+    """
+    import json as json_mod
+
+    body = await request.json()
+    agent_name = body.get("agent_name")
+    scopes = body.get("scopes")
+    access_token_str = body.get("access_token")
+    duration = body.get("duration_seconds", 3600)
+
+    if not agent_name:
+        raise HTTPException(status_code=422, detail="'agent_name' is required.")
+    if not scopes or not isinstance(scopes, list):
+        raise HTTPException(status_code=422, detail="'scopes' must be a non-empty list of scope strings.")
+    if not access_token_str:
+        raise HTTPException(status_code=422, detail="'access_token' is required.")
+    if duration > _MAX_CONSENT_DURATION:
+        raise HTTPException(status_code=422, detail=f"Duration cannot exceed {_MAX_CONSENT_DURATION} seconds (30 days).")
+    if duration < 60:
+        raise HTTPException(status_code=422, detail="Duration must be at least 60 seconds.")
+
+    # Verify the access token belongs to this user
+    token_record = db.query(AccessToken).filter_by(token=access_token_str, user_id=user.id).first()
+    if not token_record:
+        raise HTTPException(status_code=401, detail="Invalid access token.")
+
+    request_id = f"creq-{uuid.uuid4()}"
+    cr = ConsentRequest(
+        id=request_id,
+        agent_name=agent_name,
+        agent_description=body.get("agent_description", ""),
+        scopes=json_mod.dumps(scopes),
+        duration_seconds=duration,
+        access_token=access_token_str,
+        user_id=user.id,
+    )
+    db.add(cr)
+    db.commit()
+
+    logger.info("Consent requested", extra={"extra_data": {"request_id": request_id, "agent": agent_name}})
+    return {
+        "request_id": request_id,
+        "agent_name": agent_name,
+        "scopes": scopes,
+        "duration_seconds": duration,
+        "status": "pending",
+    }
+
+
+@app.post("/consent/{request_id}/approve")
+async def consent_approve(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Approve a consent request. Creates a time-limited consent grant token."""
+    import json as json_mod
+
+    cr = db.query(ConsentRequest).filter_by(id=request_id, user_id=user.id).first()
+    if not cr:
+        raise HTTPException(status_code=404, detail="Consent request not found.")
+    if cr.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Consent request is already '{cr.status}'.")
+
+    cr.status = "approved"
+    consent_token = f"consent-{uuid.uuid4()}"
+    grant = ConsentGrant(
+        token=consent_token,
+        consent_request_id=request_id,
+        scopes=cr.scopes,
+        access_token=cr.access_token,
+        user_id=user.id,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=cr.duration_seconds),
+    )
+    db.add(grant)
+    db.commit()
+
+    logger.info("Consent approved", extra={"extra_data": {"request_id": request_id, "consent_token": consent_token}})
+    return {
+        "consent_token": consent_token,
+        "scopes": json_mod.loads(cr.scopes),
+        "expires_at": grant.expires_at.isoformat(),
+        "status": "approved",
+    }
+
+
+@app.post("/consent/{request_id}/deny")
+async def consent_deny(
+    request_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Deny a consent request."""
+    cr = db.query(ConsentRequest).filter_by(id=request_id, user_id=user.id).first()
+    if not cr:
+        raise HTTPException(status_code=404, detail="Consent request not found.")
+    if cr.status != "pending":
+        raise HTTPException(status_code=409, detail=f"Consent request is already '{cr.status}'.")
+
+    cr.status = "denied"
+    db.commit()
+
+    logger.info("Consent denied", extra={"extra_data": {"request_id": request_id}})
+    return {"request_id": request_id, "status": "denied"}
+
+
+@app.get("/consent")
+async def list_consents(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all active consent grants for the current user."""
+    import json as json_mod
+
+    grants = (
+        db.query(ConsentGrant)
+        .filter_by(user_id=user.id, revoked=False)
+        .all()
+    )
+    now = datetime.now(timezone.utc)
+    results = []
+    for g in grants:
+        expires = g.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if now > expires:
+            continue  # Skip expired grants
+        req = db.query(ConsentRequest).filter_by(id=g.consent_request_id).first()
+        results.append({
+            "consent_token": g.token,
+            "agent_name": req.agent_name if req else "unknown",
+            "scopes": json_mod.loads(g.scopes),
+            "access_token": g.access_token,
+            "expires_at": expires.isoformat(),
+            "created_at": g.created_at.isoformat() if g.created_at else None,
+        })
+    return {"grants": results, "count": len(results)}
+
+
+@app.delete("/consent/{consent_token}")
+async def revoke_consent(
+    consent_token: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revoke a consent grant immediately."""
+    grant = db.query(ConsentGrant).filter_by(token=consent_token, user_id=user.id).first()
+    if not grant:
+        raise HTTPException(status_code=404, detail="Consent grant not found.")
+    if grant.revoked:
+        raise HTTPException(status_code=409, detail="Consent already revoked.")
+
+    grant.revoked = True
+    db.commit()
+
+    logger.info("Consent revoked", extra={"extra_data": {"consent_token": consent_token}})
+    return {"status": "revoked", "consent_token": consent_token}
 
 
 # ── Auth Endpoints ────────────────────────────────────────────────────────────
