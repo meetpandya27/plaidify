@@ -349,6 +349,7 @@ class AccessToken(Base):
     username_encrypted = Column(Text, nullable=False)
     password_encrypted = Column(Text, nullable=False)
     instructions = Column(Text, nullable=True)
+    scopes = Column(Text, nullable=True)  # JSON list of allowed field/scope strings; NULL = all
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     key_version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

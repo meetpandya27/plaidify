@@ -373,19 +373,28 @@ class Plaidify:
 
     # ── Link flow (Plaid-style multi-step) ────────────────────────────────────
 
-    async def create_link(self, site: str) -> LinkResult:
+    async def create_link(
+        self,
+        site: str,
+        scopes: Optional[List[str]] = None,
+    ) -> LinkResult:
         """Create a link token for a site (step 1 of multi-step flow).
 
         Requires authentication (``api_key`` must be set).
 
         Args:
             site: Blueprint identifier.
+            scopes: Optional list of field names or scope strings to restrict
+                what data the resulting access token can retrieve.
+                Example: ``["balance", "transactions"]``.
+                If ``None``, all fields are allowed.
 
         Returns:
             LinkResult with the ``link_token``.
         """
         try:
-            r = await self._http.post("/create_link", params={"site": site})
+            json_body = {"scopes": scopes} if scopes else None
+            r = await self._http.post("/create_link", params={"site": site}, json=json_body)
         except httpx.ConnectError as e:
             raise ConnectionError() from e
         _raise_for_api_error(r)

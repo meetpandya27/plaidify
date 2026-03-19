@@ -737,6 +737,7 @@ async def mfa_status(session_id: str):
 
 @app.post("/create_link")
 async def create_link(
+    request: Request,
     site: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -745,7 +746,20 @@ async def create_link(
     Create a link token for a specific site.
 
     Step 1 of the Plaid-style multi-step flow.
+    Optionally accepts a JSON body with ``scopes`` — a list of field names
+    or scope strings (e.g. ``["balance", "transactions"]``) that will be
+    enforced on data retrieval. If omitted, all fields are allowed.
     """
+    import json as json_mod
+
+    # Parse optional scopes from JSON body
+    scopes = None
+    try:
+        body = await request.json()
+        scopes = body.get("scopes") if body else None
+    except Exception:
+        pass  # No body or non-JSON body is fine
+
     link_token = str(uuid.uuid4())
     new_link = Link(link_token=link_token, site=site, user_id=user.id)
     db.add(new_link)
@@ -755,7 +769,13 @@ async def create_link(
     public_key_pem = generate_keypair(link_token)
 
     logger.info("Link created", extra={"extra_data": {"site": site, "user_id": user.id}})
-    return {"link_token": link_token, "public_key": public_key_pem}
+    result = {"link_token": link_token, "public_key": public_key_pem}
+    if scopes is not None:
+        # Store scopes on the link for propagation to access tokens
+        # We stash them in a lightweight in-memory map keyed by link_token
+        _link_scopes[link_token] = json_mod.dumps(scopes)
+        result["scopes"] = scopes
+    return result
 
 
 @app.post("/submit_credentials")
@@ -799,18 +819,26 @@ async def submit_credentials(
     encrypted_password_stored = encrypt_credential_for_user(user, plain_pass)
     access_token = str(uuid.uuid4())
 
+    # Inherit scopes from the link creation step (if any)
+    token_scopes = _link_scopes.pop(link_token, None)
+
     new_token = AccessToken(
         token=access_token,
         link_token=link_token,
         username_encrypted=encrypted_username_stored,
         password_encrypted=encrypted_password_stored,
+        scopes=token_scopes,
         user_id=user.id,
         key_version=get_current_key_version(),
     )
     db.add(new_token)
     db.commit()
     logger.info("Credentials submitted", extra={"extra_data": {"link_token": link_token, "user_id": user.id}})
-    return {"access_token": access_token}
+    result = {"access_token": access_token}
+    if token_scopes:
+        import json as json_mod
+        result["scopes"] = json_mod.loads(token_scopes)
+    return result
 
 
 @app.post("/submit_instructions")
@@ -878,6 +906,24 @@ async def fetch_data(
             else:
                 allowed_fields.add(scope)
 
+    # Also check access token scopes
+    token_allowed = None
+    if token_record.scopes:
+        import json as json_mod_scopes
+        token_scopes_list = json_mod_scopes.loads(token_record.scopes)
+        token_allowed = set()
+        for scope in token_scopes_list:
+            if ":" in scope:
+                token_allowed.add(scope.split(":", 1)[1])
+            else:
+                token_allowed.add(scope)
+
+    # Merge: use the most restrictive set of allowed fields
+    if allowed_fields is not None and token_allowed is not None:
+        allowed_fields = allowed_fields & token_allowed
+    elif token_allowed is not None:
+        allowed_fields = token_allowed
+
     username = decrypt_credential_for_user(user, token_record.username_encrypted)
     password = decrypt_credential_for_user(user, token_record.password_encrypted)
     user_instructions = token_record.instructions
@@ -886,12 +932,12 @@ async def fetch_data(
     if user_instructions:
         response_data["instructions_applied"] = user_instructions
 
-    # Filter data by consent scopes if applicable
+    # Filter data by scopes if applicable (consent + access token)
     if allowed_fields is not None and "data" in response_data:
         response_data["data"] = {
             k: v for k, v in response_data["data"].items() if k in allowed_fields
         }
-        response_data["consent_scopes"] = sorted(allowed_fields)
+        response_data["scopes_applied"] = sorted(allowed_fields)
 
     return response_data
 
@@ -1231,6 +1277,10 @@ async def delete_token(
 # Each session tracks: status, site, events list, created_at, access_token, subscribers.
 _link_sessions: Dict[str, Dict[str, Any]] = {}
 _link_session_lock = asyncio.Lock()
+
+# Temporary scope storage: maps link_token -> JSON scopes string.
+# Populated in /create_link, consumed (and removed) in /submit_credentials.
+_link_scopes: Dict[str, str] = {}
 
 # TTL for link sessions (30 minutes)
 _LINK_SESSION_TTL = 1800
