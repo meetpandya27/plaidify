@@ -795,6 +795,122 @@ def rotate_key(old_key: str, new_key: str, re_encrypt: bool, batch_size: int):
         sys.exit(1)
 
 
+# ── plaidify audit ───────────────────────────────────────────────────────────
+
+
+@cli.group()
+def audit():
+    """Audit log management and verification."""
+    pass
+
+
+@audit.command("verify")
+@click.pass_context
+def audit_verify(ctx: click.Context):
+    """Verify audit log hash chain integrity.
+
+    Connects to the server and checks that every audit log entry's hash
+    is consistent with its content and properly links to the previous entry.
+    """
+    import httpx
+
+    server = ctx.obj["server"]
+    api_key = ctx.obj["api_key"]
+
+    if not api_key:
+        _echo_error("API key required. Use --api-key or set PLAIDIFY_API_KEY.")
+        sys.exit(1)
+
+    click.echo()
+    _echo_info("Verifying audit log hash chain...")
+
+    try:
+        resp = httpx.get(
+            f"{server}/audit/verify",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            _echo_error(f"Server returned {resp.status_code}: {resp.text}")
+            sys.exit(1)
+
+        result = resp.json()
+        total = result.get("total", 0)
+        valid = result.get("valid", False)
+        errors = result.get("errors", [])
+
+        if valid:
+            _echo_success(f"Audit chain verified — {total} entries, no tampering detected.")
+        else:
+            _echo_error(f"Audit chain INVALID — {len(errors)} error(s) in {total} entries:")
+            for err in errors[:10]:
+                click.echo(f"    Entry #{err['id']}: {err['error']}")
+            if len(errors) > 10:
+                click.echo(f"    ... and {len(errors) - 10} more")
+            sys.exit(1)
+        click.echo()
+
+    except httpx.ConnectError:
+        _echo_error(f"Cannot connect to {server}")
+        sys.exit(1)
+    except Exception as e:
+        _echo_error(f"Verification failed: {e}")
+        sys.exit(1)
+
+
+@audit.command("logs")
+@click.option("--event-type", "-e", default=None, help="Filter by event type.")
+@click.option("--limit", "-n", default=20, help="Number of entries to show.")
+@click.pass_context
+def audit_logs(ctx: click.Context, event_type: Optional[str], limit: int):
+    """View recent audit log entries."""
+    import httpx
+
+    server = ctx.obj["server"]
+    api_key = ctx.obj["api_key"]
+
+    if not api_key:
+        _echo_error("API key required. Use --api-key or set PLAIDIFY_API_KEY.")
+        sys.exit(1)
+
+    params = {"limit": limit}
+    if event_type:
+        params["event_type"] = event_type
+
+    try:
+        resp = httpx.get(
+            f"{server}/audit/logs",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            _echo_error(f"Server returned {resp.status_code}: {resp.text}")
+            sys.exit(1)
+
+        data = resp.json()
+        entries = data.get("entries", [])
+        total = data.get("total", 0)
+
+        click.echo()
+        click.echo(f"  Audit Logs ({len(entries)} of {total}):")
+        click.echo(f"  {'─' * 70}")
+        for e in entries:
+            ts = e.get("timestamp", "")[:19]
+            action = e.get("action", "")
+            etype = e.get("event_type", "")
+            resource = e.get("resource", "—")[:20] if e.get("resource") else "—"
+            click.echo(f"  {ts}  {click.style(etype, fg='cyan'):12s}  {action:20s}  {resource}")
+        click.echo()
+
+    except httpx.ConnectError:
+        _echo_error(f"Cannot connect to {server}")
+        sys.exit(1)
+    except Exception as e:
+        _echo_error(f"Failed to fetch logs: {e}")
+        sys.exit(1)
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 

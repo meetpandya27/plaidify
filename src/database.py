@@ -459,3 +459,23 @@ class BlueprintRecord(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
+
+
+class AuditLog(Base):
+    """Tamper-evident audit log entry with hash chain.
+
+    Each entry stores a SHA-256 hash linking to the previous entry,
+    forming an immutable chain that can be verified for integrity.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    user_id = Column(Integer, nullable=True, index=True)
+    resource = Column(String, nullable=True)
+    action = Column(String, nullable=False)
+    metadata_json = Column(Text, nullable=True)  # JSON-encoded metadata
+    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    prev_hash = Column(String(64), nullable=True)  # SHA-256 hex of previous entry
+    entry_hash = Column(String(64), nullable=False)  # SHA-256 hex of this entry

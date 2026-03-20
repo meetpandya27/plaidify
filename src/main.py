@@ -12,6 +12,7 @@ import uuid
 import asyncio
 import hashlib
 import hmac
+import json
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -45,6 +46,7 @@ from src.database import (
     ConsentRequest,
     ConsentGrant,
     BlueprintRecord,
+    AuditLog,
     encrypt_credential,
     decrypt_credential,
     create_user_dek,
@@ -53,6 +55,7 @@ from src.database import (
     ensure_user_dek,
     get_current_key_version,
 )
+from src.audit import record_audit_event, verify_audit_chain
 from src.exceptions import PlaidifyError, InvalidTokenError, UserNotFoundError, MFARequiredError
 from src.logging_config import setup_logging, get_logger
 from src.models import (
@@ -834,6 +837,10 @@ async def submit_credentials(
     db.add(new_token)
     db.commit()
     logger.info("Credentials submitted", extra={"extra_data": {"link_token": link_token, "user_id": user.id}})
+    record_audit_event(
+        db, "token", "create", user_id=user.id,
+        resource=access_token, metadata={"link_token": link_token},
+    )
     result = {"access_token": access_token}
     if token_scopes:
         import json as json_mod
@@ -938,6 +945,11 @@ async def fetch_data(
             k: v for k, v in response_data["data"].items() if k in allowed_fields
         }
         response_data["scopes_applied"] = sorted(allowed_fields)
+
+    record_audit_event(
+        db, "data_access", "fetch_data", user_id=user.id,
+        resource=access_token, metadata={"site": site.site},
+    )
 
     return response_data
 
@@ -1112,7 +1124,67 @@ async def revoke_consent(
     db.commit()
 
     logger.info("Consent revoked", extra={"extra_data": {"consent_token": consent_token}})
+    record_audit_event(
+        db, "consent", "revoke", user_id=user.id, resource=consent_token,
+    )
     return {"status": "revoked", "consent_token": consent_token}
+
+
+# ── Audit Log Endpoints ──────────────────────────────────────────────────────
+
+
+@app.get("/audit/logs")
+async def get_audit_logs(
+    event_type: Optional[str] = None,
+    user_id: Optional[int] = None,
+    limit: int = 100,
+    offset: int = 0,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Query audit logs. Only the user's own logs are returned (admin sees all in future)."""
+    query = db.query(AuditLog)
+
+    # Non-admin users can only see their own events
+    if user_id and user_id == user.id:
+        query = query.filter(AuditLog.user_id == user_id)
+    else:
+        query = query.filter(AuditLog.user_id == user.id)
+
+    if event_type:
+        query = query.filter(AuditLog.event_type == event_type)
+
+    total = query.count()
+    entries = query.order_by(AuditLog.id.desc()).offset(offset).limit(min(limit, 500)).all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": min(limit, 500),
+        "entries": [
+            {
+                "id": e.id,
+                "event_type": e.event_type,
+                "user_id": e.user_id,
+                "resource": e.resource,
+                "action": e.action,
+                "metadata": json.loads(e.metadata_json) if e.metadata_json else None,
+                "timestamp": e.timestamp.isoformat(),
+                "entry_hash": e.entry_hash,
+            }
+            for e in entries
+        ],
+    }
+
+
+@app.get("/audit/verify")
+async def verify_audit_logs(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Verify the integrity of the audit log hash chain."""
+    result = verify_audit_chain(db)
+    return result
 
 
 # ── Auth Endpoints ────────────────────────────────────────────────────────────
@@ -1140,6 +1212,7 @@ def register_user(request: Request, body: UserRegisterRequest, db: Session = Dep
     db.refresh(user)
 
     logger.info("User registered", extra={"extra_data": {"user_id": user.id}})
+    record_audit_event(db, "auth", "register", user_id=user.id, metadata={"username": body.username})
     return _issue_token_pair(user.id, db)
 
 
@@ -1149,11 +1222,13 @@ def login_user(request: Request, form_data: OAuth2PasswordRequestForm = Depends(
     """Log in and receive a JWT access token."""
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
+        record_audit_event(db, "auth", "login_failed", metadata={"username": form_data.username})
         raise HTTPException(status_code=400, detail="Incorrect username or password")
 
     # Lazy migration: ensure existing users get a DEK
     ensure_user_dek(user, db)
 
+    record_audit_event(db, "auth", "login", user_id=user.id)
     return _issue_token_pair(user.id, db)
 
 
@@ -1246,6 +1321,10 @@ async def delete_link(
     db.query(AccessToken).filter_by(link_token=link_token, user_id=user.id).delete()
     db.delete(link)
     db.commit()
+    record_audit_event(
+        db, "token", "link_deleted", user_id=user.id,
+        resource=link_token, metadata={"site": link.site},
+    )
     return {"status": "Link and associated tokens deleted."}
 
 
@@ -1268,6 +1347,7 @@ async def delete_token(
         raise HTTPException(status_code=404, detail="Token not found.")
     db.delete(token_obj)
     db.commit()
+    record_audit_event(db, "token", "revoke", user_id=user.id, resource=token)
     return {"status": "Token deleted."}
 
 
