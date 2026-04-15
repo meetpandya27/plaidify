@@ -1,7 +1,7 @@
 # Plaidify — Product Plan
 
-**Version:** 2.0
-**Last Updated:** March 14, 2026
+**Version:** 2.1
+**Last Updated:** April 15, 2026
 **Vision:** Plaidify is the open-source infrastructure layer that lets any developer turn their product into a data accessibility platform — for human users and AI agents alike.
 
 ---
@@ -17,10 +17,11 @@
 7. [Phase 3 — AI Agent Protocol (Weeks 3-5)](#7-phase-3--ai-agent-protocol-weeks-3-5)
 8. [Phase 4 — Browser Actions / Write Ops (Weeks 5-7)](#8-phase-4--browser-actions--write-ops-weeks-5-7)
 9. [Phase 5 — Enterprise & Scale (Weeks 7-10)](#9-phase-5--enterprise--scale-weeks-7-10)
-10. [Week-by-Week Execution Calendar](#10-week-by-week-execution-calendar)
-11. [Risk Matrix](#11-risk-matrix)
-12. [Success Metrics](#12-success-metrics)
-13. [Open Source & Community Strategy](#13-open-source--community-strategy)
+10. [Phase 6 — Data Strategy & Intelligence (Weeks 11-14)](#10-phase-6--data-strategy--intelligence-weeks-11-14)
+11. [Week-by-Week Execution Calendar](#11-week-by-week-execution-calendar)
+12. [Risk Matrix](#12-risk-matrix)
+13. [Success Metrics](#13-success-metrics)
+14. [Open Source & Community Strategy](#14-open-source--community-strategy)
 
 ---
 
@@ -112,7 +113,7 @@ data = await tool.fetch(blueprint="state_farm_insurance", user_token="usr_abc123
 └──────────────────┘        └─────────────────────────────────────┘
 ```
 
-### Target Architecture (End of Phase 5)
+### Target Architecture (End of Phase 6)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -131,12 +132,21 @@ data = await tool.fetch(blueprint="state_farm_insurance", user_token="usr_abc123
 │  └──────────────────────────────┬──────────────────────────────────┘   │
 │                                 ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                      BROWSER ENGINE  ✅                          │   │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐     │   │
-│  │  │  Playwright   │  │  Step        │  │  Browser Pool     │     │   │
-│  │  │  Driver  ✅   │  │  Executor ✅ │  │  Manager ✅       │     │   │
-│  │  └──────────────┘  └──────────────┘  └───────────────────┘     │   │
-│  └──────────────────────────────┬──────────────────────────────────┘   │
+│  │                    PROVIDER ROUTER (Phase 6)                     │   │
+│  │  • Intelligent routing: API → Browser fallback                  │   │
+│  │  • Third-party aggregator support (Teller, MX, Akoya)           │   │
+│  │  • Blueprint Auto-Healer (LLM-powered)                          │   │
+│  └──────────┬─────────────────────────────────┬────────────────────┘   │
+│             ▼                                 ▼                         │
+│  ┌─────────────────────────┐  ┌───────────────────────────────────┐   │
+│  │   BROWSER ENGINE  ✅    │  │       API CONNECTOR (Phase 6)     │   │
+│  │  ┌────────────────────┐ │  │  ┌─────────────────────────────┐  │   │
+│  │  │ Playwright Driver ✅│ │  │  │ OAuth2 / API Key / Bearer   │  │   │
+│  │  │ Step Executor ✅    │ │  │  │ JSONPath Extraction          │  │   │
+│  │  │ Browser Pool ✅     │ │  │  │ Open Banking (FDX/PSD2/UK)  │  │   │
+│  │  └────────────────────┘ │  │  └─────────────────────────────┘  │   │
+│  └──────────┬──────────────┘  └───────────────┬───────────────────┘   │
+│             └─────────────────────────────────┘                         │
 │                                 ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │                    DATA & SECURITY LAYER  ✅                     │   │
@@ -808,7 +818,153 @@ if consent.approved:
 
 ---
 
-## 10. Week-by-Week Execution Calendar
+## 10. Phase 6 — Data Strategy & Intelligence (Weeks 11-14)
+
+**Goal:** Make Plaidify the universal data access layer that intelligently routes to the best data source — API when available, browser when necessary — while self-healing broken blueprints.
+
+| Week | Dates | Focus | Ship |
+|------|-------|-------|------|
+| **11** | May 25-29 | API Connector blueprint type | `connector_type: "api"` working |
+| **12** | Jun 1-5 | Open Banking integration (FDX, PSD2, UK) | Bank API templates |
+| **13** | Jun 8-12 | Blueprint Auto-Healer (LLM-powered) | `plaidify blueprint doctor/heal` |
+| **14** | Jun 15-19 | Provider aggregation layer + v1.1.0 | Intelligent routing + ship |
+
+### Week 11: API Connector Blueprint Type (May 25-29)
+
+#### Monday-Tuesday: API Connector Engine
+
+| Task | Details | Output |
+|------|---------|--------|
+| API connector blueprint type | `connector_type: "api"` alongside existing `"browser"` type | New blueprint schema |
+| OAuth2 auth flow | Authorization code, client credentials, PKCE support | Standardized auth |
+| API key / Bearer token auth | Static API keys, Bearer tokens for simpler APIs | Auth options |
+| JSONPath extraction | Extract data from JSON API responses using JSONPath expressions | Structured output |
+
+#### Wednesday-Thursday: API ↔ Browser Fallback
+
+| Task | Details | Output |
+|------|---------|--------|
+| Automatic fallback chain | Try API first, fall back to browser if API unavailable | Resilient connections |
+| Provider config | Per-blueprint `preferred_method: "api"` / `"browser"` / `"auto"` | Developer control |
+| Unified response format | API and browser connectors return identical response shapes | Consistent SDK |
+| Connection latency optimization | API connections skip browser overhead (sub-second) | Performance gain |
+
+#### Friday: Testing + Polish
+
+| Task | Details |
+|------|---------|
+| API connector test suite | End-to-end tests with mock API endpoints |
+| Blueprint validator update | `plaidify blueprint validate` supports `connector_type: "api"` |
+| Documentation | Blueprint authoring guide for API connectors |
+
+---
+
+### Week 12: Open Banking Integration (Jun 1-5)
+
+#### Monday-Tuesday: FDX 6.0 (US/Canada)
+
+| Task | Details | Output |
+|------|---------|--------|
+| FDX 6.0 connector template | Financial Data Exchange standard for US/Canada banks | Blueprint template |
+| Account discovery | `/accounts` endpoint mapping | Account listing |
+| Transaction extraction | `/transactions` with date range filtering | Transaction data |
+| Balance retrieval | `/accounts/{id}/balances` mapping | Real-time balances |
+
+#### Wednesday-Thursday: PSD2 + UK Open Banking
+
+| Task | Details | Output |
+|------|---------|--------|
+| PSD2 / Berlin Group template | EU bank API standard connector | Blueprint template |
+| UK Open Banking v3.1 template | UK bank API standard connector | Blueprint template |
+| Consent management | Open Banking consent flows mapped to Plaidify consent engine | Compliant access |
+| Certificate management | eIDAS / OBIE certificate handling for production use | TLS client certs |
+
+#### Friday: Aggregator Proxies
+
+| Task | Details |
+|------|---------|
+| Teller integration | API connector template for Teller (US banks) |
+| Akoya integration | API connector template for Akoya (FDX-based) |
+| MX integration | API connector template for MX (financial data) |
+
+---
+
+### Week 13: Blueprint Auto-Healer (Jun 8-12)
+
+#### Monday-Tuesday: Health Monitoring
+
+| Task | Details | Output |
+|------|---------|--------|
+| Blueprint health checks | Scheduled probes to detect broken selectors | Health status per blueprint |
+| Failure classification | Categorize failures: auth changed, layout changed, site down | Actionable alerts |
+| Health monitoring dashboard | UI showing blueprint health across all connectors | Operations visibility |
+| Alert system | Webhook/email alerts when blueprints break | Proactive maintenance |
+
+#### Wednesday-Thursday: LLM Auto-Repair
+
+| Task | Details | Output |
+|------|---------|--------|
+| `plaidify blueprint doctor` | CLI command to diagnose broken blueprints | Diagnostic report |
+| `plaidify blueprint heal` | LLM-powered automatic selector repair | Auto-fixed blueprints |
+| Repair verification | Run healed blueprint against live site to verify fix | Confidence score |
+| Repair caching | Cache successful repairs to avoid repeated LLM calls | Cost control |
+
+#### Friday: Regression Testing
+
+| Task | Details |
+|------|---------|
+| Automated regression suite | Healed blueprints run through full extraction test |
+| Repair history | Track all auto-repairs with before/after diffs |
+| Manual review queue | Flag low-confidence repairs for human review |
+
+---
+
+### Week 14: Provider Aggregation + v1.1.0 (Jun 15-19)
+
+#### Monday-Tuesday: Provider Router
+
+| Task | Details | Output |
+|------|---------|--------|
+| Intelligent routing layer | Route connections to best available provider | Optimal data source |
+| Provider priority chain | API → Aggregator → Browser, configurable per blueprint | Flexibility |
+| Latency-aware routing | Choose fastest healthy provider | Performance |
+| Cost-aware routing | Prefer free paths (direct API, browser) over paid aggregators | Cost optimization |
+
+#### Wednesday: Integration Testing
+
+| Task | Details |
+|------|---------|
+| End-to-end routing tests | API → Browser fallback, aggregator failover |
+| Load test routing layer | Verify routing under concurrent connections |
+| Provider health monitoring | Real-time provider availability tracking |
+
+#### Thursday-Friday: 🚀 v1.1.0 Release
+
+| Task | Details |
+|------|---------|
+| Version bump | v1.1.0 — Universal data access layer |
+| CHANGELOG | Full release notes for Phase 6 |
+| GitHub Release | Detailed release notes with highlights |
+| Updated documentation | API connector guide, Open Banking guide, auto-healer guide |
+| Announcement | Blog post + community update |
+
+### Phase 6 Deliverables
+
+- [ ] API Connector blueprint type with OAuth2, API key, Bearer token auth
+- [ ] JSONPath-based API response extraction
+- [ ] Automatic fallback: API → browser
+- [ ] FDX 6.0 connector template (US/Canada banks)
+- [ ] PSD2/Berlin Group connector template (EU banks)
+- [ ] Open Banking UK v3.1 connector template
+- [ ] LLM-powered blueprint auto-healer
+- [ ] Blueprint health monitoring dashboard
+- [ ] Provider aggregation layer with intelligent routing
+- [ ] Third-party aggregator support (Teller, MX, Akoya)
+- [ ] **v1.1.0 released** 🚀
+
+---
+
+## 11. Week-by-Week Execution Calendar
 
 Starting **March 17, 2026:**
 
@@ -824,6 +980,10 @@ Starting **March 17, 2026:**
 | **8** | May 5-9 | Multi-tenancy + Monitoring + API keys | Enterprise infra |
 | **9** | May 12-16 | Admin console + Compliance + SSO | Admin live |
 | **10** | May 19-23 | Load testing + Docs site + Launch | **🚀 v1.0.0** |
+| **11** | May 25-29 | API Connector blueprint type | `connector_type: api` |
+| **12** | Jun 1-5 | Open Banking (FDX, PSD2, UK OB) | Bank API templates |
+| **13** | Jun 8-12 | Blueprint Auto-Healer | `plaidify blueprint doctor` |
+| **14** | Jun 15-19 | Provider aggregation + Polish | **🚀 v1.1.0** |
 
 ### Key Milestones
 
@@ -835,10 +995,14 @@ Starting **March 17, 2026:**
 | **Apr 18** | MCP server + Agent SDK, **v0.4.0 shipped** |
 | **May 2** | Write operations working, **v0.5.0 shipped** |
 | **May 23** | **🚀 v1.0.0 launched** |
+| **May 29** | API connectors work alongside browser connectors |
+| **Jun 5** | Connect to banks via Open Banking APIs |
+| **Jun 12** | Broken blueprints auto-detected and self-healed |
+| **Jun 19** | **🚀 v1.1.0 — Universal data access layer** |
 
 ---
 
-## 11. Risk Matrix
+## 12. Risk Matrix
 
 | Risk | Prob. | Impact | Mitigation |
 |------|-------|--------|------------|
@@ -849,10 +1013,13 @@ Starting **March 17, 2026:**
 | **Business: Plaid/MX compete** | Medium | Medium | Stay open-source, focus on non-financial verticals, community moat |
 | **Timeline: Scope creep** | High | Medium | **Strict weekly milestones. Cut scope before slipping dates.** |
 | **Community: Low adoption** | Medium | High | Great docs, easy quickstart, Discord, blueprint bounties |
+| **Open Banking certification requirements** | Medium | High | Start with aggregator proxies (Akoya/Teller), get certified later |
+| **LLM costs for auto-healing** | Low | Medium | Cache repairs, only trigger on failure, use small models |
+| **Third-party aggregator dependencies** | Medium | Medium | Multiple providers, graceful fallback to browser |
 
 ---
 
-## 12. Success Metrics
+## 13. Success Metrics
 
 ### Phase 2 — Developer SDK (End of Week 3)
 | Metric | Target |
@@ -888,9 +1055,17 @@ Starting **March 17, 2026:**
 | Documentation pages | 30+ |
 | Community members (Discord) | 50+ |
 
+### Phase 6 — Data Strategy & Intelligence (End of Week 14)
+| Metric | Target |
+|--------|--------|
+| API connector blueprints | 10+ |
+| Open Banking standards supported | 3 (FDX, PSD2, UK OB) |
+| Blueprint auto-heal success rate | > 70% |
+| Provider routing fallback rate | < 5% |
+
 ---
 
-## 13. Open Source & Community Strategy
+## 14. Open Source & Community Strategy
 
 ### Community Building
 
@@ -944,6 +1119,16 @@ Contributor writes blueprint → PR → Automated validation → Human review �
 ✅ Interactive demo UI                     🔥 Admin Console + multi-tenancy
 ✅ CI/CD pipeline                          🔥 Documentation site
 ✅ Docker multi-stage build                🚀 v1.0.0 launch — May 23, 2026
+
+                                           🔮 FUTURE (Weeks 11-14 → v1.1.0)
+                                           ──────────────────────────────────
+                                           🔮 API Connector blueprint type
+                                           🔮 Open Banking (FDX, PSD2, UK OB)
+                                           🔮 Blueprint Auto-Healer (LLM)
+                                           🔮 Provider aggregation + routing
+                                           🔮 Third-party aggregators (Teller, MX)
+                                           🔮 Blueprint health monitoring
+                                           🚀 v1.1.0 launch — Jun 19, 2026
 ```
 
 ---
