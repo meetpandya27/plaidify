@@ -143,7 +143,7 @@ data = await tool.fetch(blueprint="state_farm_insurance", user_token="usr_abc123
 │  │  ┌────────────────────┐ │  │  ┌─────────────────────────────┐  │   │
 │  │  │ Playwright Driver ✅│ │  │  │ OAuth2 / API Key / Bearer   │  │   │
 │  │  │ Step Executor ✅    │ │  │  │ JSONPath Extraction          │  │   │
-│  │  │ Browser Pool ✅     │ │  │  │ Open Banking (FDX/PSD2/UK)  │  │   │
+│  │  │ Browser Pool ✅     │ │  │  │ Open Banking (FDX/PSD2/UK OB) │  │   │
 │  │  └────────────────────┘ │  │  └─────────────────────────────┘  │   │
 │  └──────────┬──────────────┘  └───────────────┬───────────────────┘   │
 │             └─────────────────────────────────┘                         │
@@ -825,7 +825,7 @@ if consent.approved:
 | Week | Dates | Focus | Ship |
 |------|-------|-------|------|
 | **11** | May 25-29 | API Connector blueprint type | `connector_type: "api"` working |
-| **12** | Jun 1-5 | Open Banking integration (FDX, PSD2, UK) | Bank API templates |
+| **12** | Jun 1-5 | Open Banking integration (FDX, PSD2, UK OB) | Bank API templates |
 | **13** | Jun 8-12 | Blueprint Auto-Healer (LLM-powered) | `plaidify blueprint doctor/heal` |
 | **14** | Jun 15-19 | Provider aggregation layer + v1.1.0 | Intelligent routing + ship |
 
