@@ -232,7 +232,7 @@ class TestLazyDEKMigration:
     def test_login_creates_dek_for_legacy_user(self, client):
         from src.database import User
         from tests.conftest import TestSessionLocal
-        from src.main import get_password_hash
+        from src.dependencies import get_password_hash
 
         # Manually create a user without DEK (simulates pre-migration user)
         db = TestSessionLocal()

@@ -174,7 +174,20 @@ async def submit_mfa_code(session_id: str, code: str) -> dict:
 
 def _load_site_blueprint(site: str, connectors_dir: str) -> BlueprintV2:
     """Load and validate a blueprint for the given site."""
+    import re
+    if not re.match(r'^[a-zA-Z0-9_-]+$', site):
+        raise BlueprintValidationError(
+            site=site,
+            detail="Invalid site name. Only alphanumeric characters, underscores, and hyphens are allowed.",
+        )
+
     blueprint_path = Path(connectors_dir) / f"{site}.json"
+
+    # Defense in depth: ensure resolved path stays inside connectors_dir
+    resolved = blueprint_path.resolve()
+    connectors_resolved = Path(connectors_dir).resolve()
+    if not str(resolved).startswith(str(connectors_resolved)):
+        raise BlueprintValidationError(site=site, detail="Invalid site name.")
 
     if not blueprint_path.exists():
         logger.error(

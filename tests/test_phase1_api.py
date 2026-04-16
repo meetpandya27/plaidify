@@ -82,12 +82,12 @@ class TestMFAEndpoints:
 class TestConnectEndpoint:
     def test_connect_with_extract_fields(self, client):
         """POST /connect should accept extract_fields parameter."""
-        # This will use the stub connector (demo_site) — just testing the API contract
         response = client.post("/connect", json={
             "site": "demo_site",
             "username": "user",
             "password": "pass",
             "extract_fields": ["profile_status"],
         })
-        # Should work (either connected or blueprint error depending on engine)
-        assert response.status_code in (200, 404, 502)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "connected"

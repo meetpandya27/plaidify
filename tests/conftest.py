@@ -4,6 +4,7 @@ Shared test fixtures and configuration.
 
 import os
 import pytest
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -54,7 +55,7 @@ def reset_rate_limiter():
         limiter.enabled = True
     """
     from limits.storage.memory import MemoryStorage
-    from src.main import limiter
+    from src.dependencies import limiter
     limiter.enabled = False
     # Replace storage with a fresh instance to guarantee no stale counters
     limiter._limiter.storage = MemoryStorage()
@@ -93,6 +94,50 @@ def second_user_headers(client):
     assert response.status_code == 200
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+# ── Mock Browser Engine ───────────────────────────────────────────────────────
+
+_MOCK_CONNECT_RESPONSE = {
+    "status": "connected",
+    "data": {
+        "profile_status": "active",
+        "last_synced": "2025-04-17T12:00:00Z",
+        "mock_status": "active",
+        "mock_synced": "2025-04-17T12:00:00Z",
+    },
+}
+
+
+async def _mock_connect_to_site(site, username=None, password=None, **kwargs):
+    """Mock connect_to_site that returns stub data for known sites.
+
+    Raises BlueprintNotFoundError for unknown sites, matching real behavior.
+    """
+    from src.exceptions import BlueprintNotFoundError
+
+    known_sites = {"demo_site", "mock_site", "test_bank", "greengrid_energy",
+                   "greengrid_energy_v3", "hydro_one"}
+    if site not in known_sites:
+        raise BlueprintNotFoundError(site=site)
+    return _MOCK_CONNECT_RESPONSE
+
+
+@pytest.fixture(autouse=True)
+def mock_browser_engine(request):
+    """Mock connect_to_site in all routers to prevent Playwright browser launch.
+
+    Tests that need real browser automation should use:
+        @pytest.mark.playwright
+    """
+    if "playwright" in [m.name for m in request.node.iter_markers()]:
+        yield
+        return
+
+    mock = AsyncMock(side_effect=_mock_connect_to_site)
+    with patch("src.routers.connection.connect_to_site", mock), \
+         patch("src.routers.links.connect_to_site", mock):
+        yield mock
 
 
 # ── Shared LLM / Playwright Mocks ────────────────────────────────────────────

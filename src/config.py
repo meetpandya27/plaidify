@@ -18,6 +18,18 @@ class Settings(BaseSettings):
         default="sqlite:///plaidify.db",
         description="SQLAlchemy database URL. Use PostgreSQL in production.",
     )
+    db_pool_size: int = Field(
+        default=20,
+        description="SQLAlchemy connection pool size. Ignored for SQLite.",
+    )
+    db_max_overflow: int = Field(
+        default=10,
+        description="Max overflow connections beyond pool_size. Ignored for SQLite.",
+    )
+    db_pool_recycle: int = Field(
+        default=3600,
+        description="Seconds before a connection is recycled. Ignored for SQLite.",
+    )
 
     # ── Encryption ────────────────────────────────────────────
     encryption_key: str = Field(
@@ -93,6 +105,12 @@ class Settings(BaseSettings):
     rate_limit_default: str = Field(
         default="60/minute",
         description="Default rate limit for all other endpoints. Format: 'N/period'.",
+    )
+
+    # ── Redis ─────────────────────────────────────────────────
+    redis_url: Optional[str] = Field(
+        default=None,
+        description="Redis URL for shared state (RSA keys, rate limiting). Example: redis://localhost:6379/0",
     )
 
     # ── Browser Engine ────────────────────────────────────────

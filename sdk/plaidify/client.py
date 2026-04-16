@@ -41,9 +41,17 @@ from plaidify.exceptions import (
     ServerError,
 )
 from plaidify.models import (
+    AgentInfo,
+    AgentListResult,
+    ApiKeyInfo,
+    AuditEntry,
+    AuditLogResult,
+    AuditVerifyResult,
     AuthToken,
     BlueprintInfo,
     BlueprintListResult,
+    ConsentGrant,
+    ConsentRequest,
     ConnectResult,
     HealthStatus,
     LinkEvent,
@@ -51,7 +59,9 @@ from plaidify.models import (
     LinkSession,
     MFAChallenge,
     MFASubmitResult,
+    PublicTokenExchangeResult,
     UserProfile,
+    WebhookDeliveryResult,
     WebhookRegistration,
 )
 
@@ -728,6 +738,513 @@ class Plaidify:
                         event_name = ""
                         data_buf = ""
 
+    # ── Agents ────────────────────────────────────────────────────────────────
+
+    async def register_agent(
+        self,
+        name: str,
+        *,
+        description: Optional[str] = None,
+        allowed_scopes: Optional[List[str]] = None,
+        allowed_sites: Optional[List[str]] = None,
+        rate_limit: Optional[str] = None,
+    ) -> AgentInfo:
+        """Register a new AI agent and receive its dedicated API key.
+
+        The ``api_key`` field is only returned on creation — store it securely.
+
+        Args:
+            name: Agent display name.
+            description: What the agent does.
+            allowed_scopes: Scope strings the agent may request (None = all).
+            allowed_sites: Site identifiers the agent may connect to (None = all).
+            rate_limit: Rate-limit string (e.g. ``"60/minute"``).
+
+        Returns:
+            AgentInfo including the one-time ``api_key``.
+        """
+        body: Dict[str, Any] = {"name": name}
+        if description is not None:
+            body["description"] = description
+        if allowed_scopes is not None:
+            body["allowed_scopes"] = allowed_scopes
+        if allowed_sites is not None:
+            body["allowed_sites"] = allowed_sites
+        if rate_limit is not None:
+            body["rate_limit"] = rate_limit
+        try:
+            r = await self._http.post("/agents", json=body)
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return AgentInfo(
+            agent_id=d["agent_id"],
+            name=d["name"],
+            api_key=d.get("api_key"),
+            api_key_prefix=d.get("api_key_prefix"),
+            allowed_scopes=d.get("allowed_scopes"),
+            allowed_sites=d.get("allowed_sites"),
+        )
+
+    async def list_agents(self) -> AgentListResult:
+        """List all agents owned by the current user.
+
+        Returns:
+            AgentListResult with a list of AgentInfo objects.
+        """
+        try:
+            r = await self._http.get("/agents")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        agents = [
+            AgentInfo(
+                agent_id=a["agent_id"],
+                name=a["name"],
+                description=a.get("description"),
+                allowed_scopes=a.get("allowed_scopes"),
+                allowed_sites=a.get("allowed_sites"),
+                rate_limit=a.get("rate_limit"),
+                created_at=a.get("created_at"),
+            )
+            for a in d.get("agents", [])
+        ]
+        return AgentListResult(agents=agents, count=d.get("count", len(agents)))
+
+    async def get_agent(self, agent_id: str) -> AgentInfo:
+        """Get details of a specific agent.
+
+        Args:
+            agent_id: The ``agent-xxx`` identifier.
+
+        Returns:
+            AgentInfo with full details.
+        """
+        try:
+            r = await self._http.get(f"/agents/{agent_id}")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return AgentInfo(
+            agent_id=d["agent_id"],
+            name=d["name"],
+            description=d.get("description"),
+            allowed_scopes=d.get("allowed_scopes"),
+            allowed_sites=d.get("allowed_sites"),
+            rate_limit=d.get("rate_limit"),
+            is_active=d.get("is_active", True),
+            created_at=d.get("created_at"),
+        )
+
+    async def update_agent(
+        self,
+        agent_id: str,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        allowed_scopes: Optional[List[str]] = None,
+        allowed_sites: Optional[List[str]] = None,
+        rate_limit: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Update an agent's configuration.
+
+        Args:
+            agent_id: The ``agent-xxx`` identifier.
+            name: New display name.
+            description: New description.
+            allowed_scopes: New scope list.
+            allowed_sites: New site list.
+            rate_limit: New rate-limit string.
+
+        Returns:
+            Dict with ``status`` and ``agent_id``.
+        """
+        body: Dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if allowed_scopes is not None:
+            body["allowed_scopes"] = allowed_scopes
+        if allowed_sites is not None:
+            body["allowed_sites"] = allowed_sites
+        if rate_limit is not None:
+            body["rate_limit"] = rate_limit
+        try:
+            r = await self._http.patch(f"/agents/{agent_id}", json=body)
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json()
+
+    async def deactivate_agent(self, agent_id: str) -> Dict[str, str]:
+        """Deactivate an agent and revoke its API key.
+
+        Args:
+            agent_id: The ``agent-xxx`` identifier.
+
+        Returns:
+            Dict with ``status`` and ``agent_id``.
+        """
+        try:
+            r = await self._http.delete(f"/agents/{agent_id}")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json()
+
+    # ── Consent ───────────────────────────────────────────────────────────────
+
+    async def request_consent(
+        self,
+        access_token: str,
+        scopes: List[str],
+        agent_name: str,
+        duration_seconds: int = 3600,
+    ) -> ConsentRequest:
+        """Request consent from a user for scoped data access.
+
+        Args:
+            access_token: The access token to request consent for.
+            scopes: Data scopes to request.
+            agent_name: Name of the requesting agent.
+            duration_seconds: How long the grant should last.
+
+        Returns:
+            ConsentRequest with ``id`` and ``status``.
+        """
+        try:
+            r = await self._http.post(
+                "/consent/request",
+                json={
+                    "access_token": access_token,
+                    "scopes": scopes,
+                    "agent_name": agent_name,
+                    "duration_seconds": duration_seconds,
+                },
+            )
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return ConsentRequest(
+            id=d["consent_request_id"],
+            access_token=access_token,
+            scopes=scopes,
+            agent_name=agent_name,
+            status="pending",
+        )
+
+    async def approve_consent(self, consent_id: int) -> ConsentGrant:
+        """Approve a pending consent request.
+
+        Args:
+            consent_id: The consent request ID.
+
+        Returns:
+            ConsentGrant with the ``consent_token``.
+        """
+        try:
+            r = await self._http.post(f"/consent/{consent_id}/approve")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return ConsentGrant(
+            consent_token=d.get("consent_token", ""),
+            scopes=d.get("scopes", []),
+            expires_at=d.get("expires_at"),
+        )
+
+    async def deny_consent(self, consent_id: int) -> Dict[str, str]:
+        """Deny a pending consent request.
+
+        Args:
+            consent_id: The consent request ID.
+
+        Returns:
+            Dict with ``detail``.
+        """
+        try:
+            r = await self._http.post(f"/consent/{consent_id}/deny")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json()
+
+    async def list_consents(self) -> List[Dict[str, Any]]:
+        """List all consent grants for the current user.
+
+        Returns:
+            List of consent grant dicts.
+        """
+        try:
+            r = await self._http.get("/consent")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json().get("grants", r.json() if isinstance(r.json(), list) else [])
+
+    async def revoke_consent(self, consent_token: str) -> Dict[str, str]:
+        """Revoke an active consent grant.
+
+        Args:
+            consent_token: The consent token to revoke.
+
+        Returns:
+            Dict with ``detail``.
+        """
+        try:
+            r = await self._http.delete(f"/consent/{consent_token}")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json()
+
+    # ── API Keys ──────────────────────────────────────────────────────────────
+
+    async def create_api_key(
+        self,
+        name: str,
+        *,
+        scopes: Optional[str] = None,
+        expires_in_days: Optional[int] = None,
+    ) -> ApiKeyInfo:
+        """Create a new API key.
+
+        Args:
+            name: Display name for the key.
+            scopes: Comma-separated scope string.
+            expires_in_days: Number of days until expiry.
+
+        Returns:
+            ApiKeyInfo with ``raw_key`` (only returned once).
+        """
+        body: Dict[str, Any] = {"name": name}
+        if scopes is not None:
+            body["scopes"] = scopes
+        if expires_in_days is not None:
+            body["expires_in_days"] = expires_in_days
+        try:
+            r = await self._http.post("/api-keys", json=body)
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return ApiKeyInfo(
+            id=d.get("id", ""),
+            name=name,
+            key_prefix=d.get("key_prefix", ""),
+            raw_key=d.get("key"),
+        )
+
+    async def list_api_keys(self) -> List[ApiKeyInfo]:
+        """List all API keys for the current user.
+
+        Returns:
+            List of ApiKeyInfo objects.
+        """
+        try:
+            r = await self._http.get("/api-keys")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        keys = r.json().get("keys", r.json() if isinstance(r.json(), list) else [])
+        return [
+            ApiKeyInfo(
+                id=k.get("id", ""),
+                name=k.get("name", ""),
+                key_prefix=k.get("key_prefix", ""),
+                scopes=k.get("scopes"),
+                is_active=k.get("is_active", True),
+                expires_at=k.get("expires_at"),
+                last_used_at=k.get("last_used_at"),
+                created_at=k.get("created_at"),
+            )
+            for k in keys
+        ]
+
+    async def revoke_api_key(self, key_id: str) -> Dict[str, str]:
+        """Revoke an API key.
+
+        Args:
+            key_id: The key record ID.
+
+        Returns:
+            Dict with status.
+        """
+        try:
+            r = await self._http.delete(f"/api-keys/{key_id}")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json()
+
+    # ── Public Token Exchange ─────────────────────────────────────────────────
+
+    async def exchange_public_token(self, public_token: str) -> PublicTokenExchangeResult:
+        """Exchange a one-time public token for a permanent access token.
+
+        This is step 3 of the 3-token flow:
+        ``link_token`` → ``public_token`` → ``access_token``.
+
+        Args:
+            public_token: The single-use public token from link completion.
+
+        Returns:
+            PublicTokenExchangeResult with the ``access_token``.
+        """
+        try:
+            r = await self._http.post(
+                "/exchange/public_token",
+                json={"public_token": public_token},
+            )
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return PublicTokenExchangeResult(access_token=d["access_token"])
+
+    # ── Webhooks (extended) ───────────────────────────────────────────────────
+
+    async def list_webhooks(self) -> List[Dict[str, Any]]:
+        """List all webhooks for the current user.
+
+        Returns:
+            List of webhook dicts.
+        """
+        try:
+            r = await self._http.get("/webhooks")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json().get("webhooks", [])
+
+    async def delete_webhook(self, webhook_id: str) -> Dict[str, str]:
+        """Delete a webhook.
+
+        Args:
+            webhook_id: The webhook ID to delete.
+
+        Returns:
+            Dict with status.
+        """
+        try:
+            r = await self._http.delete(f"/webhooks/{webhook_id}")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json()
+
+    async def test_webhook(self, webhook_id: str) -> Dict[str, str]:
+        """Send a test event to a webhook.
+
+        Args:
+            webhook_id: The webhook ID to test.
+
+        Returns:
+            Dict with delivery ``status``.
+        """
+        try:
+            r = await self._http.post("/webhooks/test", json={"webhook_id": webhook_id})
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        return r.json()
+
+    async def get_webhook_deliveries(self, webhook_id: str) -> WebhookDeliveryResult:
+        """Get delivery history for a webhook.
+
+        Args:
+            webhook_id: The webhook ID.
+
+        Returns:
+            WebhookDeliveryResult with delivery attempts.
+        """
+        try:
+            r = await self._http.get(f"/webhooks/{webhook_id}/deliveries")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return WebhookDeliveryResult(
+            webhook_id=d["webhook_id"],
+            url=d.get("url", ""),
+            deliveries=d.get("deliveries", []),
+            total=d.get("total", 0),
+        )
+
+    # ── Audit ─────────────────────────────────────────────────────────────────
+
+    async def get_audit_logs(
+        self,
+        *,
+        event_type: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> AuditLogResult:
+        """Query audit logs.
+
+        Args:
+            event_type: Filter by event type (e.g. ``"auth"``, ``"data_access"``).
+            offset: Pagination offset.
+            limit: Max entries to return.
+
+        Returns:
+            AuditLogResult with paginated entries.
+        """
+        params: Dict[str, Any] = {"offset": offset, "limit": limit}
+        if event_type:
+            params["event_type"] = event_type
+        try:
+            r = await self._http.get("/audit/logs", params=params)
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        entries = [
+            AuditEntry(
+                id=e["id"],
+                event_type=e["event_type"],
+                action=e["action"],
+                user_id=e.get("user_id"),
+                agent_id=e.get("agent_id"),
+                resource=e.get("resource"),
+                metadata=e.get("metadata"),
+                ip_address=e.get("ip_address"),
+                timestamp=e.get("timestamp"),
+                entry_hash=e.get("entry_hash"),
+            )
+            for e in d.get("entries", [])
+        ]
+        return AuditLogResult(
+            entries=entries,
+            total=d.get("total", 0),
+            offset=d.get("offset", offset),
+            limit=d.get("limit", limit),
+        )
+
+    async def verify_audit_chain(self) -> AuditVerifyResult:
+        """Verify the integrity of the audit log hash chain.
+
+        Returns:
+            AuditVerifyResult with ``valid``, ``total``, and any ``errors``.
+        """
+        try:
+            r = await self._http.get("/audit/verify")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        return AuditVerifyResult(
+            valid=d["valid"],
+            total=d["total"],
+            errors=d.get("errors", []),
+        )
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -881,3 +1398,79 @@ class PlaidifySync:
         return self._run(
             self._async_client.poll_link_status(link_token, timeout=timeout, interval=interval)
         )
+
+    # ── Agents ────────────────────────────────────────────────────────────────
+
+    def register_agent(self, name: str, **kwargs: Any) -> AgentInfo:
+        return self._run(self._async_client.register_agent(name, **kwargs))
+
+    def list_agents(self) -> AgentListResult:
+        return self._run(self._async_client.list_agents())
+
+    def get_agent(self, agent_id: str) -> AgentInfo:
+        return self._run(self._async_client.get_agent(agent_id))
+
+    def update_agent(self, agent_id: str, **kwargs: Any) -> Dict[str, str]:
+        return self._run(self._async_client.update_agent(agent_id, **kwargs))
+
+    def deactivate_agent(self, agent_id: str) -> Dict[str, str]:
+        return self._run(self._async_client.deactivate_agent(agent_id))
+
+    # ── Consent ───────────────────────────────────────────────────────────────
+
+    def request_consent(
+        self, access_token: str, scopes: List[str], agent_name: str, duration_seconds: int = 3600,
+    ) -> ConsentRequest:
+        return self._run(
+            self._async_client.request_consent(access_token, scopes, agent_name, duration_seconds)
+        )
+
+    def approve_consent(self, consent_id: int) -> ConsentGrant:
+        return self._run(self._async_client.approve_consent(consent_id))
+
+    def deny_consent(self, consent_id: int) -> Dict[str, str]:
+        return self._run(self._async_client.deny_consent(consent_id))
+
+    def list_consents(self) -> List[Dict[str, Any]]:
+        return self._run(self._async_client.list_consents())
+
+    def revoke_consent(self, consent_token: str) -> Dict[str, str]:
+        return self._run(self._async_client.revoke_consent(consent_token))
+
+    # ── API Keys ──────────────────────────────────────────────────────────────
+
+    def create_api_key(self, name: str, **kwargs: Any) -> ApiKeyInfo:
+        return self._run(self._async_client.create_api_key(name, **kwargs))
+
+    def list_api_keys(self) -> List[ApiKeyInfo]:
+        return self._run(self._async_client.list_api_keys())
+
+    def revoke_api_key(self, key_id: str) -> Dict[str, str]:
+        return self._run(self._async_client.revoke_api_key(key_id))
+
+    # ── Public Token Exchange ─────────────────────────────────────────────────
+
+    def exchange_public_token(self, public_token: str) -> PublicTokenExchangeResult:
+        return self._run(self._async_client.exchange_public_token(public_token))
+
+    # ── Webhooks (extended) ───────────────────────────────────────────────────
+
+    def list_webhooks(self) -> List[Dict[str, Any]]:
+        return self._run(self._async_client.list_webhooks())
+
+    def delete_webhook(self, webhook_id: str) -> Dict[str, str]:
+        return self._run(self._async_client.delete_webhook(webhook_id))
+
+    def test_webhook(self, webhook_id: str) -> Dict[str, str]:
+        return self._run(self._async_client.test_webhook(webhook_id))
+
+    def get_webhook_deliveries(self, webhook_id: str) -> WebhookDeliveryResult:
+        return self._run(self._async_client.get_webhook_deliveries(webhook_id))
+
+    # ── Audit ─────────────────────────────────────────────────────────────────
+
+    def get_audit_logs(self, **kwargs: Any) -> AuditLogResult:
+        return self._run(self._async_client.get_audit_logs(**kwargs))
+
+    def verify_audit_chain(self) -> AuditVerifyResult:
+        return self._run(self._async_client.verify_audit_chain())

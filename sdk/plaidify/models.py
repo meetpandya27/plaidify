@@ -172,3 +172,190 @@ class WebhookRegistration:
 
     webhook_id: str
     status: str = "registered"
+
+
+# ── Agent models ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AgentInfo:
+    """Agent identity registered with the server.
+
+    Attributes:
+        agent_id: Unique ``agent-xxx`` identifier.
+        name: Display name.
+        description: What the agent does.
+        api_key: Raw API key (only returned on creation).
+        api_key_prefix: First 16 chars of the key (always returned).
+        allowed_scopes: Scope strings the agent may request.
+        allowed_sites: Site identifiers the agent may connect to.
+        rate_limit: Custom rate-limit string (e.g. ``"60/minute"``).
+        is_active: Whether the agent is enabled.
+        created_at: ISO timestamp.
+    """
+
+    agent_id: str
+    name: str
+    description: Optional[str] = None
+    api_key: Optional[str] = None
+    api_key_prefix: Optional[str] = None
+    allowed_scopes: Optional[List[str]] = None
+    allowed_sites: Optional[List[str]] = None
+    rate_limit: Optional[str] = None
+    is_active: bool = True
+    created_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class AgentListResult:
+    """Result of listing agents."""
+
+    agents: List[AgentInfo]
+    count: int
+
+
+# ── Consent models ────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ConsentRequest:
+    """A consent request submitted for user approval.
+
+    Attributes:
+        id: Unique consent request ID.
+        access_token: The token consent is requested for.
+        scopes: Requested data scopes.
+        agent_name: Name of the requesting agent.
+        status: ``pending``, ``approved``, or ``denied``.
+        created_at: ISO timestamp.
+    """
+
+    id: int
+    access_token: str
+    scopes: List[str]
+    agent_name: str
+    status: str = "pending"
+    created_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ConsentGrant:
+    """An active consent grant with a consent token.
+
+    Attributes:
+        consent_token: Opaque token the agent uses with ``fetch_data``.
+        scopes: Granted data scopes.
+        expires_at: ISO timestamp when the grant expires.
+    """
+
+    consent_token: str
+    scopes: List[str]
+    expires_at: Optional[str] = None
+
+
+# ── API Key models ────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ApiKeyInfo:
+    """An API key owned by the current user.
+
+    Attributes:
+        id: Key record ID.
+        name: Display name.
+        key_prefix: First characters of the key for identification.
+        raw_key: Full key (only present when first created).
+        scopes: Comma-separated scopes.
+        is_active: Whether the key is active.
+        expires_at: ISO expiry timestamp.
+        last_used_at: ISO timestamp of last use.
+        created_at: ISO timestamp.
+    """
+
+    id: str
+    name: str
+    key_prefix: str = ""
+    raw_key: Optional[str] = None
+    scopes: Optional[str] = None
+    is_active: bool = True
+    expires_at: Optional[str] = None
+    last_used_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+# ── Audit models ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AuditEntry:
+    """A single tamper-evident audit log entry.
+
+    Attributes:
+        id: Auto-increment entry ID.
+        event_type: Category (``auth``, ``data_access``, ``token``, etc.).
+        user_id: User that triggered the event.
+        agent_id: Agent that triggered the event (if any).
+        resource: Affected resource identifier.
+        action: Specific action string.
+        metadata: Extra context dict.
+        ip_address: Client IP address.
+        timestamp: ISO timestamp.
+        entry_hash: SHA-256 hash for chain verification.
+    """
+
+    id: int
+    event_type: str
+    action: str
+    user_id: Optional[int] = None
+    agent_id: Optional[str] = None
+    resource: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    ip_address: Optional[str] = None
+    timestamp: Optional[str] = None
+    entry_hash: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class AuditLogResult:
+    """Paginated audit log query result."""
+
+    entries: List[AuditEntry]
+    total: int
+    offset: int = 0
+    limit: int = 100
+
+
+@dataclass(frozen=True)
+class AuditVerifyResult:
+    """Result of verifying the audit hash chain."""
+
+    valid: bool
+    total: int
+    errors: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class WebhookDelivery:
+    """A single webhook delivery attempt."""
+
+    status_code: Optional[int] = None
+    success: bool = False
+    timestamp: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class WebhookDeliveryResult:
+    """Delivery history for a specific webhook."""
+
+    webhook_id: str
+    url: str = ""
+    deliveries: List[Dict[str, Any]] = field(default_factory=list)
+    total: int = 0
+
+
+@dataclass(frozen=True)
+class PublicTokenExchangeResult:
+    """Result of exchanging a public token for an access token."""
+
+    access_token: str

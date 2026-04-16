@@ -279,11 +279,20 @@ def re_encrypt_tokens(db: 'Session', batch_size: int = 100) -> int:
 
 # ── SQLAlchemy Setup ──────────────────────────────────────────────────────────
 
-engine = create_engine(
-    settings.database_url,
-    echo=False,
-    pool_pre_ping=True,  # Verify connections before use
-)
+_engine_kwargs: dict = {
+    "echo": False,
+    "pool_pre_ping": True,
+}
+
+# SQLite doesn't support connection pooling options
+if not settings.database_url.startswith("sqlite"):
+    _engine_kwargs.update({
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_recycle": settings.db_pool_recycle,
+    })
+
+engine = create_engine(settings.database_url, **_engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -473,9 +482,76 @@ class AuditLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     event_type = Column(String, nullable=False, index=True)
     user_id = Column(Integer, nullable=True, index=True)
+    agent_id = Column(String, nullable=True, index=True)  # Agent identity if action was by an agent
     resource = Column(String, nullable=True)
     action = Column(String, nullable=False)
     metadata_json = Column(Text, nullable=True)  # JSON-encoded metadata
+    ip_address = Column(String(45), nullable=True)  # IPv4 or IPv6
     timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     prev_hash = Column(String(64), nullable=True)  # SHA-256 hex of previous entry
     entry_hash = Column(String(64), nullable=False)  # SHA-256 hex of this entry
+
+
+class ApiKey(Base):
+    """An API key for programmatic access (alternative to JWT).
+
+    The raw key is shown once on creation. Only the SHA-256 hash is stored.
+    Keys can be scoped, expired, and revoked.
+    """
+
+    __tablename__ = "api_keys"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    key_hash = Column(String(64), unique=True, nullable=False, index=True)  # SHA-256 hex
+    key_prefix = Column(String(12), nullable=False)  # First 8 chars of key for identification
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    scopes = Column(Text, nullable=True)  # JSON array of scope strings; NULL = all
+    is_active = Column(Boolean, default=True, nullable=False)
+    expires_at = Column(DateTime, nullable=True)  # NULL = never expires
+    last_used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Agent(Base):
+    """A registered AI agent with its own identity and permissions.
+
+    Agents are created by users and receive their own API key for
+    authenticated access. Each agent has:
+    - A unique agent_id (prefixed with 'agent-')
+    - Allowed scopes defining what data it can request
+    - Allowed sites restricting which blueprints it can connect to
+    - Rate limits independent of the owning user
+    """
+
+    __tablename__ = "agents"
+
+    id = Column(String, primary_key=True, index=True)  # agent-uuid
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=True)  # Linked API key
+    allowed_scopes = Column(Text, nullable=True)  # JSON array of scope strings; NULL = all
+    allowed_sites = Column(Text, nullable=True)  # JSON array of site identifiers; NULL = all
+    rate_limit = Column(String, nullable=True)  # e.g. "30/minute"
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_active_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ScheduledRefreshJob(Base):
+    """Persisted refresh job — survives server restarts.
+
+    The RefreshScheduler loads these on startup and saves state after each run.
+    """
+
+    __tablename__ = "scheduled_refresh_jobs"
+
+    access_token = Column(String, ForeignKey("access_tokens.token"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    interval_seconds = Column(Integer, nullable=False, default=3600)
+    enabled = Column(Boolean, default=True, nullable=False)
+    last_refreshed = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    consecutive_failures = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

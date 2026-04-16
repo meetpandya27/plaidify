@@ -131,7 +131,16 @@
     var url =
       this._config.serverUrl +
       "/link?token=" +
-      encodeURIComponent(this._config.token);
+      encodeURIComponent(this._config.token) +
+      "&origin=" +
+      encodeURIComponent(window.location.origin);
+
+    // Pass theme params through the iframe URL
+    var theme = this._config.theme;
+    if (theme.accentColor) url += "&accent=" + encodeURIComponent(theme.accentColor);
+    if (theme.bgColor) url += "&bg=" + encodeURIComponent(theme.bgColor);
+    if (theme.borderRadius) url += "&radius=" + encodeURIComponent(theme.borderRadius);
+    if (theme.logo) url += "&logo=" + encodeURIComponent(theme.logo);
 
     iframe.setAttribute("src", url);
     iframe.setAttribute("title", "Plaidify Link");

@@ -26,6 +26,9 @@ known-first-party = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "playwright: mark test as requiring a real Playwright browser (deselected by default)",
+]
 
 [tool.coverage.run]
 source = ["src"]

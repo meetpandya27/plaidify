@@ -17,7 +17,7 @@ from unittest.mock import patch
 def enable_rate_limiter():
     """Enable the rate limiter with fresh storage for this test module only."""
     from limits.storage.memory import MemoryStorage
-    from src.main import limiter
+    from src.dependencies import limiter
     limiter._limiter.storage = MemoryStorage()
     limiter.enabled = True
     yield
@@ -104,7 +104,7 @@ class TestRateLimitDisabled:
 
     def test_no_429_when_disabled(self, client):
         """When rate limiting is disabled, no 429 responses should occur."""
-        from src.main import limiter
+        from src.dependencies import limiter
         limiter.enabled = False
 
         try:

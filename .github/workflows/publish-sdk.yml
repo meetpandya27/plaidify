@@ -1,0 +1,37 @@
+name: Publish SDK
+
+on:
+  push:
+    tags:
+      - "sdk-v*"  # Triggered by tags like sdk-v0.1.0
+
+jobs:
+  publish:
+    name: Build & Publish SDK to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # For trusted publishing (PyPI OIDC)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build SDK package
+        working-directory: sdk
+        run: python -m build
+
+      - name: Check package
+        working-directory: sdk
+        run: twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk/dist/
+          # Uses trusted publishing (OIDC) — no API token needed.
+          # Configure at: https://pypi.org/manage/project/plaidify/settings/publishing/

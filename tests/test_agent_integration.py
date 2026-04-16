@@ -13,17 +13,16 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
-from src.main import app, _link_sessions, _link_session_lock, _webhook_delivery_log
+from src.main import app
+from src import session_store
 
 
 @pytest.fixture(autouse=True)
 def clear_link_sessions():
     """Clear in-memory stores between tests."""
-    _link_sessions.clear()
-    _webhook_delivery_log.clear()
+    session_store.clear_all()
     yield
-    _link_sessions.clear()
-    _webhook_delivery_log.clear()
+    session_store.clear_all()
 
 
 # ── Hosted Link Page ──────────────────────────────────────────────────────────
@@ -132,7 +131,7 @@ class TestLinkSessions:
         token = create_resp.json()["link_token"]
 
         # Manually expire the session
-        _link_sessions[token]["created_at"] = 0
+        session_store._mem_link_sessions[token]["created_at"] = 0
 
         resp = client.post(f"/link/sessions/{token}/event", json={"event": "TEST"})
         assert resp.status_code == 410
@@ -184,7 +183,7 @@ class TestWebhooks:
         resp = client.post("/webhooks/test", json={"webhook_id": "nope"})
         assert resp.status_code == 404
 
-    @patch("src.main._deliver_webhook", new_callable=AsyncMock, return_value=True)
+    @patch("src.routers.webhooks._deliver_webhook", new_callable=AsyncMock, return_value=True)
     def test_test_webhook_delivers(self, mock_deliver, client, auth_headers):
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
@@ -279,7 +278,7 @@ class TestPublicTokenExchange:
         link = db.query(Link).filter_by(link_token=token).first()
         if not link:
             # Get user_id from session
-            user_id = _link_sessions[token]["user_id"]
+            user_id = session_store.get_link_session(token)["user_id"]
             link = Link(link_token=token, site="test_site", user_id=user_id)
             db.add(link)
             db.commit()
@@ -289,7 +288,7 @@ class TestPublicTokenExchange:
             link_token=token,
             username_encrypted="enc_user",
             password_encrypted="enc_pass",
-            user_id=_link_sessions[token]["user_id"],
+            user_id=session_store.get_link_session(token)["user_id"],
         )
         db.add(at)
         db.commit()

@@ -1,4 +1,30 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: plaidify
+      POSTGRES_PASSWORD: plaidify_dev
+      POSTGRES_DB: plaidify
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plaidify"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   plaidify:
     build:
       context: .
@@ -12,13 +38,17 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - LOG_FORMAT=text
-      # CORS: Set specific origins in production
-      # - CORS_ORIGINS=https://app.example.com,https://admin.example.com
-      # Environment: 'development' (default), 'staging', or 'production'
-      # - ENV=production
-      # HTTPS: Auto-enabled in production, or force with:
-      # - ENFORCE_HTTPS=true
-    command: gunicorn src.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --reload
+      - DATABASE_URL=postgresql://plaidify:plaidify_dev@postgres:5432/plaidify
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: gunicorn src.main:app -c gunicorn.conf.py
+
+volumes:
+  pgdata:
 
 networks:
   default:

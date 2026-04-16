@@ -21,14 +21,19 @@ logger = get_logger(__name__)
 def _compute_hash(
     event_type: str,
     user_id: Optional[int],
+    agent_id: Optional[str],
     resource: Optional[str],
     action: str,
     metadata_json: Optional[str],
+    ip_address: Optional[str],
     timestamp: str,
     prev_hash: Optional[str],
 ) -> str:
     """Compute SHA-256 hash for an audit log entry."""
-    payload = f"{event_type}|{user_id}|{resource}|{action}|{metadata_json}|{timestamp}|{prev_hash}"
+    payload = (
+        f"{event_type}|{user_id}|{agent_id}|{resource}|{action}"
+        f"|{metadata_json}|{ip_address}|{timestamp}|{prev_hash}"
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -37,18 +42,22 @@ def record_audit_event(
     event_type: str,
     action: str,
     user_id: Optional[int] = None,
+    agent_id: Optional[str] = None,
     resource: Optional[str] = None,
     metadata: Optional[dict] = None,
+    ip_address: Optional[str] = None,
 ) -> AuditLog:
     """Record a tamper-evident audit log entry.
 
     Args:
         db: Database session.
-        event_type: Category of event (auth, data_access, token, key_rotation, consent).
+        event_type: Category of event (auth, data_access, token, key_rotation, consent, agent, webhook).
         action: Specific action performed.
         user_id: ID of the user who performed the action.
+        agent_id: ID of the agent that performed the action (if applicable).
         resource: The resource affected (e.g., link_token, access_token).
         metadata: Optional dict of additional context.
+        ip_address: Client IP address.
 
     Returns:
         The created AuditLog entry.
@@ -63,15 +72,18 @@ def record_audit_event(
     metadata_json = json.dumps(metadata, default=str) if metadata else None
 
     entry_hash = _compute_hash(
-        event_type, user_id, resource, action, metadata_json, ts_str, prev_hash
+        event_type, user_id, agent_id, resource, action,
+        metadata_json, ip_address, ts_str, prev_hash
     )
 
     entry = AuditLog(
         event_type=event_type,
         user_id=user_id,
+        agent_id=agent_id,
         resource=resource,
         action=action,
         metadata_json=metadata_json,
+        ip_address=ip_address,
         timestamp=ts,
         prev_hash=prev_hash,
         entry_hash=entry_hash,
@@ -106,9 +118,11 @@ def verify_audit_chain(db: Session) -> dict:
         expected_hash = _compute_hash(
             entry.event_type,
             entry.user_id,
+            entry.agent_id,
             entry.resource,
             entry.action,
             entry.metadata_json,
+            entry.ip_address,
             entry.timestamp.isoformat(),
             entry.prev_hash,
         )

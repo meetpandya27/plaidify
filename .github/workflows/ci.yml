@@ -88,3 +88,22 @@ jobs:
           if [ $SIZE_MB -gt 500 ]; then
             echo "::warning::Docker image is ${SIZE_MB}MB (target: <500MB)"
           fi
+
+  deploy:
+    name: Deploy (staging)
+    runs-on: ubuntu-latest
+    needs: [lint, test, security, docker]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to staging
+        run: |
+          echo "Deploy step placeholder — configure with your target platform:"
+          echo "  - Docker registry push (GHCR, ECR, ACR)"
+          echo "  - Kubernetes / ECS / Cloud Run deployment"
+          echo "  - Or: docker compose up -d on a VM via SSH"
+          echo ""
+          echo "Example: push to GHCR"
+          echo "  docker tag plaidify:test ghcr.io/\${{ github.repository }}:latest"
+          echo "  docker push ghcr.io/\${{ github.repository }}:latest"

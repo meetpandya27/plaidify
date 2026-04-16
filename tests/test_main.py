@@ -8,18 +8,18 @@ def test_connect():
     """
     Test connecting to demo_site.
 
-    Now that the engine uses Playwright (Phase 1), connecting to demo_site
-    will attempt real navigation to demo.example.com (which doesn't resolve).
-    A 502 is the correct response — the engine tried and the site is unreachable.
+    The autouse mock_browser_engine fixture mocks connect_to_site
+    to return stub data without launching Playwright.
     """
     response = client.post("/connect", json={
         "site": "demo_site",
         "username": "demo_user",
         "password": "secret123"
     })
-    # Engine now attempts real Playwright navigation; demo.example.com is not reachable
-    assert response.status_code == 502
-    assert "error" in response.json()
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "connected"
+    assert "data" in data
 
 def test_status():
     response = client.get("/status")

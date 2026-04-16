@@ -127,7 +127,7 @@ class TestEncryptionEndpoints:
 class TestConnectWithEncryption:
     """Tests for POST /connect with encrypted credentials."""
 
-    @patch("src.main.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
+    @patch("src.routers.connection.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
     def test_connect_with_encrypted_credentials(self, mock_connect, client):
         from src.crypto import _clear_all_keys
         _clear_all_keys()
@@ -157,7 +157,7 @@ class TestConnectWithEncryption:
         assert call_kwargs.kwargs["username"] == "demo_user"
         assert call_kwargs.kwargs["password"] == "demo_pass123"
 
-    @patch("src.main.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
+    @patch("src.routers.connection.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
     def test_connect_encrypted_then_key_destroyed(self, mock_connect, client):
         """After use, the ephemeral key should be destroyed."""
         from src.crypto import get_public_key, _clear_all_keys
@@ -181,7 +181,7 @@ class TestConnectWithEncryption:
         # Key should be destroyed after use
         assert get_public_key(link_token) is None
 
-    @patch("src.main.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
+    @patch("src.routers.connection.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
     def test_connect_plaintext_still_works(self, mock_connect, client):
         """Plaintext credentials should still work for backward compatibility."""
         response = client.post("/connect", json={

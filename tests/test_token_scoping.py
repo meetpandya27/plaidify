@@ -77,7 +77,7 @@ class TestCreateLinkScopes:
 
 
 class TestScopeEnforcement:
-    @patch("src.main.connect_to_site", new_callable=AsyncMock)
+    @patch("src.routers.links.connect_to_site", new_callable=AsyncMock)
     def test_fetch_with_scoped_token(self, mock_connect, client, auth_headers):
         mock_connect.return_value = MOCK_SITE_DATA.copy()
 
@@ -99,7 +99,7 @@ class TestScopeEnforcement:
         assert "account_number" not in data.get("data", {})
         assert set(data["scopes_applied"]) == {"balance", "usage_kwh"}
 
-    @patch("src.main.connect_to_site", new_callable=AsyncMock)
+    @patch("src.routers.links.connect_to_site", new_callable=AsyncMock)
     def test_fetch_without_scoped_token(self, mock_connect, client, auth_headers):
         mock_connect.return_value = MOCK_SITE_DATA.copy()
 
@@ -122,7 +122,7 @@ class TestScopeEnforcement:
         # No scopes_applied key
         assert "scopes_applied" not in data
 
-    @patch("src.main.connect_to_site", new_callable=AsyncMock)
+    @patch("src.routers.links.connect_to_site", new_callable=AsyncMock)
     def test_scoped_token_with_read_prefix(self, mock_connect, client, auth_headers):
         mock_connect.return_value = MOCK_SITE_DATA.copy()
 
@@ -143,7 +143,7 @@ class TestScopeEnforcement:
         assert "account_number" in data.get("data", {})
         assert "transactions" not in data.get("data", {})
 
-    @patch("src.main.connect_to_site", new_callable=AsyncMock)
+    @patch("src.routers.links.connect_to_site", new_callable=AsyncMock)
     def test_empty_scopes_returns_nothing(self, mock_connect, client, auth_headers):
         mock_connect.return_value = MOCK_SITE_DATA.copy()
 

@@ -38,13 +38,13 @@ class TestHashChain:
 
     def test_hash_is_deterministic(self, client):
         """Same input should produce same hash."""
-        h1 = _compute_hash("auth", 1, None, "login", None, "2026-01-01T00:00:00", None)
-        h2 = _compute_hash("auth", 1, None, "login", None, "2026-01-01T00:00:00", None)
+        h1 = _compute_hash("auth", 1, None, None, "login", None, None, "2026-01-01T00:00:00", None)
+        h2 = _compute_hash("auth", 1, None, None, "login", None, None, "2026-01-01T00:00:00", None)
         assert h1 == h2
 
     def test_hash_changes_with_different_input(self, client):
-        h1 = _compute_hash("auth", 1, None, "login", None, "2026-01-01T00:00:00", None)
-        h2 = _compute_hash("auth", 2, None, "login", None, "2026-01-01T00:00:00", None)
+        h1 = _compute_hash("auth", 1, None, None, "login", None, None, "2026-01-01T00:00:00", None)
+        h2 = _compute_hash("auth", 2, None, None, "login", None, None, "2026-01-01T00:00:00", None)
         assert h1 != h2
 
     def test_verify_valid_chain(self, client):
@@ -236,3 +236,98 @@ class TestAuditInstrumentation:
         ).first()
         assert entry is not None
         db.close()
+
+
+# ── Agent ID and IP Address tracking ─────────────────────────────────────────
+
+
+class TestAuditAgentAndIP:
+    def _get_test_db(self):
+        from tests.conftest import TestSessionLocal
+        return TestSessionLocal()
+
+    def test_record_with_agent_id(self, client):
+        """Audit entry should store agent_id."""
+        db = self._get_test_db()
+        entry = record_audit_event(
+            db, "data_access", "fetch", user_id=1,
+            agent_id="agent-abc123",
+        )
+        assert entry.agent_id == "agent-abc123"
+        db.close()
+
+    def test_record_with_ip_address(self, client):
+        """Audit entry should store ip_address."""
+        db = self._get_test_db()
+        entry = record_audit_event(
+            db, "auth", "login", user_id=1,
+            ip_address="192.168.1.100",
+        )
+        assert entry.ip_address == "192.168.1.100"
+        db.close()
+
+    def test_agent_id_included_in_hash(self, client):
+        """Entries with different agent_ids should produce different hashes."""
+        h1 = _compute_hash("auth", 1, "agent-a", None, "login", None, None, "2026-01-01T00:00:00", None)
+        h2 = _compute_hash("auth", 1, "agent-b", None, "login", None, None, "2026-01-01T00:00:00", None)
+        assert h1 != h2
+
+    def test_ip_address_included_in_hash(self, client):
+        """Entries with different IPs should produce different hashes."""
+        h1 = _compute_hash("auth", 1, None, None, "login", None, "10.0.0.1", "2026-01-01T00:00:00", None)
+        h2 = _compute_hash("auth", 1, None, None, "login", None, "10.0.0.2", "2026-01-01T00:00:00", None)
+        assert h1 != h2
+
+    def test_chain_valid_with_agent_and_ip(self, client):
+        """Chain with agent_id and ip_address entries should verify correctly."""
+        db = self._get_test_db()
+        record_audit_event(db, "auth", "login", user_id=1, ip_address="10.0.0.1")
+        record_audit_event(
+            db, "data_access", "fetch", user_id=1,
+            agent_id="agent-x", ip_address="10.0.0.2",
+        )
+        record_audit_event(db, "auth", "logout", user_id=1)
+
+        result = verify_audit_chain(db)
+        assert result["valid"] is True
+        assert result["total"] == 3
+        db.close()
+
+    def test_register_logs_ip_address(self, client):
+        """Registration audit entry should include IP address."""
+        from tests.conftest import TestSessionLocal
+
+        client.post("/auth/register", json={
+            "username": "ip_user",
+            "email": "ip@test.com",
+            "password": "securepassword123",
+        })
+
+        db = TestSessionLocal()
+        entry = db.query(AuditLog).filter_by(
+            event_type="auth", action="register"
+        ).first()
+        assert entry is not None
+        # TestClient uses "testclient" as host
+        assert entry.ip_address is not None
+        db.close()
+
+    def test_audit_logs_endpoint_includes_new_fields(self, client, auth_headers):
+        """Audit logs endpoint should return agent_id and ip_address."""
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        record_audit_event(
+            db, "data_access", "fetch", user_id=1,
+            agent_id="agent-test", ip_address="1.2.3.4",
+        )
+        db.close()
+
+        resp = client.get("/audit/logs", headers=auth_headers)
+        assert resp.status_code == 200
+        entries = resp.json()["entries"]
+        # Find the data_access entry
+        access_entries = [e for e in entries if e["event_type"] == "data_access"]
+        if access_entries:
+            assert "agent_id" in access_entries[0]
+            assert "ip_address" in access_entries[0]

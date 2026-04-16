@@ -17,14 +17,15 @@ class ConnectRequest(BaseModel):
     are present they take precedence.
     """
 
-    site: str = Field(..., description="Site identifier matching a blueprint name.")
-    username: Optional[str] = Field(default=None, description="Plaintext username (omit if encrypted).")
-    password: Optional[str] = Field(default=None, description="Plaintext password (omit if encrypted).")
-    encrypted_username: Optional[str] = Field(default=None, description="Base64-encoded RSA-OAEP encrypted username.")
-    encrypted_password: Optional[str] = Field(default=None, description="Base64-encoded RSA-OAEP encrypted password.")
-    link_token: Optional[str] = Field(default=None, description="Link token whose ephemeral key encrypts the credentials.")
+    site: str = Field(..., min_length=1, max_length=64, description="Site identifier matching a blueprint name.")
+    username: Optional[str] = Field(default=None, max_length=256, description="Plaintext username (omit if encrypted).")
+    password: Optional[str] = Field(default=None, max_length=4096, description="Plaintext password (omit if encrypted).")
+    encrypted_username: Optional[str] = Field(default=None, max_length=4096, description="Base64-encoded RSA-OAEP encrypted username.")
+    encrypted_password: Optional[str] = Field(default=None, max_length=4096, description="Base64-encoded RSA-OAEP encrypted password.")
+    link_token: Optional[str] = Field(default=None, max_length=256, description="Link token whose ephemeral key encrypts the credentials.")
     extract_fields: Optional[list[str]] = Field(
         default=None,
+        max_length=100,
         description="Specific fields to extract (None = all defined in blueprint).",
     )
 
@@ -93,14 +94,14 @@ class TokenResponse(BaseModel):
 class RefreshTokenRequest(BaseModel):
     """Request body for POST /auth/refresh."""
 
-    refresh_token: str
+    refresh_token: str = Field(..., max_length=256)
 
 
 class OAuth2LoginRequest(BaseModel):
     """Request body for POST /auth/oauth2."""
 
-    provider: str = Field(..., description="OAuth2 provider name (e.g., 'google', 'github').")
-    oauth_token: str = Field(..., description="OAuth2 token from the provider.")
+    provider: str = Field(..., max_length=64, description="OAuth2 provider name (e.g., 'google', 'github').")
+    oauth_token: str = Field(..., max_length=4096, description="OAuth2 token from the provider.")
 
 
 class UserProfileResponse(BaseModel):
@@ -118,8 +119,8 @@ class UserProfileResponse(BaseModel):
 class MFASubmitRequest(BaseModel):
     """Request body for POST /mfa/submit."""
 
-    session_id: str = Field(..., description="The MFA session ID from the connect response.")
-    code: str = Field(..., description="The MFA code entered by the user.")
+    session_id: str = Field(..., max_length=256, description="The MFA session ID from the connect response.")
+    code: str = Field(..., max_length=32, description="The MFA code entered by the user.")
 
 
 class MFAStatusResponse(BaseModel):

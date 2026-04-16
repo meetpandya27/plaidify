@@ -19,6 +19,36 @@
   let sessionId = null;
   let blueprints = [];
 
+  // Determine the parent origin for secure postMessage communication.
+  // Accept an explicit ?origin= param, fall back to document.referrer, then "*" for non-iframe.
+  const parentOrigin = (function () {
+    const explicit = params.get("origin");
+    if (explicit) return explicit;
+    if (document.referrer) {
+      try {
+        const url = new URL(document.referrer);
+        return url.origin;
+      } catch (_) { /* ignore */ }
+    }
+    return inIframe ? serverUrl : "*";
+  })();
+
+  // ── Apply theme overrides from URL params ────────────────────────────────
+  (function applyTheme() {
+    const root = document.documentElement.style;
+    const accent = params.get("accent");
+    const bg = params.get("bg");
+    const radius = params.get("radius");
+    const logo = params.get("logo");
+    if (accent) root.setProperty("--accent", accent);
+    if (bg) root.setProperty("--bg", bg);
+    if (radius) root.setProperty("--border-radius", radius);
+    if (logo) {
+      const logoEl = document.querySelector(".plaidify-logo");
+      if (logoEl) logoEl.src = logo;
+    }
+  })();
+
   // ── DOM refs ─────────────────────────────────────────────────────────────
   const steps = {
     select: document.getElementById("step-select"),
@@ -49,7 +79,7 @@
 
   function postEvent(event, data) {
     if (inIframe) {
-      window.parent.postMessage({ source: "plaidify-link", event, ...data }, "*");
+      window.parent.postMessage({ source: "plaidify-link", event, ...data }, parentOrigin);
     }
   }
 

@@ -10,9 +10,8 @@ class TestLinkTokenFlow:
     def test_full_flow(self, client, auth_headers):
         """Test the complete create_link → submit_credentials → fetch_data flow.
 
-        Since Phase 1, the engine uses Playwright to navigate to the actual site.
-        demo_site points to demo.example.com which is unreachable, so fetch_data
-        returns 502 (ConnectionFailedError). The link/credential flow itself works.
+        The autouse mock_browser_engine fixture mocks connect_to_site
+        to return stub data without launching Playwright.
         """
         # Step 1: Create link
         r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
@@ -30,10 +29,11 @@ class TestLinkTokenFlow:
         access_token = r2.json()["access_token"]
         assert access_token
 
-        # Step 3: Fetch data — engine tries real navigation, site unreachable
+        # Step 3: Fetch data — mocked engine returns stub data
         r3 = client.get("/fetch_data", params={"access_token": access_token}, headers=auth_headers)
-        assert r3.status_code == 502  # demo.example.com is not reachable
-        assert "error" in r3.json()
+        assert r3.status_code == 200
+        data = r3.json()
+        assert data["status"] == "connected"
 
     def test_create_link_no_auth(self, client):
         response = client.post("/create_link", params={"site": "demo_site"})
@@ -58,12 +58,7 @@ class TestInstructions:
     """Tests for the submit_instructions endpoint."""
 
     def test_submit_and_fetch_with_instructions(self, client, auth_headers):
-        """Test instructions flow.
-
-        The instructions are stored correctly, but fetch_data hits the real engine
-        which tries to navigate to demo.example.com (unreachable), so we get 502.
-        The important part is that submitting instructions works.
-        """
+        """Test instructions flow with mocked engine."""
         # Create link + submit creds
         r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
@@ -82,9 +77,9 @@ class TestInstructions:
         }, headers=auth_headers)
         assert r3.status_code == 200
 
-        # Fetch data — engine tries real navigation, site unreachable
+        # Fetch data — mocked engine returns stub data
         r4 = client.get("/fetch_data", params={"access_token": access_token}, headers=auth_headers)
-        assert r4.status_code == 502  # demo.example.com is not reachable
+        assert r4.status_code == 200
 
     def test_submit_instructions_invalid_token(self, client, auth_headers):
         response = client.post("/submit_instructions", params={
