@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Coroutine
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger("plaidify.scheduler")
 
@@ -172,10 +173,7 @@ class RefreshScheduler:
         while not self._stop_event.is_set():
             try:
                 now = datetime.now(timezone.utc)
-                due_jobs = [
-                    job for job in self._jobs.values()
-                    if job.enabled and self._is_due(job, now)
-                ]
+                due_jobs = [job for job in self._jobs.values() if job.enabled and self._is_due(job, now)]
                 if due_jobs:
                     logger.debug("Found %d due refresh jobs", len(due_jobs))
                     # Run up to 5 refreshes concurrently
@@ -203,7 +201,7 @@ class RefreshScheduler:
         """Compute effective interval with exponential backoff on failure."""
         if job.consecutive_failures == 0:
             return job.interval_seconds
-        backoff = job.interval_seconds * (2 ** job.consecutive_failures)
+        backoff = job.interval_seconds * (2**job.consecutive_failures)
         return min(backoff, self._max_backoff)
 
     async def _execute_job(self, job: RefreshJob, semaphore: asyncio.Semaphore) -> None:
@@ -251,6 +249,7 @@ class RefreshScheduler:
         """Load persisted jobs from the database. Returns number of jobs loaded."""
         try:
             from src.database import ScheduledRefreshJob, get_db
+
             db = next(get_db())
             try:
                 rows = db.query(ScheduledRefreshJob).filter_by(enabled=True).all()
@@ -276,11 +275,10 @@ class RefreshScheduler:
         """Save a job's state to the database."""
         try:
             from src.database import ScheduledRefreshJob, get_db
+
             db = next(get_db())
             try:
-                row = db.query(ScheduledRefreshJob).filter_by(
-                    access_token=job.access_token
-                ).first()
+                row = db.query(ScheduledRefreshJob).filter_by(access_token=job.access_token).first()
                 if row:
                     row.interval_seconds = job.interval_seconds
                     row.enabled = job.enabled
@@ -308,11 +306,10 @@ class RefreshScheduler:
         """Remove a job from the database."""
         try:
             from src.database import ScheduledRefreshJob, get_db
+
             db = next(get_db())
             try:
-                db.query(ScheduledRefreshJob).filter_by(
-                    access_token=access_token
-                ).delete()
+                db.query(ScheduledRefreshJob).filter_by(access_token=access_token).delete()
                 db.commit()
             finally:
                 db.close()

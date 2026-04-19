@@ -5,7 +5,15 @@ import httpx
 import respx
 
 from plaidify.client import Plaidify, _raise_for_api_error
-from plaidify.models import ConnectResult, BlueprintInfo, HealthStatus, LinkResult, MFAChallenge
+from plaidify.models import (
+    AccessJobInfo,
+    AccessJobListResult,
+    ConnectResult,
+    BlueprintInfo,
+    HealthStatus,
+    LinkResult,
+    MFAChallenge,
+)
 from plaidify.exceptions import (
     PlaidifyError,
     ConnectionError,
@@ -142,13 +150,29 @@ class TestConnect:
     async def test_connect_success(self):
         respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
             "status": "connected",
+            "job_id": "ajob-123",
             "data": {"balance": 100.50, "account": "A123"},
         }))
         async with Plaidify(server_url=BASE) as pfy:
             result = await pfy.connect("test_bank", username="user", password="pass")
         assert isinstance(result, ConnectResult)
         assert result.connected is True
+        assert result.job_id == "ajob-123"
         assert result.data["balance"] == 100.50
+
+    @respx.mock
+    async def test_connect_pending_returns_job_id(self):
+        respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
+            "status": "pending",
+            "job_id": "ajob-pending",
+            "session_id": "access-session-1",
+            "metadata": {"message": "Still running"},
+        }))
+        async with Plaidify(server_url=BASE) as pfy:
+            result = await pfy.connect("test_bank", username="user", password="pass")
+        assert result.pending is True
+        assert result.job_id == "ajob-pending"
+        assert result.session_id == "access-session-1"
 
     @respx.mock
     async def test_connect_with_extract_fields(self):
@@ -186,25 +210,33 @@ class TestConnect:
 
     @respx.mock
     async def test_connect_mfa_with_handler(self):
-        # First call returns MFA required
-        connect_route = respx.post(f"{BASE}/connect")
-        connect_route.side_effect = [
-            httpx.Response(200, json={
-                "status": "mfa_required",
-                "session_id": "sess-abc",
-                "mfa_type": "otp",
-                "metadata": {"message": "Enter OTP"},
-            }),
-            httpx.Response(200, json={
-                "status": "connected",
-                "data": {"balance": 200.0},
-            }),
-        ]
+        # First call returns MFA required for a detached access job
+        respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
+            "status": "mfa_required",
+            "job_id": "ajob-mfa",
+            "session_id": "sess-abc",
+            "mfa_type": "otp",
+            "metadata": {"message": "Enter OTP"},
+        }))
         # MFA submit
         respx.post(f"{BASE}/mfa/submit").mock(
             return_value=httpx.Response(200, json={
                 "status": "mfa_submitted",
                 "message": "Code accepted.",
+            })
+        )
+        respx.get(f"{BASE}/access_jobs/ajob-mfa").mock(
+            return_value=httpx.Response(200, json={
+                "job_id": "ajob-mfa",
+                "site": "bank",
+                "job_type": "connect",
+                "status": "completed",
+                "session_id": "sess-abc",
+                "metadata": {"result_status": "connected"},
+                "result": {
+                    "status": "connected",
+                    "data": {"balance": 200.0},
+                },
             })
         )
 
@@ -216,6 +248,50 @@ class TestConnect:
             result = await pfy.connect("bank", username="u", password="p", mfa_handler=handler)
         assert result.connected is True
         assert result.data["balance"] == 200.0
+
+    @respx.mock
+    async def test_list_access_jobs(self):
+        respx.get(f"{BASE}/access_jobs").mock(return_value=httpx.Response(200, json={
+            "jobs": [
+                {
+                    "job_id": "ajob-1",
+                    "site": "bank",
+                    "job_type": "connect",
+                    "status": "completed",
+                    "result": {"status": "connected", "data": {"balance": 42}},
+                }
+            ],
+            "count": 1,
+        }))
+        async with Plaidify(server_url=BASE, api_key="jwt-test") as pfy:
+            result = await pfy.list_access_jobs()
+        assert isinstance(result, AccessJobListResult)
+        assert result.count == 1
+        assert result.jobs[0].completed is True
+
+    @respx.mock
+    async def test_wait_for_access_job(self):
+        route = respx.get(f"{BASE}/access_jobs/ajob-2")
+        route.side_effect = [
+            httpx.Response(200, json={
+                "job_id": "ajob-2",
+                "site": "bank",
+                "job_type": "connect",
+                "status": "running",
+            }),
+            httpx.Response(200, json={
+                "job_id": "ajob-2",
+                "site": "bank",
+                "job_type": "connect",
+                "status": "completed",
+                "result": {"status": "connected", "data": {"balance": 42}},
+            }),
+        ]
+        async with Plaidify(server_url=BASE, api_key="jwt-test") as pfy:
+            job = await pfy.wait_for_access_job("ajob-2", poll_interval=0.01, timeout=0.1)
+        assert isinstance(job, AccessJobInfo)
+        assert job.completed is True
+        assert job.result["status"] == "connected"
 
     @respx.mock
     async def test_connect_server_unreachable(self):

@@ -44,6 +44,10 @@ WORKDIR /app
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+# Install container entrypoint
+COPY scripts/container-entrypoint.sh /usr/local/bin/plaidify-entrypoint
+RUN chmod 755 /usr/local/bin/plaidify-entrypoint
+
 # Install Playwright browsers (chromium only to minimize image size)
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 RUN playwright install chromium --with-deps 2>/dev/null || playwright install chromium
@@ -59,9 +63,14 @@ USER plaidify
 # Expose port
 EXPOSE 8000
 
+# Graceful shutdown: ensure SIGTERM reaches gunicorn for browser cleanup
+STOPSIGNAL SIGTERM
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+ENTRYPOINT ["plaidify-entrypoint"]
 
 # Run with Gunicorn + Uvicorn workers
 CMD ["gunicorn", "src.main:app", \

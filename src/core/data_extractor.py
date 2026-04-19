@@ -15,7 +15,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from src.core.blueprint import (
     ExtractionField,
@@ -185,23 +186,21 @@ def coerce_type(value: Any, field_type: FieldType) -> Any:
 
     str_val = str(value).strip()
 
-    match field_type:
-        case FieldType.TEXT:
-            return str_val
-        case FieldType.CURRENCY:
-            return transform_to_currency(str_val)
-        case FieldType.NUMBER:
-            return transform_to_number(str_val)
-        case FieldType.DATE:
-            return transform_parse_date(str_val)
-        case FieldType.EMAIL:
-            return str_val.lower().strip()
-        case FieldType.PHONE:
-            return re.sub(r"[^\d+\-() ]", "", str_val)
-        case FieldType.BOOLEAN:
-            return str_val.lower() in ("true", "yes", "1", "on", "active")
-        case _:
-            return str_val
+    if field_type == FieldType.TEXT:
+        return str_val
+    if field_type == FieldType.CURRENCY:
+        return transform_to_currency(str_val)
+    if field_type == FieldType.NUMBER:
+        return transform_to_number(str_val)
+    if field_type == FieldType.DATE:
+        return transform_parse_date(str_val)
+    if field_type == FieldType.EMAIL:
+        return str_val.lower().strip()
+    if field_type == FieldType.PHONE:
+        return re.sub(r"[^\d+\-() ]", "", str_val)
+    if field_type == FieldType.BOOLEAN:
+        return str_val.lower() in ("true", "yes", "1", "on", "active")
+    return str_val
 
 
 # ── Page Extractor ────────────────────────────────────────────────────────────
@@ -271,11 +270,9 @@ class DataExtractor:
         site: str,
     ) -> Any:
         """Extract a single field value."""
-        field_timeout = getattr(field_def, 'timeout', None) or 15000
+        field_timeout = getattr(field_def, "timeout", None) or 15000
         try:
-            element = await self.page.wait_for_selector(
-                field_def.selector, timeout=field_timeout, state="attached"
-            )
+            element = await self.page.wait_for_selector(field_def.selector, timeout=field_timeout, state="attached")
         except PlaywrightTimeout:
             if field_def.default is not None:
                 return field_def.default
@@ -356,17 +353,13 @@ class DataExtractor:
             # Handle pagination
             if field_def.pagination and page_num < max_pages - 1:
                 try:
-                    next_btn = await self.page.query_selector(
-                        field_def.pagination.next_selector
-                    )
+                    next_btn = await self.page.query_selector(field_def.pagination.next_selector)
                     if next_btn:
                         is_disabled = await next_btn.get_attribute("disabled")
                         if is_disabled:
                             break
                         await next_btn.click()
-                        await self.page.wait_for_timeout(
-                            field_def.pagination.wait_after_click
-                        )
+                        await self.page.wait_for_timeout(field_def.pagination.wait_after_click)
                     else:
                         break
                 except Exception:

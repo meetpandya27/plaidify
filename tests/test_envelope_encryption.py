@@ -13,8 +13,8 @@ Covers:
 
 import base64
 import os
+
 import pytest
-from unittest.mock import patch, AsyncMock
 
 
 class TestDEKManagement:
@@ -22,18 +22,21 @@ class TestDEKManagement:
 
     def test_generate_dek_is_32_bytes(self):
         from src.database import generate_dek
+
         dek = generate_dek()
         assert len(dek) == 32
         assert isinstance(dek, bytes)
 
     def test_generate_dek_unique(self):
         from src.database import generate_dek
+
         dek1 = generate_dek()
         dek2 = generate_dek()
         assert dek1 != dek2
 
     def test_wrap_unwrap_roundtrip(self):
-        from src.database import generate_dek, wrap_dek, unwrap_dek
+        from src.database import generate_dek, unwrap_dek, wrap_dek
+
         dek = generate_dek()
         wrapped = wrap_dek(dek)
         assert isinstance(wrapped, str)
@@ -42,6 +45,7 @@ class TestDEKManagement:
 
     def test_create_user_dek(self):
         from src.database import create_user_dek, unwrap_dek
+
         wrapped = create_user_dek()
         assert isinstance(wrapped, str)
         dek = unwrap_dek(wrapped)
@@ -49,6 +53,7 @@ class TestDEKManagement:
 
     def test_wrapped_dek_is_base64(self):
         from src.database import create_user_dek
+
         wrapped = create_user_dek()
         # Should be valid base64url
         raw = base64.urlsafe_b64decode(wrapped)
@@ -60,6 +65,7 @@ class TestPerUserEncryption:
 
     def _make_user_with_dek(self):
         from src.database import User, create_user_dek
+
         user = User(
             id=999,
             username="testuser",
@@ -70,6 +76,7 @@ class TestPerUserEncryption:
 
     def _make_user_without_dek(self):
         from src.database import User
+
         user = User(
             id=998,
             username="legacyuser",
@@ -79,7 +86,8 @@ class TestPerUserEncryption:
         return user
 
     def test_encrypt_decrypt_with_dek(self):
-        from src.database import encrypt_credential_for_user, decrypt_credential_for_user
+        from src.database import decrypt_credential_for_user, encrypt_credential_for_user
+
         user = self._make_user_with_dek()
         plaintext = "my-secret-password"
         ciphertext = encrypt_credential_for_user(user, plaintext)
@@ -88,13 +96,15 @@ class TestPerUserEncryption:
 
     def test_each_encryption_is_unique(self):
         from src.database import encrypt_credential_for_user
+
         user = self._make_user_with_dek()
         ct1 = encrypt_credential_for_user(user, "same-text")
         ct2 = encrypt_credential_for_user(user, "same-text")
         assert ct1 != ct2  # Different nonces
 
     def test_encrypt_unicode(self):
-        from src.database import encrypt_credential_for_user, decrypt_credential_for_user
+        from src.database import decrypt_credential_for_user, encrypt_credential_for_user
+
         user = self._make_user_with_dek()
         plaintext = "пароль-密码-🔑"
         ciphertext = encrypt_credential_for_user(user, plaintext)
@@ -102,7 +112,8 @@ class TestPerUserEncryption:
 
     def test_user_isolation(self):
         """One user's DEK cannot decrypt another user's data."""
-        from src.database import encrypt_credential_for_user, decrypt_credential_for_user
+        from src.database import decrypt_credential_for_user, encrypt_credential_for_user
+
         user_a = self._make_user_with_dek()
         user_b = self._make_user_with_dek()
 
@@ -114,7 +125,8 @@ class TestPerUserEncryption:
 
     def test_fallback_to_master_key_for_legacy_user(self):
         """Users without a DEK should use master key encryption."""
-        from src.database import encrypt_credential_for_user, decrypt_credential_for_user, encrypt_credential
+        from src.database import decrypt_credential_for_user, encrypt_credential
+
         user = self._make_user_without_dek()
         # Encrypt with legacy master key
         ciphertext = encrypt_credential("legacy-secret")
@@ -124,7 +136,8 @@ class TestPerUserEncryption:
 
     def test_fallback_encrypt_uses_master_key(self):
         """encrypt_credential_for_user falls back to master key if no DEK."""
-        from src.database import encrypt_credential_for_user, decrypt_credential
+        from src.database import decrypt_credential, encrypt_credential_for_user
+
         user = self._make_user_without_dek()
         ciphertext = encrypt_credential_for_user(user, "fallback-test")
         # Should be decryptable with master key
@@ -136,11 +149,13 @@ class TestMasterKeyRotation:
     """Tests for master key rotation."""
 
     def test_rotate_master_key(self):
-        from src.database import (
-            User, create_user_dek, unwrap_dek, rotate_master_key,
-            encrypt_credential_for_user, decrypt_credential_for_user,
-        )
         from src.config import get_settings
+        from src.database import (
+            User,
+            create_user_dek,
+            encrypt_credential_for_user,
+            rotate_master_key,
+        )
         from tests.conftest import TestSessionLocal
 
         db = TestSessionLocal()
@@ -169,6 +184,7 @@ class TestMasterKeyRotation:
 
             # Now verify: unwrap with new key should work
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
             new_key_bytes = base64.urlsafe_b64decode(new_key)
             new_aesgcm = AESGCM(new_key_bytes)
             raw = base64.urlsafe_b64decode(user.encrypted_dek)
@@ -191,11 +207,14 @@ class TestRegistrationCreatesDEK:
         from src.database import User
         from tests.conftest import TestSessionLocal
 
-        response = client.post("/auth/register", json={
-            "username": "dekuser",
-            "email": "dek@example.com",
-            "password": "strongpass123",
-        })
+        response = client.post(
+            "/auth/register",
+            json={
+                "username": "dekuser",
+                "email": "dek@example.com",
+                "password": "Strong@pass123",
+            },
+        )
         assert response.status_code == 200
 
         db = TestSessionLocal()
@@ -207,23 +226,16 @@ class TestRegistrationCreatesDEK:
         finally:
             db.close()
 
-    def test_oauth2_creates_dek(self, client):
-        from src.database import User
-        from tests.conftest import TestSessionLocal
-
-        response = client.post("/auth/oauth2", json={
-            "provider": "google",
-            "oauth_token": "fake-google-token-dek-test",
-        })
-        assert response.status_code == 200
-
-        db = TestSessionLocal()
-        try:
-            user = db.query(User).filter_by(oauth_provider="google").first()
-            assert user is not None
-            assert user.encrypted_dek is not None
-        finally:
-            db.close()
+    def test_oauth2_disabled_returns_501(self, client):
+        """OAuth2 endpoint is disabled until real provider validation is implemented."""
+        response = client.post(
+            "/auth/oauth2",
+            json={
+                "provider": "google",
+                "oauth_token": "fake-google-token-dek-test",
+            },
+        )
+        assert response.status_code == 501
 
 
 class TestLazyDEKMigration:
@@ -231,8 +243,8 @@ class TestLazyDEKMigration:
 
     def test_login_creates_dek_for_legacy_user(self, client):
         from src.database import User
-        from tests.conftest import TestSessionLocal
         from src.dependencies import get_password_hash
+        from tests.conftest import TestSessionLocal
 
         # Manually create a user without DEK (simulates pre-migration user)
         db = TestSessionLocal()
@@ -250,10 +262,13 @@ class TestLazyDEKMigration:
             db.close()
 
         # Login should trigger lazy DEK generation
-        response = client.post("/auth/token", data={
-            "username": "legacylogin",
-            "password": "pass12345678",
-        })
+        response = client.post(
+            "/auth/token",
+            data={
+                "username": "legacylogin",
+                "password": "pass12345678",
+            },
+        )
         assert response.status_code == 200
 
         db = TestSessionLocal()
@@ -269,7 +284,7 @@ class TestSubmitCredentialsWithDEK:
 
     def test_submit_and_fetch_with_dek(self, client, auth_headers):
         """Full flow: create_link → submit_credentials → verify stored encrypted."""
-        from src.database import User, AccessToken, decrypt_credential_for_user
+        from src.database import AccessToken, User, decrypt_credential_for_user
         from tests.conftest import TestSessionLocal
 
         # Create link

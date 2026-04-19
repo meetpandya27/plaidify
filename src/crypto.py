@@ -10,8 +10,8 @@ import threading
 import time
 from typing import Optional, Tuple
 
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from src.logging_config import get_logger
 
@@ -31,23 +31,36 @@ _REDIS_KEY_PREFIX = "plaidify:ephemeral_key:"
 
 
 def _get_redis():
-    """Get or create a Redis client. Returns None if Redis is unavailable."""
+    """Get or create a Redis client. Returns None if Redis is unavailable.
+
+    Re-checks connectivity via ping() so that a transient outage doesn't
+    permanently disable Redis-backed key storage.
+    """
     global _redis_client, _redis_available
 
-    if _redis_available is False:
+    from src.config import get_settings
+
+    settings = get_settings()
+    if not settings.redis_url:
+        if settings.env == "production":
+            raise RuntimeError("REDIS_URL is required in production for ephemeral key storage.")
         return None
 
+    # If we have a cached client, verify it's still alive
     if _redis_client is not None:
-        return _redis_client
+        try:
+            _redis_client.ping()
+            return _redis_client
+        except Exception as exc:
+            if settings.env == "production":
+                raise RuntimeError("Redis connection lost for ephemeral key storage.") from exc
+
+            logger.warning("Redis connection lost for ephemeral keys, reconnecting...")
+            _redis_client = None
 
     try:
-        from src.config import get_settings
-        settings = get_settings()
-        if not settings.redis_url:
-            _redis_available = False
-            return None
-
         import redis as redis_lib
+
         _redis_client = redis_lib.Redis.from_url(
             settings.redis_url,
             decode_responses=False,
@@ -58,8 +71,10 @@ def _get_redis():
         logger.info("Redis connected for ephemeral key storage")
         return _redis_client
     except Exception as e:
+        if settings.env == "production":
+            raise RuntimeError("Redis is unavailable for ephemeral key storage in production.") from e
+
         logger.warning(f"Redis unavailable, falling back to in-memory key store: {e}")
-        _redis_available = False
         _redis_client = None
         return None
 
@@ -87,10 +102,14 @@ def generate_keypair(link_token: str) -> str:
     The private key is stored in Redis (if available) or in-memory.
     """
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    public_pem = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
+    public_pem = (
+        private_key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("ascii")
+    )
 
     r = _get_redis()
     if r is not None:
@@ -137,10 +156,14 @@ def get_public_key(link_token: str) -> Optional[str]:
     private_key = _get_private_key(link_token)
     if private_key is None:
         return None
-    return private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
+    return (
+        private_key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("ascii")
+    )
 
 
 def decrypt_with_session_key(link_token: str, ciphertext: bytes) -> str:

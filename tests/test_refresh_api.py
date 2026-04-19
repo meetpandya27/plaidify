@@ -3,7 +3,6 @@ Tests for the scheduled refresh API endpoints.
 """
 
 import pytest
-from tests.conftest import *
 
 
 class TestRefreshScheduleEndpoints:

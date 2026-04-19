@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from src.core.extraction_prompt import (
@@ -155,9 +155,7 @@ class MultimodalExtractor:
         # Set viewport to consistent size for reproducibility
         viewport = page.viewport_size
         if viewport and (viewport["width"] > self.max_width or viewport["height"] > self.max_height):
-            await page.set_viewport_size(
-                {"width": self.max_width, "height": self.max_height}
-            )
+            await page.set_viewport_size({"width": self.max_width, "height": self.max_height})
 
         return await page.screenshot(
             type="png",
@@ -238,9 +236,7 @@ class MultimodalExtractor:
             raw_response=response.parse_json() if hasattr(response, "parse_json") else {},
         )
 
-    def _build_output_schema(
-        self, fields: List[FieldDefinition | ListFieldDefinition]
-    ) -> Dict[str, Any]:
+    def _build_output_schema(self, fields: List[FieldDefinition | ListFieldDefinition]) -> Dict[str, Any]:
         """Build the expected JSON output schema."""
         return {
             "data": build_data_schema(fields),

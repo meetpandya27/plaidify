@@ -16,7 +16,7 @@ Usage:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from src.logging_config import get_logger
@@ -209,10 +209,7 @@ class ExtractionPromptBuilder:
             "## Selectors and Expected Values",
             "```json",
             json.dumps(
-                {
-                    name: {"selector": sel, "expected": expected_values.get(name)}
-                    for name, sel in selectors.items()
-                },
+                {name: {"selector": sel, "expected": expected_values.get(name)} for name, sel in selectors.items()},
                 indent=2,
             ),
             "```\n",
@@ -230,8 +227,16 @@ class ExtractionPromptBuilder:
         Accepts either a dict (already parsed) or an LLMResponse object.
         """
         extracted, selectors, confidence = parse_extraction_json(response_data)
-        raw = response_data if isinstance(response_data, dict) else (
-            response_data.parse_json() if hasattr(response_data, "parse_json") else json.loads(response_data) if isinstance(response_data, str) else response_data
+        raw = (
+            response_data
+            if isinstance(response_data, dict)
+            else (
+                response_data.parse_json()
+                if hasattr(response_data, "parse_json")
+                else json.loads(response_data)
+                if isinstance(response_data, str)
+                else response_data
+            )
         )
         return ExtractionResult(
             data=extracted,
@@ -240,9 +245,7 @@ class ExtractionPromptBuilder:
             raw_response=raw if isinstance(raw, dict) else {},
         )
 
-    def _build_output_schema(
-        self, fields: List[FieldDefinition | ListFieldDefinition]
-    ) -> Dict[str, Any]:
+    def _build_output_schema(self, fields: List[FieldDefinition | ListFieldDefinition]) -> Dict[str, Any]:
         """Build the expected JSON output schema for the LLM."""
         data_schema = build_data_schema(fields)
 

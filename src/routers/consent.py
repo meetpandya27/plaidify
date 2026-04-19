@@ -46,25 +46,17 @@ async def consent_request(
             detail="'scopes' must be a non-empty list of scope strings.",
         )
     if not access_token_str:
-        raise HTTPException(
-            status_code=422, detail="'access_token' is required."
-        )
+        raise HTTPException(status_code=422, detail="'access_token' is required.")
     if duration > _MAX_CONSENT_DURATION:
         raise HTTPException(
             status_code=422,
             detail=f"Duration cannot exceed {_MAX_CONSENT_DURATION} seconds (30 days).",
         )
     if duration < 60:
-        raise HTTPException(
-            status_code=422, detail="Duration must be at least 60 seconds."
-        )
+        raise HTTPException(status_code=422, detail="Duration must be at least 60 seconds.")
 
     # Verify the access token belongs to this user
-    token_record = (
-        db.query(AccessToken)
-        .filter_by(token=access_token_str, user_id=user.id)
-        .first()
-    )
+    token_record = db.query(AccessToken).filter_by(token=access_token_str, user_id=user.id).first()
     if not token_record:
         raise HTTPException(status_code=401, detail="Invalid access token.")
 
@@ -101,15 +93,9 @@ async def consent_approve(
     db: Session = Depends(get_db),
 ):
     """Approve a consent request. Creates a time-limited consent grant token."""
-    cr = (
-        db.query(ConsentRequest)
-        .filter_by(id=request_id, user_id=user.id)
-        .first()
-    )
+    cr = db.query(ConsentRequest).filter_by(id=request_id, user_id=user.id).first()
     if not cr:
-        raise HTTPException(
-            status_code=404, detail="Consent request not found."
-        )
+        raise HTTPException(status_code=404, detail="Consent request not found.")
     if cr.status != "pending":
         raise HTTPException(
             status_code=409,
@@ -124,8 +110,7 @@ async def consent_approve(
         scopes=cr.scopes,
         access_token=cr.access_token,
         user_id=user.id,
-        expires_at=datetime.now(timezone.utc)
-        + timedelta(seconds=cr.duration_seconds),
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=cr.duration_seconds),
     )
     db.add(grant)
     db.commit()
@@ -154,15 +139,9 @@ async def consent_deny(
     db: Session = Depends(get_db),
 ):
     """Deny a consent request."""
-    cr = (
-        db.query(ConsentRequest)
-        .filter_by(id=request_id, user_id=user.id)
-        .first()
-    )
+    cr = db.query(ConsentRequest).filter_by(id=request_id, user_id=user.id).first()
     if not cr:
-        raise HTTPException(
-            status_code=404, detail="Consent request not found."
-        )
+        raise HTTPException(status_code=404, detail="Consent request not found.")
     if cr.status != "pending":
         raise HTTPException(
             status_code=409,
@@ -172,9 +151,7 @@ async def consent_deny(
     cr.status = "denied"
     db.commit()
 
-    logger.info(
-        "Consent denied", extra={"extra_data": {"request_id": request_id}}
-    )
+    logger.info("Consent denied", extra={"extra_data": {"request_id": request_id}})
     return {"request_id": request_id, "status": "denied"}
 
 
@@ -184,11 +161,7 @@ async def list_consents(
     db: Session = Depends(get_db),
 ):
     """List all active consent grants for the current user."""
-    grants = (
-        db.query(ConsentGrant)
-        .filter_by(user_id=user.id, revoked=False)
-        .all()
-    )
+    grants = db.query(ConsentGrant).filter_by(user_id=user.id, revoked=False).all()
     now = datetime.now(timezone.utc)
     results = []
     for g in grants:
@@ -197,11 +170,7 @@ async def list_consents(
             expires = expires.replace(tzinfo=timezone.utc)
         if now > expires:
             continue  # Skip expired grants
-        req = (
-            db.query(ConsentRequest)
-            .filter_by(id=g.consent_request_id)
-            .first()
-        )
+        req = db.query(ConsentRequest).filter_by(id=g.consent_request_id).first()
         results.append(
             {
                 "consent_token": g.token,
@@ -209,9 +178,7 @@ async def list_consents(
                 "scopes": json_mod.loads(g.scopes),
                 "access_token": g.access_token,
                 "expires_at": expires.isoformat(),
-                "created_at": (
-                    g.created_at.isoformat() if g.created_at else None
-                ),
+                "created_at": (g.created_at.isoformat() if g.created_at else None),
             }
         )
     return {"grants": results, "count": len(results)}
@@ -224,19 +191,11 @@ async def revoke_consent(
     db: Session = Depends(get_db),
 ):
     """Revoke a consent grant immediately."""
-    grant = (
-        db.query(ConsentGrant)
-        .filter_by(token=consent_token, user_id=user.id)
-        .first()
-    )
+    grant = db.query(ConsentGrant).filter_by(token=consent_token, user_id=user.id).first()
     if not grant:
-        raise HTTPException(
-            status_code=404, detail="Consent grant not found."
-        )
+        raise HTTPException(status_code=404, detail="Consent grant not found.")
     if grant.revoked:
-        raise HTTPException(
-            status_code=409, detail="Consent already revoked."
-        )
+        raise HTTPException(status_code=409, detail="Consent already revoked.")
 
     grant.revoked = True
     db.commit()

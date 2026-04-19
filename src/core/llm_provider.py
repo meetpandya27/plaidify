@@ -17,8 +17,9 @@ from __future__ import annotations
 import json
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from src.logging_config import get_logger
 
@@ -161,8 +162,10 @@ class BaseLLMProvider(ABC):
         )
         return response
 
+    @abstractmethod
     async def close(self) -> None:
         """Clean up resources (HTTP clients, etc.)."""
+        ...
 
     async def __aenter__(self):
         return self
@@ -238,15 +241,13 @@ class OpenAIProvider(BaseLLMProvider):
         if resp.status_code == 429:
             retry_after = resp.headers.get("retry-after")
             raise LLMRateLimitError(
-                f"OpenAI rate limit exceeded",
+                "OpenAI rate limit exceeded",
                 retry_after=float(retry_after) if retry_after else None,
             )
         if resp.status_code in (401, 403):
             raise LLMAuthError(f"OpenAI authentication failed: {resp.status_code}")
         if resp.status_code != 200:
-            raise LLMProviderError(
-                f"OpenAI API error {resp.status_code}: {resp.text[:500]}"
-            )
+            raise LLMProviderError(f"OpenAI API error {resp.status_code}: {resp.text[:500]}")
 
         data = resp.json()
         choice = data["choices"][0]
@@ -349,15 +350,13 @@ class AnthropicProvider(BaseLLMProvider):
         if resp.status_code == 429:
             retry_after = resp.headers.get("retry-after")
             raise LLMRateLimitError(
-                f"Anthropic rate limit exceeded",
+                "Anthropic rate limit exceeded",
                 retry_after=float(retry_after) if retry_after else None,
             )
         if resp.status_code in (401, 403):
             raise LLMAuthError(f"Anthropic authentication failed: {resp.status_code}")
         if resp.status_code != 200:
-            raise LLMProviderError(
-                f"Anthropic API error {resp.status_code}: {resp.text[:500]}"
-            )
+            raise LLMProviderError(f"Anthropic API error {resp.status_code}: {resp.text[:500]}")
 
         data = resp.json()
         content_blocks = data.get("content", [])
@@ -370,8 +369,7 @@ class AnthropicProvider(BaseLLMProvider):
             usage=TokenUsage(
                 prompt_tokens=usage.get("input_tokens", 0),
                 completion_tokens=usage.get("output_tokens", 0),
-                total_tokens=usage.get("input_tokens", 0)
-                + usage.get("output_tokens", 0),
+                total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
             ),
             latency_ms=latency_ms,
             provider=self.provider_name,
@@ -444,9 +442,7 @@ class FallbackChain(BaseLLMProvider):
                 )
                 last_error = e
                 continue
-        raise LLMProviderError(
-            f"All providers in fallback chain failed. Last error: {last_error}"
-        )
+        raise LLMProviderError(f"All providers in fallback chain failed. Last error: {last_error}")
 
     async def close(self) -> None:
         for provider in self.providers:
@@ -496,7 +492,4 @@ def create_provider(
     elif provider_type == "anthropic":
         return AnthropicProvider(model=model or "claude-sonnet-4-20250514", **kwargs)
     else:
-        raise ValueError(
-            f"Unknown provider type: {provider_type!r}. "
-            f"Supported: 'openai', 'anthropic'"
-        )
+        raise ValueError(f"Unknown provider type: {provider_type!r}. Supported: 'openai', 'anthropic'")

@@ -2,11 +2,7 @@
 Tests for Access Token Scoping feature.
 """
 
-import json
 from unittest.mock import AsyncMock, patch
-
-import pytest
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -98,6 +94,7 @@ class TestScopeEnforcement:
         assert "transactions" not in data.get("data", {})
         assert "account_number" not in data.get("data", {})
         assert set(data["scopes_applied"]) == {"balance", "usage_kwh"}
+        assert set(mock_connect.await_args.kwargs["extract_fields"]) == {"balance", "usage_kwh"}
 
     @patch("src.routers.links.connect_to_site", new_callable=AsyncMock)
     def test_fetch_without_scoped_token(self, mock_connect, client, auth_headers):
@@ -127,9 +124,7 @@ class TestScopeEnforcement:
         mock_connect.return_value = MOCK_SITE_DATA.copy()
 
         # Create with read: prefixed scopes
-        link_data = _create_scoped_link(
-            client, auth_headers, scopes=["read:balance", "read:account_number"]
-        )
+        link_data = _create_scoped_link(client, auth_headers, scopes=["read:balance", "read:account_number"])
         cred_data = _submit_creds(client, auth_headers, link_data["link_token"])
         access_token = cred_data["access_token"]
 
@@ -160,6 +155,7 @@ class TestScopeEnforcement:
         data = resp.json()
         # Empty scopes means no fields allowed
         assert data.get("data", {}) == {}
+        assert mock_connect.await_args.kwargs["extract_fields"] == []
 
 
 # ── Backward Compatibility ────────────────────────────────────────────────────

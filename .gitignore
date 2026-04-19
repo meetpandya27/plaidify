@@ -22,6 +22,18 @@ htmlcov/
 .env.*
 !.env.example
 
+# Azure deployment local overrides
+.azure/*.local.json
+infra/*.local.bicepparam
+infra/*.override.bicepparam
+
+# Docker secrets
+.secrets/
+!.secrets/README.md
+
+# Node modules
+node_modules/
+
 # Database files (local dev)
 *.db
 

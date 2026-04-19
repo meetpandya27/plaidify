@@ -8,7 +8,6 @@ Covers:
 - HSTS header behavior based on environment
 """
 
-import os
 import pytest
 
 
@@ -64,6 +63,7 @@ class TestCORSDefaults:
     def test_cors_default_is_not_wildcard(self):
         """Default CORS origins should not be wildcard in new configuration."""
         from src.config import get_settings
+
         s = get_settings()
         origins = [o.strip() for o in s.cors_origins.split(",")]
         # Default should be localhost origins, not *
@@ -87,7 +87,6 @@ class TestEnvironmentValidation:
 
     def test_valid_environments(self):
         """Valid environment values should be accepted."""
-        from pydantic import ValidationError
         from src.config import Settings
 
         for env in ("development", "staging", "production"):
@@ -97,7 +96,6 @@ class TestEnvironmentValidation:
 
     def test_invalid_environment_rejected(self):
         """Invalid environment values should be rejected."""
-        from pydantic import ValidationError
         from src.config import Settings
 
         with pytest.raises(ValueError, match="env must be"):

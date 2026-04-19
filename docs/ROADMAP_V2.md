@@ -244,6 +244,57 @@ def fetch_utility_data(access_token: str) -> dict:
 
 ---
 
+## 4. Execution Isolation For Multi-User And Agent Safety
+
+### Problem
+
+Plaidify already isolates browser work with Playwright `BrowserContext`s, but that is not the final boundary needed for multi-tenant usage or future AI agents. Shared worker processes and shared local runtime state can still create risk around temp files, cookie reuse, concurrent write flows, and session contamination.
+
+### Solution
+
+Introduce **access jobs** executed by isolated Plaidify executors.
+
+#### Runtime Pattern
+
+```
+API request
+  │
+  ▼
+[auth + consent + policy]
+  │
+  ▼
+[create access job]
+  │
+  ▼
+[dispatch to isolated executor]
+  │
+  ▼
+[browser login + extraction/action]
+  │
+  ▼
+[structured result + artifact references + cleanup]
+```
+
+#### Implementation Tasks
+
+- [ ] Add an `AccessJob` model with job ID, scope, status, TTL, and audit linkage
+- [ ] Add per `user_id + site` locking for overlapping write operations
+- [ ] Split control-plane API from executor runtime
+- [ ] Give each job its own temp, download, trace, and browser-storage directories
+- [ ] Add executor cleanup guarantees for success, failure, timeout, and cancellation
+- [ ] Add Docker-first executor mode for self-hosted deployments
+- [ ] Add Kubernetes job or pod-per-access mode for stronger production isolation
+- [ ] Ensure agents only receive structured results, not raw credentials or unrestricted browser control
+
+### Delivery Strategy
+
+- **Developer mode**: Docker-first, queue-backed executor service, job-scoped runtime directories
+- **Production isolation mode**: Ephemeral container or pod per access job
+
+See [docs/ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md) for the detailed design.
+
+---
+
 ## Task Tracking
 
 All tasks from this roadmap are tracked as GitHub Issues with the labels:

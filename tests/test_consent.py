@@ -2,9 +2,6 @@
 Tests for the Consent Engine feature.
 """
 
-import json
-import pytest
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -59,27 +56,38 @@ class TestConsentRequest:
         assert "request_id" in data
 
     def test_request_requires_auth(self, client):
-        resp = client.post("/consent/request", json={
-            "agent_name": "Agent",
-            "scopes": ["read:balance"],
-            "access_token": "fake",
-        })
+        resp = client.post(
+            "/consent/request",
+            json={
+                "agent_name": "Agent",
+                "scopes": ["read:balance"],
+                "access_token": "fake",
+            },
+        )
         assert resp.status_code == 401
 
     def test_request_missing_agent_name(self, client, auth_headers):
         _, access_token = _create_access_token(client, auth_headers)
-        resp = client.post("/consent/request", json={
-            "scopes": ["read:balance"],
-            "access_token": access_token,
-        }, headers=auth_headers)
+        resp = client.post(
+            "/consent/request",
+            json={
+                "scopes": ["read:balance"],
+                "access_token": access_token,
+            },
+            headers=auth_headers,
+        )
         assert resp.status_code == 422
 
     def test_request_missing_scopes(self, client, auth_headers):
         _, access_token = _create_access_token(client, auth_headers)
-        resp = client.post("/consent/request", json={
-            "agent_name": "Agent",
-            "access_token": access_token,
-        }, headers=auth_headers)
+        resp = client.post(
+            "/consent/request",
+            json={
+                "agent_name": "Agent",
+                "access_token": access_token,
+            },
+            headers=auth_headers,
+        )
         assert resp.status_code == 422
 
     def test_request_invalid_access_token(self, client, auth_headers):
@@ -88,14 +96,12 @@ class TestConsentRequest:
 
     def test_request_duration_too_long(self, client, auth_headers):
         _, access_token = _create_access_token(client, auth_headers)
-        resp = _request_consent(client, auth_headers, access_token,
-                                duration_seconds=31 * 24 * 3600)  # 31 days
+        resp = _request_consent(client, auth_headers, access_token, duration_seconds=31 * 24 * 3600)  # 31 days
         assert resp.status_code == 422
 
     def test_request_duration_too_short(self, client, auth_headers):
         _, access_token = _create_access_token(client, auth_headers)
-        resp = _request_consent(client, auth_headers, access_token,
-                                duration_seconds=10)  # < 60s
+        resp = _request_consent(client, auth_headers, access_token, duration_seconds=10)  # < 60s
         assert resp.status_code == 422
 
 
@@ -178,12 +184,10 @@ class TestListConsents:
         _, access_token = _create_access_token(client, auth_headers)
 
         # Create and approve two consents
-        r1 = _request_consent(client, auth_headers, access_token,
-                              agent_name="Agent1", scopes=["read:balance"])
+        r1 = _request_consent(client, auth_headers, access_token, agent_name="Agent1", scopes=["read:balance"])
         client.post(f"/consent/{r1.json()['request_id']}/approve", headers=auth_headers)
 
-        r2 = _request_consent(client, auth_headers, access_token,
-                              agent_name="Agent2", scopes=["read:usage"])
+        r2 = _request_consent(client, auth_headers, access_token, agent_name="Agent2", scopes=["read:usage"])
         client.post(f"/consent/{r2.json()['request_id']}/approve", headers=auth_headers)
 
         resp = client.get("/consent", headers=auth_headers)
@@ -197,8 +201,7 @@ class TestListConsents:
         _, access_token = _create_access_token(client, auth_headers)
 
         r1 = _request_consent(client, auth_headers, access_token)
-        approve_resp = client.post(
-            f"/consent/{r1.json()['request_id']}/approve", headers=auth_headers)
+        approve_resp = client.post(f"/consent/{r1.json()['request_id']}/approve", headers=auth_headers)
         consent_token = approve_resp.json()["consent_token"]
 
         # Revoke it
@@ -219,8 +222,7 @@ class TestRevokeConsent:
     def test_revoke_consent(self, client, auth_headers):
         _, access_token = _create_access_token(client, auth_headers)
         req_resp = _request_consent(client, auth_headers, access_token)
-        approve_resp = client.post(
-            f"/consent/{req_resp.json()['request_id']}/approve", headers=auth_headers)
+        approve_resp = client.post(f"/consent/{req_resp.json()['request_id']}/approve", headers=auth_headers)
         consent_token = approve_resp.json()["consent_token"]
 
         resp = client.delete(f"/consent/{consent_token}", headers=auth_headers)
@@ -230,8 +232,7 @@ class TestRevokeConsent:
     def test_revoke_already_revoked(self, client, auth_headers):
         _, access_token = _create_access_token(client, auth_headers)
         req_resp = _request_consent(client, auth_headers, access_token)
-        approve_resp = client.post(
-            f"/consent/{req_resp.json()['request_id']}/approve", headers=auth_headers)
+        approve_resp = client.post(f"/consent/{req_resp.json()['request_id']}/approve", headers=auth_headers)
         consent_token = approve_resp.json()["consent_token"]
 
         client.delete(f"/consent/{consent_token}", headers=auth_headers)
@@ -245,8 +246,7 @@ class TestRevokeConsent:
     def test_revoke_other_users_grant(self, client, auth_headers, second_user_headers):
         _, access_token = _create_access_token(client, auth_headers)
         req_resp = _request_consent(client, auth_headers, access_token)
-        approve_resp = client.post(
-            f"/consent/{req_resp.json()['request_id']}/approve", headers=auth_headers)
+        approve_resp = client.post(f"/consent/{req_resp.json()['request_id']}/approve", headers=auth_headers)
         consent_token = approve_resp.json()["consent_token"]
 
         resp = client.delete(f"/consent/{consent_token}", headers=second_user_headers)

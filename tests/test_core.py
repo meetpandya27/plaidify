@@ -2,16 +2,14 @@
 Tests for encryption utilities and configuration validation.
 """
 
-import os
-import pytest
-from src.database import encrypt_credential, decrypt_credential
+from src.database import decrypt_credential, encrypt_credential
 from src.exceptions import (
-    PlaidifyError,
-    BlueprintNotFoundError,
     AuthenticationError,
+    BlueprintNotFoundError,
     ConnectionFailedError,
-    MFARequiredError,
     InvalidTokenError,
+    MFARequiredError,
+    PlaidifyError,
 )
 
 
@@ -46,6 +44,7 @@ class TestEncryption:
     def test_ciphertext_is_base64url(self):
         """Ciphertext should be valid base64url (nonce + ct + tag)."""
         import base64
+
         encrypted = encrypt_credential("test")
         raw = base64.urlsafe_b64decode(encrypted)
         # 12-byte nonce + at least 1 byte plaintext + 16-byte GCM tag
@@ -106,6 +105,7 @@ class TestConfig:
 
     def test_settings_load(self):
         from src.config import get_settings
+
         s = get_settings()
         assert s.app_name == "Plaidify"
         assert s.encryption_key  # Should be non-empty
@@ -114,5 +114,6 @@ class TestConfig:
 
     def test_settings_log_level(self):
         from src.config import get_settings
+
         s = get_settings()
         assert s.log_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")

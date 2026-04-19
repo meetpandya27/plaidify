@@ -3,8 +3,8 @@ Tests for Phase 1 API endpoints — blueprints, MFA, and enhanced connect.
 """
 
 import os
+
 import pytest
-from unittest.mock import AsyncMock, patch
 
 # Ensure test env vars are set before imports
 os.environ.setdefault("ENCRYPTION_KEY", "ZY58Cfm5vG7YuExWuJ7uG8eN9_A8v6uLEFncah56324=")
@@ -82,12 +82,15 @@ class TestMFAEndpoints:
 class TestConnectEndpoint:
     def test_connect_with_extract_fields(self, client):
         """POST /connect should accept extract_fields parameter."""
-        response = client.post("/connect", json={
-            "site": "demo_site",
-            "username": "user",
-            "password": "pass",
-            "extract_fields": ["profile_status"],
-        })
+        response = client.post(
+            "/connect",
+            json={
+                "site": "demo_site",
+                "username": "user",
+                "password": "pass",
+                "extract_fields": ["profile_status"],
+            },
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "connected"

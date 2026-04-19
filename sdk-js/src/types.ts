@@ -39,9 +39,31 @@ export interface BlueprintListResult {
 
 export interface ConnectResult {
   status: string;
+  job_id?: string;
   data?: Record<string, unknown>;
   session_id?: string;
   mfa_type?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AccessJob {
+  job_id: string;
+  site: string;
+  job_type: string;
+  status: string;
+  session_id?: string;
+  mfa_type?: string;
+  error_message?: string;
+  metadata?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface AccessJobListResult {
+  jobs: AccessJob[];
+  count: number;
 }
 
 export interface MFAChallenge {

@@ -5,11 +5,20 @@ Tests the extraction branching logic, selector caching, fallback chain,
 and multimodal fallback — all with mocked LLM providers and Playwright pages.
 """
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
+from src.core.blueprint import (
+    AuthConfig,
+    AuthType,
+    BlueprintStep,
+    BlueprintV2,
+    ExtractionField,
+    ExtractionStrategy,
+    FieldType,
+    StepAction,
+)
 from src.core.engine import (
     _create_llm_provider,
     _extract_llm_adaptive,
@@ -20,32 +29,19 @@ from src.core.engine import (
     _get_page_path,
     get_selector_cache,
 )
-from src.core.blueprint import (
-    AuthConfig,
-    AuthType,
-    BlueprintStep,
-    BlueprintV2,
-    ExtractionField,
-    ExtractionStrategy,
-    FieldType,
-    ListExtractionField,
-    StepAction,
-)
 from src.core.llm_provider import (
-    BaseLLMProvider,
     FallbackChain,
     LLMProviderError,
-    LLMResponse,
     OpenAIProvider,
-    TokenUsage,
 )
 from src.core.selector_cache import SelectorCache
 from src.exceptions import DataExtractionError
 from tests.conftest import (
     make_llm_response,
+)
+from tests.conftest import (
     make_mock_playwright_page as make_mock_page,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -256,8 +252,12 @@ class TestExtractWithLLM:
                     mock_cache_fn.return_value = mock_cache
 
                     result = await _extract_with_llm(
-                        page, blueprint, blueprint.extract, "test",
-                        "example.com", "/dashboard",
+                        page,
+                        blueprint,
+                        blueprint.extract,
+                        "test",
+                        "example.com",
+                        "/dashboard",
                     )
 
                     assert result == llm_data
@@ -271,9 +271,7 @@ class TestExtractWithLLM:
         """LLM result with low confidence should NOT cache selectors."""
         page = make_mock_page()
         blueprint = make_v3_blueprint()
-        response = make_llm_response(
-            {"balance": 99.0}, {"balance": "#b"}, confidence=0.3
-        )
+        response = make_llm_response({"balance": 99.0}, {"balance": "#b"}, confidence=0.3)
 
         mock_provider = MagicMock()
         mock_provider.extract = AsyncMock(return_value=response)
@@ -292,8 +290,12 @@ class TestExtractWithLLM:
                     mock_cache_fn.return_value = mock_cache
 
                     result = await _extract_with_llm(
-                        page, blueprint, blueprint.extract, "test",
-                        "example.com", "/dashboard",
+                        page,
+                        blueprint,
+                        blueprint.extract,
+                        "test",
+                        "example.com",
+                        "/dashboard",
                     )
 
                     assert result == {"balance": 99.0}
@@ -316,9 +318,12 @@ class TestExtractWithLLM:
                 MockSimp.return_value.simplify = AsyncMock(return_value=mock_simp_result)
 
                 result = await _extract_with_llm(
-                    make_mock_page(), make_v3_blueprint(),
-                    make_v3_blueprint().extract, "test",
-                    "example.com", "/dashboard",
+                    make_mock_page(),
+                    make_v3_blueprint(),
+                    make_v3_blueprint().extract,
+                    "test",
+                    "example.com",
+                    "/dashboard",
                 )
 
                 assert result is None
@@ -332,8 +337,10 @@ class TestExtractWithMultimodal:
     async def test_returns_none_without_provider(self):
         with patch("src.core.engine._create_llm_provider", return_value=None):
             result = await _extract_with_multimodal(
-                make_mock_page(), make_v3_blueprint(),
-                make_v3_blueprint().extract, "test",
+                make_mock_page(),
+                make_v3_blueprint(),
+                make_v3_blueprint().extract,
+                "test",
             )
             assert result is None
 
@@ -350,13 +357,13 @@ class TestExtractWithMultimodal:
 
         with patch("src.core.engine._create_llm_provider", return_value=mock_provider):
             with patch("src.core.engine.MultimodalExtractor") as MockMM:
-                MockMM.return_value.extract_from_screenshot = AsyncMock(
-                    return_value=mock_result
-                )
+                MockMM.return_value.extract_from_screenshot = AsyncMock(return_value=mock_result)
 
                 result = await _extract_with_multimodal(
-                    make_mock_page(), make_v3_blueprint(),
-                    make_v3_blueprint().extract, "test",
+                    make_mock_page(),
+                    make_v3_blueprint(),
+                    make_v3_blueprint().extract,
+                    "test",
                 )
 
                 assert result == {"balance": 500.0}
@@ -374,13 +381,13 @@ class TestExtractWithMultimodal:
 
         with patch("src.core.engine._create_llm_provider", return_value=mock_provider):
             with patch("src.core.engine.MultimodalExtractor") as MockMM:
-                MockMM.return_value.extract_from_screenshot = AsyncMock(
-                    return_value=mock_result
-                )
+                MockMM.return_value.extract_from_screenshot = AsyncMock(return_value=mock_result)
 
                 result = await _extract_with_multimodal(
-                    make_mock_page(), make_v3_blueprint(),
-                    make_v3_blueprint().extract, "test",
+                    make_mock_page(),
+                    make_v3_blueprint(),
+                    make_v3_blueprint().extract,
+                    "test",
                 )
 
                 assert result is None
@@ -392,41 +399,29 @@ class TestExtractWithFallbackSelectors:
     @pytest.mark.asyncio
     async def test_returns_none_without_fallback_selectors(self):
         blueprint = make_v3_blueprint(fallback_selectors=None)
-        result = await _extract_with_fallback_selectors(
-            make_mock_page(), blueprint, blueprint.extract, "test"
-        )
+        result = await _extract_with_fallback_selectors(make_mock_page(), blueprint, blueprint.extract, "test")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_uses_fallback_selectors(self):
-        blueprint = make_v3_blueprint(
-            fallback_selectors={"balance": "#balance", "account_name": "#name"}
-        )
+        blueprint = make_v3_blueprint(fallback_selectors={"balance": "#balance", "account_name": "#name"})
 
         mock_data = {"balance": 99.99, "account_name": "Fallback User"}
         with patch("src.core.engine.DataExtractor") as MockDE:
             MockDE.return_value.extract = AsyncMock(return_value=mock_data)
 
-            result = await _extract_with_fallback_selectors(
-                make_mock_page(), blueprint, blueprint.extract, "test"
-            )
+            result = await _extract_with_fallback_selectors(make_mock_page(), blueprint, blueprint.extract, "test")
 
             assert result == mock_data
 
     @pytest.mark.asyncio
     async def test_extraction_failure_returns_none(self):
-        blueprint = make_v3_blueprint(
-            fallback_selectors={"balance": "#gone"}
-        )
+        blueprint = make_v3_blueprint(fallback_selectors={"balance": "#gone"})
 
         with patch("src.core.engine.DataExtractor") as MockDE:
-            MockDE.return_value.extract = AsyncMock(
-                side_effect=DataExtractionError(site="test")
-            )
+            MockDE.return_value.extract = AsyncMock(side_effect=DataExtractionError(site="test"))
 
-            result = await _extract_with_fallback_selectors(
-                make_mock_page(), blueprint, blueprint.extract, "test"
-            )
+            result = await _extract_with_fallback_selectors(make_mock_page(), blueprint, blueprint.extract, "test")
 
             assert result is None
 
@@ -456,9 +451,7 @@ class TestExtractLLMAdaptive:
                 mock_cached.return_value = mock_data
 
                 with patch("src.core.engine._extract_with_llm", new_callable=AsyncMock) as mock_llm:
-                    data, method = await _extract_llm_adaptive(
-                        page, blueprint, blueprint.extract, "test"
-                    )
+                    data, method = await _extract_llm_adaptive(page, blueprint, blueprint.extract, "test")
 
                     assert data == mock_data
                     assert method == "cached_selectors"
@@ -479,9 +472,7 @@ class TestExtractLLMAdaptive:
             with patch("src.core.engine._extract_with_llm", new_callable=AsyncMock) as mock_llm:
                 mock_llm.return_value = llm_data
 
-                data, method = await _extract_llm_adaptive(
-                    page, blueprint, blueprint.extract, "test"
-                )
+                data, method = await _extract_llm_adaptive(page, blueprint, blueprint.extract, "test")
 
                 assert data == llm_data
                 assert method == "llm"
@@ -502,9 +493,7 @@ class TestExtractLLMAdaptive:
                 with patch("src.core.engine._extract_with_multimodal", new_callable=AsyncMock) as mock_mm:
                     mock_mm.return_value = mm_data
 
-                    data, method = await _extract_llm_adaptive(
-                        page, blueprint, blueprint.extract, "test"
-                    )
+                    data, method = await _extract_llm_adaptive(page, blueprint, blueprint.extract, "test")
 
                     assert data == mm_data
                     assert method == "multimodal"
@@ -512,9 +501,7 @@ class TestExtractLLMAdaptive:
     @pytest.mark.asyncio
     async def test_falls_through_to_fallback_selectors(self):
         """Cache miss + LLM fail + multimodal fail → fallback selectors."""
-        blueprint = make_v3_blueprint(
-            fallback_selectors={"balance": "#balance", "account_name": "#name"}
-        )
+        blueprint = make_v3_blueprint(fallback_selectors={"balance": "#balance", "account_name": "#name"})
         page = make_mock_page()
         fallback_data = {"balance": 100.0, "account_name": "Fallback"}
 
@@ -528,9 +515,7 @@ class TestExtractLLMAdaptive:
                     with patch("src.core.engine._extract_with_fallback_selectors", new_callable=AsyncMock) as mock_fb:
                         mock_fb.return_value = fallback_data
 
-                        data, method = await _extract_llm_adaptive(
-                            page, blueprint, blueprint.extract, "test"
-                        )
+                        data, method = await _extract_llm_adaptive(page, blueprint, blueprint.extract, "test")
 
                         assert data == fallback_data
                         assert method == "fallback_selectors"
@@ -549,9 +534,7 @@ class TestExtractLLMAdaptive:
             with patch("src.core.engine._extract_with_llm", new_callable=AsyncMock, return_value=None):
                 with patch("src.core.engine._extract_with_multimodal", new_callable=AsyncMock, return_value=None):
                     with pytest.raises(DataExtractionError, match="All extraction methods failed"):
-                        await _extract_llm_adaptive(
-                            page, blueprint, blueprint.extract, "test"
-                        )
+                        await _extract_llm_adaptive(page, blueprint, blueprint.extract, "test")
 
     @pytest.mark.asyncio
     async def test_cache_miss_then_cache_hit_second_time(self):
@@ -581,16 +564,12 @@ class TestExtractLLMAdaptive:
 
             with patch("src.core.engine._extract_with_llm", new_callable=AsyncMock, return_value=llm_data):
                 # First call — LLM
-                data1, method1 = await _extract_llm_adaptive(
-                    page, blueprint, blueprint.extract, "test"
-                )
+                data1, method1 = await _extract_llm_adaptive(page, blueprint, blueprint.extract, "test")
                 assert method1 == "llm"
 
             with patch("src.core.engine._extract_with_cached_selectors", new_callable=AsyncMock, return_value=llm_data):
                 # Second call — cached
-                data2, method2 = await _extract_llm_adaptive(
-                    page, blueprint, blueprint.extract, "test"
-                )
+                data2, method2 = await _extract_llm_adaptive(page, blueprint, blueprint.extract, "test")
                 assert method2 == "cached_selectors"
 
 
@@ -633,6 +612,7 @@ class TestSelectorCacheSingleton:
     def test_returns_same_instance(self):
         """get_selector_cache returns a singleton."""
         import src.core.engine as engine_mod
+
         engine_mod._selector_cache = None  # Reset
 
         cache1 = get_selector_cache()

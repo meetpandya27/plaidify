@@ -8,7 +8,7 @@
 </head>
 <body>
   <!-- ── Header ───────────────────────────────────────────── -->
-  <header class="header">
+  <header class="header" role="banner">
     <div class="header-left">
       <div class="logo">◆ <span class="accent">Plaidify</span></div>
       <span class="badge">Demo</span>
@@ -33,15 +33,15 @@
   </section>
 
   <!-- ── Main Demo Area ───────────────────────────────────── -->
-  <main class="demo-area">
+  <main class="demo-area" role="main">
     <!-- Left: Connect Widget -->
     <div class="widget-column">
       <div class="widget-card" id="connect-widget">
 
         <!-- Step 1: Select Institution -->
-        <div class="widget-step" id="step-select" data-active="true">
+        <div class="widget-step" id="step-select" data-active="true" role="region" aria-label="Select provider">
           <div class="step-header">
-            <span class="step-number">1</span>
+            <span class="step-number" aria-hidden="true">1</span>
             <span class="step-title">Select provider</span>
           </div>
           <div class="step-body">
@@ -54,9 +54,9 @@
         </div>
 
         <!-- Step 2: Enter Credentials -->
-        <div class="widget-step" id="step-credentials" data-active="false">
+        <div class="widget-step" id="step-credentials" data-active="false" role="region" aria-label="Enter credentials">
           <div class="step-header">
-            <span class="step-number">2</span>
+            <span class="step-number" aria-hidden="true">2</span>
             <span class="step-title">Enter credentials</span>
           </div>
           <div class="step-body">
@@ -65,14 +65,16 @@
               <span class="bank-name" id="selected-bank-name">GreenGrid Energy</span>
               <button class="change-btn" id="change-bank-btn">Change</button>
             </div>
-            <form id="credentials-form" autocomplete="off">
+            <form id="credentials-form" autocomplete="off" aria-label="Login credentials">
               <div class="form-group">
                 <label for="demo-username">Email or Account ID</label>
-                <input type="text" id="demo-username" placeholder="demo_user" />
+                <input type="text" id="demo-username" placeholder="demo_user" aria-required="true" />
+                <span class="field-error" id="demo-username-error" role="alert" aria-live="polite"></span>
               </div>
               <div class="form-group">
                 <label for="demo-password">Password</label>
-                <input type="password" id="demo-password" placeholder="demo_pass" />
+                <input type="password" id="demo-password" placeholder="demo_pass" aria-required="true" />
+                <span class="field-error" id="demo-password-error" role="alert" aria-live="polite"></span>
               </div>
               <div class="credential-hints">
                 <span class="hint-label">Test credentials:</span>
@@ -92,12 +94,12 @@
         </div>
 
         <!-- Step 3: Connecting (Loading) -->
-        <div class="widget-step" id="step-connecting" data-active="false">
+        <div class="widget-step" id="step-connecting" data-active="false" role="region" aria-label="Connecting">
           <div class="step-header">
-            <span class="step-number loading-spinner">⟳</span>
+            <span class="step-number loading-spinner" aria-hidden="true">⟳</span>
             <span class="step-title">Connecting...</span>
           </div>
-          <div class="step-body">
+          <div class="step-body" aria-live="polite">
             <div class="progress-steps">
               <div class="progress-item" id="prog-browser">
                 <span class="prog-icon">○</span>
@@ -120,9 +122,9 @@
         </div>
 
         <!-- Step 3b: MFA Challenge -->
-        <div class="widget-step" id="step-mfa" data-active="false">
+        <div class="widget-step" id="step-mfa" data-active="false" role="region" aria-label="Two-factor authentication">
           <div class="step-header">
-            <span class="step-number mfa-icon">🔐</span>
+            <span class="step-number mfa-icon" aria-hidden="true">🔐</span>
             <span class="step-title">Two-Factor Authentication</span>
           </div>
           <div class="step-body">
@@ -130,7 +132,7 @@
             <form id="mfa-form">
               <div class="form-group">
                 <label for="mfa-code">Verification Code</label>
-                <input type="text" id="mfa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" />
+                <input type="text" id="mfa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" aria-required="true" aria-label="Verification code" />
               </div>
               <div class="credential-hints">
                 <span class="hint-label">Test code:</span>
@@ -145,9 +147,9 @@
         </div>
 
         <!-- Step 4: Success -->
-        <div class="widget-step" id="step-success" data-active="false">
+        <div class="widget-step" id="step-success" data-active="false" role="region" aria-label="Connection successful">
           <div class="step-header">
-            <span class="step-number success-icon">✓</span>
+            <span class="step-number success-icon" aria-hidden="true">✓</span>
             <span class="step-title">Connected!</span>
           </div>
           <div class="step-body">
@@ -162,9 +164,9 @@
         </div>
 
         <!-- Error State -->
-        <div class="widget-step" id="step-error" data-active="false">
+        <div class="widget-step" id="step-error" data-active="false" role="region" aria-label="Connection error">
           <div class="step-header">
-            <span class="step-number error-icon">✗</span>
+            <span class="step-number error-icon" aria-hidden="true">✗</span>
             <span class="step-title">Connection Failed</span>
           </div>
           <div class="step-body">

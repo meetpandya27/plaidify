@@ -75,6 +75,12 @@
       if (i < dotIndex) d.classList.add("completed");
       if (i === dotIndex) d.classList.add("current");
     });
+    // Update progress indicator ARIA
+    const indicator = document.querySelector(".step-indicator");
+    if (indicator) {
+      indicator.setAttribute("aria-valuenow", String(dotIndex + 1));
+      indicator.setAttribute("aria-label", `Step ${dotIndex + 1} of 3`);
+    }
   }
 
   function postEvent(event, data) {
@@ -130,6 +136,12 @@
     }
   }
 
+  function _escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
   function renderInstitutions(list) {
     const container = document.getElementById("institution-list");
     if (!list.length) {
@@ -137,14 +149,14 @@
       return;
     }
 
-    const icons = { energy: "⚡", utility: "💡", bank: "🏦", telecom: "📱" };
+    const icons = { energy: "\u26A1", utility: "\uD83D\uDCA1", bank: "\uD83C\uDFE6", telecom: "\uD83D\uDCF1" };
     container.innerHTML = list
       .map(
         (bp) => `
-      <div class="institution-item" data-site="${bp.site}">
-        <span class="inst-icon">${icons[bp.tags?.[0]] || "🔗"}</span>
-        <span class="inst-name">${bp.name}</span>
-        <span class="inst-domain">${bp.domain || ""}</span>
+      <div class="institution-item" data-site="${_escapeHtml(bp.site)}">
+        <span class="inst-icon">${_escapeHtml(icons[bp.tags?.[0]] || "\uD83D\uDD17")}</span>
+        <span class="inst-name">${_escapeHtml(bp.name)}</span>
+        <span class="inst-domain">${_escapeHtml(bp.domain || "")}</span>
         <span class="inst-arrow">›</span>
       </div>`
       )
@@ -202,7 +214,25 @@
     e.preventDefault();
     const username = document.getElementById("link-username").value.trim();
     const password = document.getElementById("link-password").value;
-    if (!username || !password) return;
+
+    // Clear previous field errors
+    document.querySelectorAll(".field-error").forEach((el) => (el.textContent = ""));
+    document.querySelectorAll(".input-error").forEach((el) => el.classList.remove("input-error"));
+
+    let hasError = false;
+    if (!username) {
+      const el = document.getElementById("link-username-error");
+      if (el) el.textContent = "Username is required";
+      document.getElementById("link-username")?.classList.add("input-error");
+      hasError = true;
+    }
+    if (!password) {
+      const el = document.getElementById("link-password-error");
+      if (el) el.textContent = "Password is required";
+      document.getElementById("link-password")?.classList.add("input-error");
+      hasError = true;
+    }
+    if (hasError) return;
 
     const btn = document.getElementById("connect-btn");
     btn.disabled = true;
@@ -214,22 +244,14 @@
     try {
       // Fetch encryption key for the link token
       let payload = { site: selectedSite.site };
-      try {
-        const encSession = await apiCall("GET", `/encryption/public_key/${encodeURIComponent(linkToken)}`);
-        if (encSession && encSession.public_key) {
-          const encrypted = await encryptCredentials(encSession.public_key, username, password);
-          payload.encrypted_username = encrypted.username;
-          payload.encrypted_password = encrypted.password;
-          payload.link_token = linkToken;
-        } else {
-          payload.username = username;
-          payload.password = password;
-        }
-      } catch {
-        // Fallback to plaintext if encryption unavailable
-        payload.username = username;
-        payload.password = password;
+      const encSession = await apiCall("GET", `/encryption/public_key/${encodeURIComponent(linkToken)}`);
+      if (!encSession || !encSession.public_key) {
+        throw new Error("Encryption unavailable. Cannot send credentials securely.");
       }
+      const encrypted = await encryptCredentials(encSession.public_key, username, password);
+      payload.encrypted_username = encrypted.username;
+      payload.encrypted_password = encrypted.password;
+      payload.link_token = linkToken;
 
       const result = await apiCall("POST", "/connect", payload);
 
@@ -329,6 +351,14 @@
   document.getElementById("done-btn").addEventListener("click", () => {
     postEvent("DONE", {});
     if (!inIframe) window.close();
+  });
+
+  // Keyboard navigation: Escape to close
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      postEvent("EXIT", { reason: "user_pressed_escape" });
+      if (!inIframe) window.close();
+    }
   });
 
   document.getElementById("retry-btn").addEventListener("click", () => {

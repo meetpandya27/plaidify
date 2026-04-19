@@ -2,8 +2,6 @@
 Tests for webhook delivery history and security improvements.
 """
 
-import pytest
-
 
 class TestWebhookDeliveryHistory:
     """Test GET /webhooks/{id}/deliveries endpoint."""
@@ -15,11 +13,15 @@ class TestWebhookDeliveryHistory:
 
     def _register_webhook(self, client, auth_headers, link_token):
         """Register a webhook for a link session."""
-        resp = client.post("/webhooks/register", json={
-            "url": "https://example.com/hook",
-            "link_token": link_token,
-            "secret": "test-webhook-secret",
-        }, headers=auth_headers)
+        resp = client.post(
+            "/webhooks/register",
+            json={
+                "url": "https://example.com/hook",
+                "link_token": link_token,
+                "secret": "test-webhook-secret",
+            },
+            headers=auth_headers,
+        )
         return resp.json()
 
     def test_deliveries_requires_auth(self, client):
@@ -61,10 +63,11 @@ class TestWebhookPayloadSecurity:
     def test_webhook_payload_excludes_access_token(self):
         """Verify fire_webhooks_for_session doesn't include access_token in payload."""
         import inspect
+
         from src.routers.webhooks import fire_webhooks_for_session
 
         source = inspect.getsource(fire_webhooks_for_session)
         # The function should NOT set access_token in payload
         assert 'payload["access_token"]' not in source
         # It SHOULD reference public_token instead
-        assert 'public_token' in source
+        assert "public_token" in source

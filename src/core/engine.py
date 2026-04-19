@@ -9,8 +9,9 @@ Step Executor, and Data Extractor. Falls back to V1 stub for
 Python connectors.
 """
 
-import json
+import asyncio
 import importlib.util
+import json
 import os
 import sys
 import uuid
@@ -19,15 +20,14 @@ from typing import Any, Dict, List, Optional, Type, Union
 from urllib.parse import urlparse
 
 from src.config import get_settings
-from src.core.connector_base import BaseConnector
 from src.core.blueprint import (
     BlueprintV2,
     ExtractionField,
     ListExtractionField,
     load_blueprint,
 )
-from src.core.browser_pool import get_browser_pool, BrowserPool
-from src.core.step_executor import StepExecutor
+from src.core.browser_pool import get_browser_pool
+from src.core.connector_base import BaseConnector
 from src.core.data_extractor import DataExtractor
 from src.core.dom_simplifier import DOMSimplifier
 from src.core.extraction_prompt import (
@@ -40,19 +40,19 @@ from src.core.llm_provider import (
     LLMProviderError,
     create_provider,
 )
+from src.core.mfa_manager import get_mfa_manager
 from src.core.multimodal_extractor import MultimodalExtractor
+from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
 from src.core.selector_cache import SelectorCache
-from src.core.mfa_manager import get_mfa_manager, MFAManager
+from src.core.step_executor import StepExecutor
 from src.exceptions import (
-    AuthenticationError,
     BlueprintNotFoundError,
     BlueprintValidationError,
-    CaptchaRequiredError,
     ConnectionFailedError,
     DataExtractionError,
     MFARequiredError,
     PlaidifyError,
-    SiteUnavailableError,
+    ReadOnlyPolicyViolationError,
 )
 from src.logging_config import get_logger
 
@@ -130,15 +130,27 @@ async def connect_to_site(
     blueprint = _load_site_blueprint(site, connectors_dir)
 
     # ── Execute via Playwright ────────────────────────────────────────────────
-    return await _execute_blueprint(
-        blueprint=blueprint,
-        site=site,
-        username=username,
-        password=password,
-        extract_fields=extract_fields,
-        proxy=proxy,
-        session_id=session_id or str(uuid.uuid4()),
-    )
+    # Overall timeout prevents a hung site from blocking a worker indefinitely.
+    # Default: 5 minutes (navigation + auth + extraction + cleanup).
+    _OVERALL_TIMEOUT = 300  # seconds
+    try:
+        return await asyncio.wait_for(
+            _execute_blueprint(
+                blueprint=blueprint,
+                site=site,
+                username=username,
+                password=password,
+                extract_fields=extract_fields,
+                proxy=proxy,
+                session_id=session_id or str(uuid.uuid4()),
+            ),
+            timeout=_OVERALL_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise ConnectionFailedError(
+            site=site,
+            detail=f"Connection timed out after {_OVERALL_TIMEOUT}s.",
+        )
 
 
 async def submit_mfa_code(session_id: str, code: str) -> dict:
@@ -175,7 +187,8 @@ async def submit_mfa_code(session_id: str, code: str) -> dict:
 def _load_site_blueprint(site: str, connectors_dir: str) -> BlueprintV2:
     """Load and validate a blueprint for the given site."""
     import re
-    if not re.match(r'^[a-zA-Z0-9_-]+$', site):
+
+    if not re.match(r"^[a-zA-Z0-9_-]+$", site):
         raise BlueprintValidationError(
             site=site,
             detail="Invalid site name. Only alphanumeric characters, underscores, and hyphens are allowed.",
@@ -276,14 +289,10 @@ async def _extract_with_cached_selectors(
                 for col_name, col_def in original.fields.items():
                     col_selector = sel_info.get("fields", {}).get(col_name)
                     if col_selector:
-                        new_fields[col_name] = col_def.model_copy(
-                            update={"selector": col_selector}
-                        )
+                        new_fields[col_name] = col_def.model_copy(update={"selector": col_selector})
                     else:
                         new_fields[col_name] = col_def
-                temp_defs[name] = original.model_copy(
-                    update={"selector": sel_info["row"], "fields": new_fields}
-                )
+                temp_defs[name] = original.model_copy(update={"selector": sel_info["row"], "fields": new_fields})
         else:
             # Scalar field: sel_info is a CSS selector string
             if isinstance(original, ExtractionField):
@@ -330,11 +339,13 @@ async def _extract_with_llm(
 
         logger.info(
             "DOM simplified",
-            extra={"extra_data": {
-                "site": site,
-                "token_estimate": dom_result.token_estimate,
-                "elements": len(dom_result.element_map),
-            }},
+            extra={
+                "extra_data": {
+                    "site": site,
+                    "token_estimate": dom_result.token_estimate,
+                    "elements": len(dom_result.element_map),
+                }
+            },
         )
 
         # 2. Convert blueprint extract config to field definitions
@@ -359,12 +370,14 @@ async def _extract_with_llm(
 
         logger.info(
             "LLM extraction complete",
-            extra={"extra_data": {
-                "site": site,
-                "confidence": result.confidence,
-                "fields": len(result.data),
-                "selectors": len(result.selectors),
-            }},
+            extra={
+                "extra_data": {
+                    "site": site,
+                    "confidence": result.confidence,
+                    "fields": len(result.data),
+                    "selectors": len(result.selectors),
+                }
+            },
         )
 
         # 6. Cache selectors if confidence is adequate
@@ -411,12 +424,14 @@ async def _extract_with_multimodal(
 
         logger.info(
             "Multimodal extraction complete",
-            extra={"extra_data": {
-                "site": site,
-                "confidence": result.confidence,
-                "fields": len(result.data),
-                "screenshot_bytes": result.screenshot_size_bytes,
-            }},
+            extra={
+                "extra_data": {
+                    "site": site,
+                    "confidence": result.confidence,
+                    "fields": len(result.data),
+                    "screenshot_bytes": result.screenshot_size_bytes,
+                }
+            },
         )
 
         if result.confidence >= 0.3:
@@ -455,9 +470,7 @@ async def _extract_with_fallback_selectors(
     temp_defs: Dict[str, Union[ExtractionField, ListExtractionField]] = {}
     for name, selector in blueprint.fallback_selectors.items():
         if name in extraction_defs and isinstance(extraction_defs[name], ExtractionField):
-            temp_defs[name] = extraction_defs[name].model_copy(
-                update={"selector": selector}
-            )
+            temp_defs[name] = extraction_defs[name].model_copy(update={"selector": selector})
 
     if not temp_defs:
         return None
@@ -503,11 +516,13 @@ async def _extract_llm_adaptive(
     if cache_entry:
         logger.info(
             "Trying cached selectors",
-            extra={"extra_data": {
-                "site": site,
-                "confidence": cache_entry.confidence,
-                "hits": cache_entry.hit_count,
-            }},
+            extra={
+                "extra_data": {
+                    "site": site,
+                    "confidence": cache_entry.confidence,
+                    "hits": cache_entry.hit_count,
+                }
+            },
         )
         cached_data = await _extract_with_cached_selectors(
             page, cache_entry.selectors, extraction_defs, site, domain, page_path
@@ -517,9 +532,7 @@ async def _extract_llm_adaptive(
 
     # 2. Full LLM extraction
     logger.info("Running LLM extraction", extra={"extra_data": {"site": site}})
-    llm_data = await _extract_with_llm(
-        page, blueprint, extraction_defs, site, domain, page_path
-    )
+    llm_data = await _extract_with_llm(page, blueprint, extraction_defs, site, domain, page_path)
     if llm_data:
         return llm_data, "llm"
 
@@ -528,9 +541,7 @@ async def _extract_llm_adaptive(
         "Trying multimodal fallback",
         extra={"extra_data": {"site": site}},
     )
-    multimodal_data = await _extract_with_multimodal(
-        page, blueprint, extraction_defs, site
-    )
+    multimodal_data = await _extract_with_multimodal(page, blueprint, extraction_defs, site)
     if multimodal_data:
         return multimodal_data, "multimodal"
 
@@ -539,9 +550,7 @@ async def _extract_llm_adaptive(
         "Trying fallback selectors",
         extra={"extra_data": {"site": site}},
     )
-    fallback_data = await _extract_with_fallback_selectors(
-        page, blueprint, extraction_defs, site
-    )
+    fallback_data = await _extract_with_fallback_selectors(page, blueprint, extraction_defs, site)
     if fallback_data:
         return fallback_data, "fallback_selectors"
 
@@ -573,15 +582,29 @@ async def _execute_blueprint(
     6. Release the browser context
     """
     pool = await get_browser_pool()
-    pooled = await pool.acquire(session_id, proxy=proxy)
+    read_only_policy = ReadOnlyExecutionPolicy(enabled=settings.strict_read_only_mode)
+    pooled = await pool.acquire(
+        session_id,
+        proxy=proxy,
+        read_only_policy=read_only_policy if read_only_policy.enabled else None,
+    )
     page = None
 
     try:
         page = await pooled.context.new_page()
         variables = {"username": username, "password": password}
-        executor = StepExecutor(page, variables)
+        # Local blueprints may still use JS during auth or MFA. Strict read-only
+        # policy blocks it once the session enters post-auth read mode.
+        executor = StepExecutor(
+            page,
+            variables,
+            allow_js_execution=True,
+            read_only_policy=read_only_policy if read_only_policy.enabled else None,
+            site=site,
+        )
 
         # ── Step 1: Authentication ────────────────────────────────────────────
+        read_only_policy.set_phase(ExecutionPhase.AUTH)
         logger.info(
             "Executing auth steps",
             extra={"extra_data": {"site": site, "steps": len(blueprint.auth.steps)}},
@@ -590,16 +613,23 @@ async def _execute_blueprint(
 
         # ── Step 2: MFA Detection ────────────────────────────────────────────
         if blueprint.mfa:
-            mfa_result = await _handle_mfa(page, blueprint, site, session_id)
+            read_only_policy.set_phase(ExecutionPhase.MFA)
+            mfa_result = await _handle_mfa(
+                page,
+                blueprint,
+                site,
+                session_id,
+                read_only_policy=read_only_policy if read_only_policy.enabled else None,
+            )
             if mfa_result:
                 return mfa_result
 
+        read_only_policy.set_phase(ExecutionPhase.READ)
+
         # ── Step 3: Data Extraction ───────────────────────────────────────────
         extraction_defs = blueprint.extract
-        if extract_fields:
-            extraction_defs = {
-                k: v for k, v in extraction_defs.items() if k in extract_fields
-            }
+        if extract_fields is not None:
+            extraction_defs = {k: v for k, v in extraction_defs.items() if k in extract_fields}
 
         extracted_data: Dict[str, Any] = {}
         extraction_method = "none"
@@ -619,6 +649,7 @@ async def _execute_blueprint(
 
         # ── Step 4: Cleanup (logout) ──────────────────────────────────────────
         if blueprint.cleanup:
+            read_only_policy.set_phase(ExecutionPhase.CLEANUP)
             try:
                 await executor.execute_steps(blueprint.cleanup, context="cleanup")
             except Exception as e:
@@ -629,19 +660,41 @@ async def _execute_blueprint(
 
         logger.info(
             "Connection successful",
-            extra={"extra_data": {
-                "site": site,
-                "fields_extracted": len(extracted_data),
-                "extraction_method": extraction_method,
-            }},
+            extra={
+                "extra_data": {
+                    "site": site,
+                    "fields_extracted": len(extracted_data),
+                    "extraction_method": extraction_method,
+                }
+            },
         )
+
+        response_metadata: Dict[str, Any] = {}
+        if read_only_policy.enabled:
+            response_metadata["read_only_policy"] = read_only_policy.to_metadata()
+        if pooled.downloads:
+            response_metadata["downloads"] = [
+                {
+                    "filename": item["filename"],
+                    "size_bytes": item["size_bytes"],
+                    "url": item["url"],
+                }
+                for item in pooled.downloads
+            ]
 
         return {
             "status": "connected",
             "data": extracted_data,
             "extraction_method": extraction_method,
+            "metadata": response_metadata or None,
         }
 
+    except ReadOnlyPolicyViolationError as e:
+        if read_only_policy.enabled:
+            e.metadata = {
+                "read_only_policy": read_only_policy.to_metadata(),
+            }
+        raise
     except MFARequiredError:
         raise
     except PlaidifyError:
@@ -667,6 +720,7 @@ async def _handle_mfa(
     blueprint: BlueprintV2,
     site: str,
     session_id: str,
+    read_only_policy: Optional[ReadOnlyExecutionPolicy] = None,
 ) -> Optional[dict]:
     """
     Check for MFA and handle it.
@@ -741,8 +795,6 @@ async def _handle_mfa(
         if mfa_config.submit_selector:
             await page.click(mfa_config.submit_selector)
             await page.wait_for_load_state("domcontentloaded")
-
-    await mfa_manager.remove_session(session_id)
     return None  # Continue with extraction
 
 
@@ -807,11 +859,7 @@ def load_python_connectors(connectors_dir: str) -> Dict[str, Type[BaseConnector]
                 spec.loader.exec_module(module)
                 for attr in dir(module):
                     obj = getattr(module, attr)
-                    if (
-                        isinstance(obj, type)
-                        and issubclass(obj, BaseConnector)
-                        and obj is not BaseConnector
-                    ):
+                    if isinstance(obj, type) and issubclass(obj, BaseConnector) and obj is not BaseConnector:
                         connectors[module_name] = obj
                         logger.debug(
                             "Loaded connector",

@@ -4,25 +4,30 @@ Hosted link page, link session management, and SSE event streaming.
 
 import asyncio
 import json
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from sse_starlette.sse import EventSourceResponse
 from sqlalchemy.orm import Session
+from sse_starlette.sse import EventSourceResponse
 
+from src import session_store
 from src.config import get_settings
 from src.crypto import generate_keypair
-from src.database import Link, PublicToken, User, Webhook, get_db
-from src.dependencies import get_current_user, get_current_user_or_api_key
+from src.database import Link, PublicToken, User, get_db
+from src.dependencies import (
+    constrain_requested_scopes,
+    ensure_site_allowed_for_request,
+    get_current_user_or_api_key,
+)
 from src.logging_config import get_logger
-from src import session_store
 
 settings = get_settings()
 logger = get_logger("api.link_sessions")
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
 router = APIRouter(tags=["link_sessions"])
 
@@ -53,9 +58,7 @@ async def hosted_link_page(token: Optional[str] = None):
 
     The page validates the token client-side via the /link/sessions API.
     """
-    from pathlib import Path
-
-    link_html = Path("frontend/link.html")
+    link_html = FRONTEND_DIR / "link.html"
     if not link_html.exists():
         raise HTTPException(status_code=500, detail="Link page not found.")
     return HTMLResponse(content=link_html.read_text(encoding="utf-8"))
@@ -66,6 +69,7 @@ async def hosted_link_page(token: Optional[str] = None):
 
 @router.post("/link/sessions")
 async def create_link_session(
+    request: Request,
     site: Optional[str] = None,
     user: User = Depends(get_current_user_or_api_key),
     db: Session = Depends(get_db),
@@ -75,6 +79,9 @@ async def create_link_session(
     Returns a link_token that can be used with /link?token=xxx.
     Also generates an ephemeral encryption keypair for the session.
     """
+    if site:
+        ensure_site_allowed_for_request(request, site)
+
     link_token = str(uuid.uuid4())
 
     # Store in DB if site is provided
@@ -86,14 +93,21 @@ async def create_link_session(
     # Generate ephemeral keypair
     public_key_pem = generate_keypair(link_token)
 
+    effective_scopes = constrain_requested_scopes(request, None)
+    if effective_scopes is not None:
+        session_store.set_link_scopes(link_token, json.dumps(effective_scopes))
+
     # Create ephemeral session state
-    session_store.create_link_session(link_token, {
-        "status": "awaiting_institution",
-        "site": site,
-        "user_id": user.id,
-        "events": [],
-        "access_token": None,
-    })
+    session_store.create_link_session(
+        link_token,
+        {
+            "status": "awaiting_institution",
+            "site": site,
+            "user_id": user.id,
+            "events": [],
+            "access_token": None,
+        },
+    )
 
     logger.info(
         "Link session created",
@@ -104,6 +118,7 @@ async def create_link_session(
         "link_url": f"/link?token={link_token}",
         "public_key": public_key_pem,
         "expires_in": _LINK_SESSION_TTL,
+        "scopes": effective_scopes,
     }
 
 
@@ -125,11 +140,17 @@ async def get_link_session_status(link_token: str):
 
 
 @router.post("/link/sessions/{link_token}/event")
-async def post_link_session_event(link_token: str, request: Request):
+async def post_link_session_event(
+    link_token: str,
+    request: Request,
+    user: User = Depends(get_current_user_or_api_key),
+):
     """Record an event for a link session (called by the link page)."""
     session = _get_link_session(link_token)
     if not session:
         raise HTTPException(status_code=404, detail="Link session not found.")
+    if session.get("user_id") != user.id:
+        raise HTTPException(status_code=403, detail="Not authorized for this session.")
     if session["status"] == "expired":
         raise HTTPException(status_code=410, detail="Link session has expired.")
 
@@ -171,8 +192,7 @@ async def post_link_session_event(link_token: str, request: Request):
                     link_token=link_token,
                     access_token=access_token,
                     user_id=user_id,
-                    expires_at=datetime.now(timezone.utc)
-                    + timedelta(minutes=_PUBLIC_TOKEN_TTL_MINUTES),
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=_PUBLIC_TOKEN_TTL_MINUTES),
                 )
                 db.add(pt)
                 db.commit()
@@ -185,10 +205,10 @@ async def post_link_session_event(link_token: str, request: Request):
     if updates:
         session_store.update_link_session(link_token, updates)
 
-    # Notify local SSE subscribers
-    async with _sse_lock:
-        for queue in _sse_subscribers.get(link_token, []):
-            await queue.put(event_data)
+    if not session_store.publish_link_event(link_token, event_data):
+        async with _sse_lock:
+            for queue in _sse_subscribers.get(link_token, []):
+                await queue.put(event_data)
 
     # Fire webhooks for terminal events
     webhook_event_map = {
@@ -199,9 +219,7 @@ async def post_link_session_event(link_token: str, request: Request):
     if event_name in webhook_event_map:
         from src.routers.webhooks import fire_webhooks_for_session
 
-        await fire_webhooks_for_session(
-            link_token, webhook_event_map[event_name], event_data.get("data")
-        )
+        await fire_webhooks_for_session(link_token, webhook_event_map[event_name], event_data.get("data"))
 
     response = {"status": "ok"}
     if public_token_value:
@@ -224,10 +242,13 @@ async def link_event_stream(link_token: str):
     if not session:
         raise HTTPException(status_code=404, detail="Link session not found.")
 
-    queue: asyncio.Queue = asyncio.Queue()
+    redis_queue = await session_store.subscribe_link_events(link_token)
+    use_local_queue = redis_queue is None
+    queue: asyncio.Queue = redis_queue or asyncio.Queue()
 
-    async with _sse_lock:
-        _sse_subscribers.setdefault(link_token, []).append(queue)
+    if use_local_queue:
+        async with _sse_lock:
+            _sse_subscribers.setdefault(link_token, []).append(queue)
 
     async def event_generator():
         try:
@@ -241,9 +262,7 @@ async def link_event_stream(link_token: str):
             # Stream new events
             while True:
                 try:
-                    event_data = await asyncio.wait_for(
-                        queue.get(), timeout=15.0
-                    )
+                    event_data = await asyncio.wait_for(queue.get(), timeout=15.0)
                     yield {
                         "event": event_data["event"],
                         "data": json.dumps(event_data),
@@ -256,16 +275,15 @@ async def link_event_stream(link_token: str):
                     yield {"event": "ping", "data": ""}
                     # Check if session expired
                     current = _get_link_session(link_token)
-                    if current is None or current.get("status") in (
-                        "completed", "error", "expired"
-                    ):
+                    if current is None or current.get("status") in ("completed", "error", "expired"):
                         return
         finally:
-            async with _sse_lock:
-                subs = _sse_subscribers.get(link_token, [])
-                if queue in subs:
-                    subs.remove(queue)
-                if not subs:
-                    _sse_subscribers.pop(link_token, None)
+            if use_local_queue:
+                async with _sse_lock:
+                    subs = _sse_subscribers.get(link_token, [])
+                    if queue in subs:
+                        subs.remove(queue)
+                    if not subs:
+                        _sse_subscribers.pop(link_token, None)
 
     return EventSourceResponse(event_generator())

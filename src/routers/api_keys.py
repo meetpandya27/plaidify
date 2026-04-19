@@ -36,9 +36,7 @@ async def create_api_key(
 
     expires_at = None
     if expires_days:
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            days=int(expires_days)
-        )
+        expires_at = datetime.now(timezone.utc) + timedelta(days=int(expires_days))
 
     db_key = ApiKey(
         id=str(uuid.uuid4()),
@@ -62,9 +60,7 @@ async def create_api_key(
         "key": raw_key,  # Only time the raw key is exposed
         "key_prefix": key_prefix,
         "expires_at": expires_at.isoformat() if expires_at else None,
-        "created_at": (
-            db_key.created_at.isoformat() if db_key.created_at else None
-        ),
+        "created_at": (db_key.created_at.isoformat() if db_key.created_at else None),
     }
 
 
@@ -82,12 +78,8 @@ async def list_api_keys(
             "key_prefix": k.key_prefix,
             "scopes": k.scopes,
             "expires_at": k.expires_at.isoformat() if k.expires_at else None,
-            "last_used_at": (
-                k.last_used_at.isoformat() if k.last_used_at else None
-            ),
-            "created_at": (
-                k.created_at.isoformat() if k.created_at else None
-            ),
+            "last_used_at": (k.last_used_at.isoformat() if k.last_used_at else None),
+            "created_at": (k.created_at.isoformat() if k.created_at else None),
         }
         for k in keys
     ]
@@ -100,9 +92,7 @@ async def revoke_api_key(
     user: User = Depends(get_current_user),
 ):
     """Revoke an API key."""
-    db_key = (
-        db.query(ApiKey).filter_by(id=key_id, user_id=user.id).first()
-    )
+    db_key = db.query(ApiKey).filter_by(id=key_id, user_id=user.id).first()
     if not db_key:
         raise HTTPException(status_code=404, detail="API key not found.")
     db_key.is_active = False

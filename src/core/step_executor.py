@@ -11,12 +11,15 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from src.core.blueprint import BlueprintStep, StepAction
+from src.core.read_only_policy import ReadOnlyExecutionPolicy
 from src.exceptions import (
     AuthenticationError,
     ConnectionFailedError,
+    ReadOnlyPolicyViolationError,
     SiteUnavailableError,
 )
 from src.logging_config import get_logger
@@ -32,14 +35,26 @@ class StepExecutor:
     and all V2 step actions.
     """
 
-    def __init__(self, page: Page, variables: Dict[str, str]) -> None:
+    def __init__(
+        self,
+        page: Page,
+        variables: Dict[str, str],
+        *,
+        allow_js_execution: bool = False,
+        read_only_policy: Optional[ReadOnlyExecutionPolicy] = None,
+        site: str = "unknown",
+    ) -> None:
         """
         Args:
             page: A Playwright Page instance.
             variables: Dict of interpolation variables (e.g., {"username": "...", "password": "..."}).
+            allow_js_execution: If False, execute_js steps are blocked (default for community blueprints).
         """
         self.page = page
         self.variables = variables
+        self.allow_js_execution = allow_js_execution
+        self.read_only_policy = read_only_policy
+        self.site = site
 
     def _interpolate(self, value: Optional[str]) -> Optional[str]:
         """Replace {{variable}} placeholders with actual values."""
@@ -90,6 +105,8 @@ class StepExecutor:
                 raise
             except AuthenticationError:
                 raise
+            except ReadOnlyPolicyViolationError:
+                raise
             except SiteUnavailableError:
                 raise
             except Exception as e:
@@ -104,6 +121,8 @@ class StepExecutor:
 
     async def _execute_step(self, step: BlueprintStep) -> None:
         """Dispatch a single step to the appropriate handler."""
+        self._enforce_step_policy(step)
+
         handlers = {
             StepAction.GOTO: self._step_goto,
             StepAction.FILL: self._step_fill,
@@ -127,23 +146,63 @@ class StepExecutor:
 
         await handler(step)
 
+    def _enforce_step_policy(self, step: BlueprintStep) -> None:
+        if not self.read_only_policy:
+            return
+
+        reason = self.read_only_policy.evaluate_step(step)
+        if reason is None:
+            return
+
+        self.read_only_policy.record_blocked(
+            step.action.value,
+            reason,
+            target=step.selector or step.url,
+        )
+        raise ReadOnlyPolicyViolationError(reason)
+
+    async def _describe_click_target(self, selector: str) -> dict[str, Any]:
+        if not self.read_only_policy:
+            return {}
+
+        try:
+            metadata = await self.page.eval_on_selector(
+                selector,
+                """(element) => {
+                    const form = element.closest('form');
+                    return {
+                        text: element.innerText || element.textContent || '',
+                        ariaLabel: element.getAttribute('aria-label') || '',
+                        title: element.getAttribute('title') || '',
+                        value: element.getAttribute('value') || '',
+                        name: element.getAttribute('name') || '',
+                        id: element.id || '',
+                        href: element.getAttribute('href') || '',
+                        formAction: form?.getAttribute('action') || '',
+                        formMethod: form?.getAttribute('method') || '',
+                    };
+                }""",
+            )
+            if isinstance(metadata, dict):
+                return metadata
+        except Exception:
+            return {}
+
+        return {}
+
     # ── Step Handlers ─────────────────────────────────────────────────────────
 
     async def _step_goto(self, step: BlueprintStep) -> None:
         """Navigate to a URL."""
         url = self._interpolate(step.url)
         if not url:
-            raise ConnectionFailedError(
-                site="unknown", detail="goto step requires a 'url' field."
-            )
+            raise ConnectionFailedError(site="unknown", detail="goto step requires a 'url' field.")
 
         timeout = step.timeout or 30000
         try:
             response = await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             if response and response.status >= 500:
-                raise SiteUnavailableError(
-                    site=url, detail=f"HTTP {response.status}"
-                )
+                raise SiteUnavailableError(site=url, detail=f"HTTP {response.status}")
         except PlaywrightTimeout as e:
             raise SiteUnavailableError(site=url, detail=f"Navigation timeout: {e}") from e
 
@@ -154,9 +213,7 @@ class StepExecutor:
         selector = step.selector
         value = self._interpolate(step.value) or ""
         if not selector:
-            raise ConnectionFailedError(
-                site="unknown", detail="fill step requires a 'selector' field."
-            )
+            raise ConnectionFailedError(site="unknown", detail="fill step requires a 'selector' field.")
 
         timeout = step.timeout or 10000
         await self.page.wait_for_selector(selector, timeout=timeout, state="visible")
@@ -167,17 +224,20 @@ class StepExecutor:
         """Click an element, optionally waiting for navigation."""
         selector = step.selector
         if not selector:
-            raise ConnectionFailedError(
-                site="unknown", detail="click step requires a 'selector' field."
-            )
+            raise ConnectionFailedError(site="unknown", detail="click step requires a 'selector' field.")
 
         timeout = step.timeout or 10000
         await self.page.wait_for_selector(selector, timeout=timeout, state="visible")
 
+        if self.read_only_policy is not None:
+            metadata = await self._describe_click_target(selector)
+            reason = self.read_only_policy.evaluate_click(selector, metadata)
+            if reason:
+                self.read_only_policy.record_blocked("click", reason, target=selector)
+                raise ReadOnlyPolicyViolationError(reason)
+
         if step.wait_for_navigation:
-            async with self.page.expect_navigation(
-                wait_until="domcontentloaded", timeout=step.timeout or 30000
-            ):
+            async with self.page.expect_navigation(wait_until="domcontentloaded", timeout=step.timeout or 30000):
                 await self.page.click(selector)
         else:
             await self.page.click(selector)
@@ -188,9 +248,7 @@ class StepExecutor:
         """Wait for an element to appear."""
         selector = step.selector
         if not selector:
-            raise ConnectionFailedError(
-                site="unknown", detail="wait step requires a 'selector' field."
-            )
+            raise ConnectionFailedError(site="unknown", detail="wait step requires a 'selector' field.")
 
         timeout = step.timeout or 10000
         await self.page.wait_for_selector(selector, timeout=timeout, state="visible")
@@ -199,6 +257,8 @@ class StepExecutor:
     async def _step_screenshot(self, step: BlueprintStep) -> None:
         """Take a screenshot (debug only)."""
         name = step.screenshot_name or "debug"
+        # Sanitize name to prevent path traversal
+        name = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
         path = f"/tmp/plaidify_screenshot_{name}.png"
         await self.page.screenshot(path=path, full_page=False)
         logger.debug(f"Screenshot saved: {path}")
@@ -207,9 +267,7 @@ class StepExecutor:
         """Conditional branching based on selector presence."""
         selector = step.condition_selector
         if not selector:
-            raise ConnectionFailedError(
-                site="unknown", detail="conditional step requires 'condition_selector'."
-            )
+            raise ConnectionFailedError(site="unknown", detail="conditional step requires 'condition_selector'.")
 
         timeout = step.timeout or 3000
         try:
@@ -241,9 +299,7 @@ class StepExecutor:
         selector = step.selector
         value = self._interpolate(step.value)
         if not selector or not value:
-            raise ConnectionFailedError(
-                site="unknown", detail="select step requires 'selector' and 'value'."
-            )
+            raise ConnectionFailedError(site="unknown", detail="select step requires 'selector' and 'value'.")
 
         await self.page.select_option(selector, value)
         logger.debug(f"Selected {value} in {selector}")
@@ -252,11 +308,9 @@ class StepExecutor:
         """Switch into an iframe context."""
         selector = step.iframe_selector or step.selector
         if not selector:
-            raise ConnectionFailedError(
-                site="unknown", detail="iframe step requires 'iframe_selector' or 'selector'."
-            )
+            raise ConnectionFailedError(site="unknown", detail="iframe step requires 'iframe_selector' or 'selector'.")
 
-        frame = self.page.frame_locator(selector)
+        self.page.frame_locator(selector)
         # Store frame reference for subsequent steps
         # Note: Playwright's frame_locator doesn't directly replace page,
         # so this is handled by using frame_locator in extraction
@@ -269,12 +323,20 @@ class StepExecutor:
         logger.debug("Navigation complete")
 
     async def _step_execute_js(self, step: BlueprintStep) -> None:
-        """Execute JavaScript in the page context."""
+        """Execute JavaScript in the page context.
+
+        Blocked by default for community blueprints — only allowed when
+        allow_js_execution is explicitly True (certified/tested tiers).
+        """
+        if not self.allow_js_execution:
+            raise ConnectionFailedError(
+                site=self.site,
+                detail="execute_js steps are not allowed for this blueprint. "
+                "Only certified or tested blueprints may use JavaScript execution.",
+            )
         script = step.script
         if not script:
-            raise ConnectionFailedError(
-                site="unknown", detail="execute_js step requires a 'script' field."
-            )
+            raise ConnectionFailedError(site=self.site, detail="execute_js step requires a 'script' field.")
 
         result = await self.page.evaluate(script)
         logger.debug(f"JS executed, result type: {type(result).__name__}")

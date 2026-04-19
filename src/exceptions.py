@@ -55,6 +55,32 @@ class ConnectionFailedError(PlaidifyError):
         self.site = site
 
 
+class ReadOnlyPolicyViolationError(PlaidifyError):
+    """Raised when strict read-only runtime enforcement blocks an action."""
+
+    def __init__(self, detail: str, metadata: dict | None = None):
+        super().__init__(
+            message=f"Read-only policy blocked action. {detail}",
+            status_code=403,
+        )
+        self.detail = detail
+        self.metadata = metadata
+
+
+class ConcurrentAccessError(PlaidifyError):
+    """Raised when another access flow is already active for the same site scope."""
+
+    def __init__(self, site: str):
+        super().__init__(
+            message=(
+                f"Another access job is already in progress for site: {site}. "
+                "Retry after the current session completes."
+            ),
+            status_code=409,
+        )
+        self.site = site
+
+
 class AuthenticationError(PlaidifyError):
     """Raised when login credentials are rejected by the target site."""
 

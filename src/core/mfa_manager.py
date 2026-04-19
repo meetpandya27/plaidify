@@ -11,16 +11,21 @@ Sessions auto-expire after a configurable TTL (default: 5 minutes).
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
+from src import session_store
 from src.logging_config import get_logger
 
 logger = get_logger("mfa_manager")
 
 # Default MFA session TTL: 5 minutes
 DEFAULT_MFA_TTL = 300
+_MFA_SESSION_PREFIX = "plaidify:mfa_session:"
+_MFA_POLL_INTERVAL = 0.25
 
 
 @dataclass
@@ -41,6 +46,13 @@ class MFASession:
 
     # Metadata (e.g., question text for security questions)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Optional backend fetcher for multi-worker polling.
+    _code_fetcher: Optional[Callable[[str], Awaitable[Optional[str]]]] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def expired(self) -> bool:
@@ -63,15 +75,42 @@ class MFASession:
             The submitted code, or None if timed out.
         """
         wait_timeout = timeout or self.ttl
-        try:
-            await asyncio.wait_for(self._event.wait(), timeout=wait_timeout)
-            return self.code
-        except asyncio.TimeoutError:
-            logger.warning(
-                "MFA session timed out",
-                extra={"extra_data": {"session_id": self.session_id, "site": self.site}},
-            )
-            return None
+
+        if self._code_fetcher is None:
+            try:
+                await asyncio.wait_for(self._event.wait(), timeout=wait_timeout)
+                return self.code
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "MFA session timed out",
+                    extra={"extra_data": {"session_id": self.session_id, "site": self.site}},
+                )
+                return None
+
+        deadline = time.monotonic() + wait_timeout
+        while True:
+            if self.code:
+                return self.code
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "MFA session timed out",
+                    extra={"extra_data": {"session_id": self.session_id, "site": self.site}},
+                )
+                return None
+
+            try:
+                await asyncio.wait_for(self._event.wait(), timeout=min(_MFA_POLL_INTERVAL, remaining))
+                if self.code:
+                    return self.code
+            except asyncio.TimeoutError:
+                pass
+
+            code = await self._code_fetcher(self.session_id)
+            if code:
+                self.code = code
+                return code
 
 
 class MFAManager:
@@ -93,6 +132,84 @@ class MFAManager:
         self._sessions: Dict[str, MFASession] = {}
         self._lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
+
+    @staticmethod
+    def _redis_key(session_id: str) -> str:
+        return f"{_MFA_SESSION_PREFIX}{session_id}"
+
+    @staticmethod
+    def _session_payload(
+        session_id: str,
+        site: str,
+        mfa_type: str,
+        metadata: Dict[str, Any],
+        ttl: int,
+        created_at: float,
+        code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "session_id": session_id,
+            "site": site,
+            "mfa_type": mfa_type,
+            "metadata": metadata,
+            "ttl": ttl,
+            "created_at": created_at,
+            "code": code,
+        }
+
+    @staticmethod
+    def _payload_expired(payload: Dict[str, Any]) -> bool:
+        created_at = float(payload.get("created_at", 0))
+        ttl = int(payload.get("ttl", DEFAULT_MFA_TTL))
+        return time.time() - created_at > ttl
+
+    @staticmethod
+    def _remaining_ttl(payload: Dict[str, Any]) -> int:
+        created_at = float(payload.get("created_at", 0))
+        ttl = int(payload.get("ttl", DEFAULT_MFA_TTL))
+        remaining = ttl - (time.time() - created_at)
+        return max(1, int(remaining))
+
+    def _redis(self):
+        return session_store._redis()
+
+    async def _fetch_submitted_code(self, session_id: str) -> Optional[str]:
+        redis_client = self._redis()
+        if redis_client is None:
+            async with self._lock:
+                session = self._sessions.get(session_id)
+                return session.code if session else None
+
+        raw = redis_client.get(self._redis_key(session_id))
+        if not raw:
+            return None
+
+        payload = json.loads(raw)
+        if self._payload_expired(payload):
+            redis_client.delete(self._redis_key(session_id))
+            return None
+
+        return payload.get("code")
+
+    def _persist_session(self, session: MFASession) -> None:
+        redis_client = self._redis()
+        if redis_client is None:
+            return
+
+        payload = self._session_payload(
+            session_id=session.session_id,
+            site=session.site,
+            mfa_type=session.mfa_type,
+            metadata=session.metadata,
+            ttl=session.ttl,
+            created_at=session.created_at,
+            code=session.code,
+        )
+        redis_client.set(
+            self._redis_key(session.session_id),
+            json.dumps(payload),
+            ex=session.ttl,
+        )
 
     def start_cleanup(self) -> None:
         """Start the background cleanup task."""
@@ -125,6 +242,33 @@ class MFAManager:
         Returns:
             The created MFASession.
         """
+        existing = await self.get_session(session_id)
+        if existing is not None:
+            existing.site = site
+            existing.mfa_type = mfa_type
+            existing.metadata = {**existing.metadata, **(metadata or {})}
+            if self._redis() is not None:
+                existing._code_fetcher = self._fetch_submitted_code
+
+            async with self._lock:
+                self._sessions[session_id] = existing
+
+            self._persist_session(existing)
+
+            logger.info(
+                "MFA session resumed",
+                extra={
+                    "extra_data": {
+                        "session_id": session_id,
+                        "site": site,
+                        "mfa_type": mfa_type,
+                        "has_code": bool(existing.code),
+                    }
+                },
+            )
+
+            return existing
+
         session = MFASession(
             session_id=session_id,
             site=site,
@@ -133,16 +277,23 @@ class MFAManager:
             ttl=ttl,
         )
 
+        if self._redis() is not None:
+            session._code_fetcher = self._fetch_submitted_code
+
         async with self._lock:
             self._sessions[session_id] = session
 
+        self._persist_session(session)
+
         logger.info(
             "MFA session created",
-            extra={"extra_data": {
-                "session_id": session_id,
-                "site": site,
-                "mfa_type": mfa_type,
-            }},
+            extra={
+                "extra_data": {
+                    "session_id": session_id,
+                    "site": site,
+                    "mfa_type": mfa_type,
+                }
+            },
         )
 
         return session
@@ -161,14 +312,21 @@ class MFAManager:
         async with self._lock:
             session = self._sessions.get(session_id)
 
-        if not session:
+        redis_client = self._redis()
+        payload = None
+        if redis_client is not None:
+            raw = redis_client.get(self._redis_key(session_id))
+            if raw:
+                payload = json.loads(raw)
+
+        if session is None and payload is None:
             logger.warning(
                 "MFA session not found",
                 extra={"extra_data": {"session_id": session_id}},
             )
             return False
 
-        if session.expired:
+        if payload is not None and self._payload_expired(payload):
             logger.warning(
                 "MFA session expired",
                 extra={"extra_data": {"session_id": session_id}},
@@ -176,7 +334,24 @@ class MFAManager:
             await self.remove_session(session_id)
             return False
 
-        session.submit_code(code)
+        if session is not None and session.expired:
+            logger.warning(
+                "MFA session expired",
+                extra={"extra_data": {"session_id": session_id}},
+            )
+            await self.remove_session(session_id)
+            return False
+
+        if payload is not None and redis_client is not None:
+            payload["code"] = code
+            redis_client.set(
+                self._redis_key(session_id),
+                json.dumps(payload),
+                ex=self._remaining_ttl(payload),
+            )
+
+        if session is not None:
+            session.submit_code(code)
         logger.info(
             "MFA code submitted",
             extra={"extra_data": {"session_id": session_id}},
@@ -189,13 +364,44 @@ class MFAManager:
             session = self._sessions.get(session_id)
             if session and session.expired:
                 del self._sessions[session_id]
-                return None
+                session = None
+
+        if session is not None:
             return session
+
+        redis_client = self._redis()
+        if redis_client is None:
+            return None
+
+        raw = redis_client.get(self._redis_key(session_id))
+        if not raw:
+            return None
+
+        payload = json.loads(raw)
+        if self._payload_expired(payload):
+            redis_client.delete(self._redis_key(session_id))
+            return None
+
+        restored = MFASession(
+            session_id=payload["session_id"],
+            site=payload["site"],
+            mfa_type=payload["mfa_type"],
+            created_at=float(payload.get("created_at", time.time())),
+            ttl=int(payload.get("ttl", DEFAULT_MFA_TTL)),
+            code=payload.get("code"),
+            metadata=payload.get("metadata") or {},
+        )
+        restored._code_fetcher = self._fetch_submitted_code
+        return restored
 
     async def remove_session(self, session_id: str) -> None:
         """Remove an MFA session."""
         async with self._lock:
             self._sessions.pop(session_id, None)
+
+        redis_client = self._redis()
+        if redis_client is not None:
+            redis_client.delete(self._redis_key(session_id))
 
     @property
     def active_count(self) -> int:

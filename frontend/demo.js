@@ -36,11 +36,17 @@ function timestamp() {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
 }
 
+function _escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 function log(text, type = "info") {
   const body = $("#console-log");
   const entry = document.createElement("div");
   entry.className = `console-entry ${type}`;
-  entry.innerHTML = `<span class="console-time">${timestamp()}</span><span class="console-text">${text}</span>`;
+  entry.innerHTML = `<span class="console-time">${timestamp()}</span><span class="console-text">${_escapeHtml(text)}</span>`;
   body.appendChild(entry);
   body.scrollTop = body.scrollHeight;
 }
@@ -71,15 +77,15 @@ async function loadBlueprints() {
 
     data.blueprints.forEach((bp) => {
       const icon = bp.tags.reduce((acc, t) => acc || iconMap[t], null) || "🌐";
-      const tags = bp.tags.map((t) => `<span class="inst-tag">${t}</span>`).join("");
+      const tags = bp.tags.map((t) => `<span class="inst-tag">${_escapeHtml(t)}</span>`).join("");
 
       const item = document.createElement("div");
       item.className = "institution-item";
       item.innerHTML = `
-        <span class="inst-icon">${icon}</span>
+        <span class="inst-icon">${_escapeHtml(icon)}</span>
         <div class="inst-info">
-          <div class="inst-name">${bp.name}</div>
-          <div class="inst-domain">${bp.domain}</div>
+          <div class="inst-name">${_escapeHtml(bp.name)}</div>
+          <div class="inst-domain">${_escapeHtml(bp.domain)}</div>
           <div class="inst-tags">${tags}${bp.has_mfa ? '<span class="inst-tag" style="background:#f59e0b22;color:#f59e0b;">MFA</span>' : ""}</div>
         </div>
         <span class="inst-arrow">›</span>
@@ -89,7 +95,7 @@ async function loadBlueprints() {
     });
   } catch (err) {
     log(`Failed to load blueprints: ${err.message}`, "error");
-    list.innerHTML = `<div class="institution-item"><span class="inst-icon">❌</span><div class="inst-info"><div class="inst-name">Error loading providers</div><div class="inst-domain">${err.message}</div></div></div>`;
+    list.innerHTML = `<div class="institution-item"><span class="inst-icon">\u274C</span><div class="inst-info"><div class="inst-name">Error loading providers</div><div class="inst-domain">${_escapeHtml(err.message)}</div></div></div>`;
   }
 }
 
@@ -129,7 +135,19 @@ function setupCredentialsForm() {
     const username = $("#demo-username").value.trim();
     const password = $("#demo-password").value.trim();
 
-    if (!username || !password) {
+    // Clear previous errors
+    clearFieldErrors();
+
+    let hasError = false;
+    if (!username) {
+      showFieldError("demo-username", "Username is required");
+      hasError = true;
+    }
+    if (!password) {
+      showFieldError("demo-password", "Password is required");
+      hasError = true;
+    }
+    if (hasError) {
       log("Please enter both username and password", "error");
       return;
     }
@@ -373,6 +391,18 @@ function showResults(data) {
 function setText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value;
+}
+
+function showFieldError(inputId, message) {
+  const input = document.getElementById(inputId);
+  const errorSpan = document.getElementById(inputId + "-error");
+  if (input) input.classList.add("input-error");
+  if (errorSpan) errorSpan.textContent = message;
+}
+
+function clearFieldErrors() {
+  document.querySelectorAll(".field-error").forEach((el) => (el.textContent = ""));
+  document.querySelectorAll(".input-error").forEach((el) => el.classList.remove("input-error"));
 }
 
 // ── Toggles & Reset ─────────────────────────────────────────────────────────

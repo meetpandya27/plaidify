@@ -37,12 +37,7 @@ async def get_audit_logs(
         query = query.filter(AuditLog.event_type == event_type)
 
     total = query.count()
-    entries = (
-        query.order_by(AuditLog.id.desc())
-        .offset(offset)
-        .limit(min(limit, 500))
-        .all()
-    )
+    entries = query.order_by(AuditLog.id.desc()).offset(offset).limit(min(limit, 500)).all()
 
     return {
         "total": total,
@@ -56,9 +51,7 @@ async def get_audit_logs(
                 "resource": e.resource,
                 "action": e.action,
                 "agent_id": e.agent_id,
-                "metadata": (
-                    json.loads(e.metadata_json) if e.metadata_json else None
-                ),
+                "metadata": (json.loads(e.metadata_json) if e.metadata_json else None),
                 "ip_address": e.ip_address,
                 "timestamp": e.timestamp.isoformat(),
                 "entry_hash": e.entry_hash,

@@ -5,15 +5,17 @@ Uses SQLAlchemy for ORM and AES-256-GCM for symmetric credential encryption.
 All configuration is loaded from the Settings object — no hardcoded secrets.
 """
 
-import os
 import base64
-
-from sqlalchemy import create_engine, Column, String, Text, Integer, Boolean, ForeignKey, DateTime
-from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.fernet import Fernet
+import os
+import time as _time
+from collections.abc import Generator
 from datetime import datetime, timezone
-from typing import Generator
+
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import event as _sa_event
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from src.config import get_settings
 from src.logging_config import get_logger
@@ -29,24 +31,21 @@ _GCM_NONCE_BYTES = 12  # 96-bit nonce, NIST recommended for GCM
 def _get_encryption_key() -> bytes:
     """Decode the base64-encoded 256-bit encryption key."""
     raw = settings.encryption_key
-    key_bytes = base64.urlsafe_b64decode(
-        raw.encode("ascii") if isinstance(raw, str) else raw
-    )
+    key_bytes = base64.urlsafe_b64decode(raw.encode("ascii") if isinstance(raw, str) else raw)
     if len(key_bytes) not in (32, 44):
         # 32 bytes = raw AES-256 key; 44 bytes = Fernet key (we extract first 16 + last 16)
-        raise ValueError(
-            f"ENCRYPTION_KEY must decode to 32 bytes (AES-256). Got {len(key_bytes)} bytes."
-        )
+        raise ValueError(f"ENCRYPTION_KEY must decode to 32 bytes (AES-256). Got {len(key_bytes)} bytes.")
     if len(key_bytes) == 44:
-        # Legacy Fernet key: 16-byte signing key + 16-byte encryption key  (AES-128)
-        # In legacy-compat mode we'll use Fernet directly for decrypt; for new
-        # encryptions we still need 32 bytes, so double the encryption half.
-        # NOTE: Operators should rotate to a proper 256-bit key.
-        logger.warning(
-            "Detected legacy Fernet-format ENCRYPTION_KEY. "
-            "Generate a new 256-bit key: python -c \"import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())\""
+        # Legacy Fernet key: 16-byte signing key + 16-byte encryption key (AES-128).
+        # Reject: the old doubling hack only provided 128-bit effective strength.
+        # Operators must rotate to a proper 256-bit key.
+        raise ValueError(
+            "Detected legacy Fernet-format ENCRYPTION_KEY (44 bytes). "
+            "This key format is no longer supported — it only provides 128-bit "
+            "effective strength. Generate a new 256-bit key: "
+            'python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" '
+            "and re-encrypt existing data with the key rotation procedure."
         )
-        key_bytes = key_bytes[16:32] * 2  # 16 → 32 bytes (temporary compat)
     return key_bytes
 
 
@@ -97,6 +96,7 @@ decrypt_password = decrypt_credential
 
 # ── Envelope Encryption (per-user DEK) ────────────────────────────────────────
 
+
 def generate_dek() -> bytes:
     """Generate a random 256-bit Data Encryption Key."""
     return os.urandom(32)
@@ -140,7 +140,7 @@ def create_user_dek() -> str:
     return wrap_dek(dek)
 
 
-def encrypt_credential_for_user(user: 'User', plaintext: str) -> str:
+def encrypt_credential_for_user(user: "User", plaintext: str) -> str:
     """Encrypt a credential using the user's per-user DEK.
 
     Falls back to the global master key if the user has no DEK yet
@@ -156,7 +156,7 @@ def encrypt_credential_for_user(user: 'User', plaintext: str) -> str:
     return encrypt_credential(plaintext)
 
 
-def decrypt_credential_for_user(user: 'User', ciphertext: str) -> str:
+def decrypt_credential_for_user(user: "User", ciphertext: str) -> str:
     """Decrypt a credential using the user's per-user DEK.
 
     Falls back to master-key decryption for data encrypted before
@@ -176,7 +176,7 @@ def decrypt_credential_for_user(user: 'User', ciphertext: str) -> str:
     return decrypt_credential(ciphertext)
 
 
-def ensure_user_dek(user: 'User', db: 'Session') -> None:
+def ensure_user_dek(user: "User", db: "Session") -> None:
     """Ensure a user has a DEK. Creates one if missing (lazy migration)."""
     if not user.encrypted_dek:
         user.encrypted_dek = create_user_dek()
@@ -184,7 +184,7 @@ def ensure_user_dek(user: 'User', db: 'Session') -> None:
         logger.info("Generated DEK for user", extra={"extra_data": {"user_id": user.id}})
 
 
-def rotate_master_key(old_key: str, new_key: str, db: 'Session') -> int:
+def rotate_master_key(old_key: str, new_key: str, db: "Session") -> int:
     """Re-wrap all user DEKs with a new master key.
 
     This does NOT re-encrypt any data — it only re-wraps the DEK envelopes.
@@ -228,7 +228,7 @@ def get_current_key_version() -> int:
     return settings.encryption_key_version
 
 
-def re_encrypt_tokens(db: 'Session', batch_size: int = 100) -> int:
+def re_encrypt_tokens(db: "Session", batch_size: int = 100) -> int:
     """Re-encrypt AccessToken credentials that are on an older key_version.
 
     This is the background job that should be run after a master-key rotation.
@@ -244,12 +244,7 @@ def re_encrypt_tokens(db: 'Session', batch_size: int = 100) -> int:
         Number of tokens re-encrypted.
     """
     current_version = get_current_key_version()
-    tokens = (
-        db.query(AccessToken)
-        .filter(AccessToken.key_version < current_version)
-        .limit(batch_size)
-        .all()
-    )
+    tokens = db.query(AccessToken).filter(AccessToken.key_version < current_version).limit(batch_size).all()
     count = 0
     for token in tokens:
         user = db.query(User).filter(User.id == token.user_id).first()
@@ -277,6 +272,7 @@ def re_encrypt_tokens(db: 'Session', batch_size: int = 100) -> int:
     logger.info(f"Re-encrypted {count} access token(s) to key_version={current_version}")
     return count
 
+
 # ── SQLAlchemy Setup ──────────────────────────────────────────────────────────
 
 _engine_kwargs: dict = {
@@ -286,25 +282,90 @@ _engine_kwargs: dict = {
 
 # SQLite doesn't support connection pooling options
 if not settings.database_url.startswith("sqlite"):
-    _engine_kwargs.update({
-        "pool_size": settings.db_pool_size,
-        "max_overflow": settings.db_max_overflow,
-        "pool_recycle": settings.db_pool_recycle,
-    })
+    _engine_kwargs.update(
+        {
+            "pool_size": settings.db_pool_size,
+            "max_overflow": settings.db_max_overflow,
+            "pool_recycle": settings.db_pool_recycle,
+        }
+    )
 
 engine = create_engine(settings.database_url, **_engine_kwargs)
+
+# ── Slow Query Logging ────────────────────────────────────────────────────────
+
+_SLOW_QUERY_THRESHOLD = 1.0  # seconds
+
+
+@_sa_event.listens_for(engine, "before_cursor_execute")
+def _before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    conn.info.setdefault("query_start_time", []).append(_time.monotonic())
+
+
+@_sa_event.listens_for(engine, "after_cursor_execute")
+def _after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    total = _time.monotonic() - conn.info["query_start_time"].pop(-1)
+    if total >= _SLOW_QUERY_THRESHOLD:
+        logger.warning(
+            "Slow query detected",
+            extra={
+                "extra_data": {
+                    "duration_seconds": round(total, 3),
+                    "statement": statement[:200],
+                }
+            },
+        )
+
+
+# ── DB Pool Metrics (Prometheus) ──────────────────────────────────────────────
+
+try:
+    from prometheus_client import Gauge as _Gauge
+
+    _db_pool_size = _Gauge("plaidify_db_pool_size", "Database connection pool size")
+    _db_pool_checked_in = _Gauge("plaidify_db_pool_checked_in", "Database connections available in pool")
+    _db_pool_checked_out = _Gauge("plaidify_db_pool_checked_out", "Database connections currently in use")
+    _db_pool_overflow = _Gauge("plaidify_db_pool_overflow", "Database connection pool overflow count")
+
+    @_sa_event.listens_for(engine, "checkout")
+    def _on_checkout(dbapi_conn, connection_record, connection_proxy):
+        pool = engine.pool
+        _db_pool_size.set(pool.size())
+        _db_pool_checked_out.set(pool.checkedout())
+        _db_pool_checked_in.set(pool.checkedin())
+        _db_pool_overflow.set(pool.overflow())
+
+    @_sa_event.listens_for(engine, "checkin")
+    def _on_checkin(dbapi_conn, connection_record):
+        pool = engine.pool
+        _db_pool_checked_out.set(pool.checkedout())
+        _db_pool_checked_in.set(pool.checkedin())
+        _db_pool_overflow.set(pool.overflow())
+
+    logger.info("Database pool metrics enabled")
+except ImportError:
+    pass  # prometheus_client not installed
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 class Base(DeclarativeBase):
     """Declarative base class for all ORM models."""
+
     pass
 
 
 def init_db() -> None:
-    """Create all database tables. Use Alembic migrations in production."""
-    logger.info("Initializing database tables")
+    """Initialise the database.
+
+    In **production** the schema is managed exclusively by Alembic migrations,
+    so ``create_all`` is skipped.  In development / testing it is still called
+    for convenience.
+    """
+    if settings.env == "production":
+        logger.info("Production mode — skipping create_all (use Alembic migrations)")
+        return
+    logger.info("Initializing database tables (dev/test mode)")
     Base.metadata.create_all(bind=engine)
 
 
@@ -335,6 +396,25 @@ class User(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     # Envelope encryption: per-user DEK wrapped by master key (base64url)
     encrypted_dek = Column(Text, nullable=True)
+    # Account lockout
+    failed_login_count = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime, nullable=True)
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class PasswordResetToken(Base):
+    """A one-time token for password reset."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String, unique=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class Link(Base):
@@ -344,7 +424,7 @@ class Link(Base):
 
     link_token = Column(String, primary_key=True, index=True)
     site = Column(String, nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -354,14 +434,17 @@ class AccessToken(Base):
     __tablename__ = "access_tokens"
 
     token = Column(String, primary_key=True, index=True)
-    link_token = Column(String, ForeignKey("links.link_token"), nullable=False)
+    link_token = Column(String, ForeignKey("links.link_token", ondelete="CASCADE"), nullable=False)
     username_encrypted = Column(Text, nullable=False)
     password_encrypted = Column(Text, nullable=False)
     instructions = Column(Text, nullable=True)
     scopes = Column(Text, nullable=True)  # JSON list of allowed field/scope strings; NULL = all
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     key_version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
 
 
 class RefreshToken(Base):
@@ -371,7 +454,7 @@ class RefreshToken(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     token = Column(String, unique=True, index=True, nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     expires_at = Column(DateTime, nullable=False)
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -386,7 +469,7 @@ class Webhook(Base):
     link_token = Column(String, nullable=False, index=True)
     url = Column(Text, nullable=False)
     secret = Column(Text, nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -401,8 +484,8 @@ class PublicToken(Base):
 
     token = Column(String, primary_key=True, index=True)
     link_token = Column(String, nullable=False)
-    access_token = Column(String, ForeignKey("access_tokens.token"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    access_token = Column(String, ForeignKey("access_tokens.token", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     exchanged = Column(Boolean, default=False)
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -418,10 +501,13 @@ class ConsentRequest(Base):
     agent_description = Column(Text, nullable=True)
     scopes = Column(Text, nullable=False)  # JSON array of scope strings e.g. ["read:current_bill"]
     duration_seconds = Column(Integer, nullable=False, default=3600)
-    access_token = Column(String, ForeignKey("access_tokens.token"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    access_token = Column(String, ForeignKey("access_tokens.token", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     status = Column(String, nullable=False, default="pending")  # pending, approved, denied, expired
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
 
 
 class ConsentGrant(Base):
@@ -430,10 +516,12 @@ class ConsentGrant(Base):
     __tablename__ = "consent_grants"
 
     token = Column(String, primary_key=True, index=True)
-    consent_request_id = Column(String, ForeignKey("consent_requests.id"), nullable=False)
+    consent_request_id = Column(
+        String, ForeignKey("consent_requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     scopes = Column(Text, nullable=False)  # JSON array — copied from request on approval
-    access_token = Column(String, ForeignKey("access_tokens.token"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    access_token = Column(String, ForeignKey("access_tokens.token", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     expires_at = Column(DateTime, nullable=False)
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -464,10 +552,11 @@ class BlueprintRecord(Base):
     blueprint_json = Column(Text, nullable=False)  # Full blueprint JSON
     extract_fields = Column(Text, nullable=True)  # JSON array of field names
     downloads = Column(Integer, default=0)
-    published_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    published_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
-                        onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
 
 
 class AuditLog(Base):
@@ -505,7 +594,7 @@ class ApiKey(Base):
     name = Column(String, nullable=False)
     key_hash = Column(String(64), unique=True, nullable=False, index=True)  # SHA-256 hex
     key_prefix = Column(String(12), nullable=False)  # First 8 chars of key for identification
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     scopes = Column(Text, nullable=True)  # JSON array of scope strings; NULL = all
     is_active = Column(Boolean, default=True, nullable=False)
     expires_at = Column(DateTime, nullable=True)  # NULL = never expires
@@ -529,14 +618,37 @@ class Agent(Base):
     id = Column(String, primary_key=True, index=True)  # agent-uuid
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=True)  # Linked API key
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    api_key_id = Column(String, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True)  # Linked API key
     allowed_scopes = Column(Text, nullable=True)  # JSON array of scope strings; NULL = all
     allowed_sites = Column(Text, nullable=True)  # JSON array of site identifiers; NULL = all
     rate_limit = Column(String, nullable=True)  # e.g. "30/minute"
     is_active = Column(Boolean, default=True, nullable=False)
     last_active_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class AccessJob(Base):
+    """A tracked site-access execution with per-scope concurrency control."""
+
+    __tablename__ = "access_jobs"
+
+    id = Column(String, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    site = Column(String, nullable=False, index=True)
+    job_type = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="pending", index=True)
+    lock_scope = Column(String, nullable=False, index=True)
+    session_id = Column(String, nullable=True, index=True)
+    metadata_json = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
 
 
 class ScheduledRefreshJob(Base):
@@ -547,8 +659,8 @@ class ScheduledRefreshJob(Base):
 
     __tablename__ = "scheduled_refresh_jobs"
 
-    access_token = Column(String, ForeignKey("access_tokens.token"), primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    access_token = Column(String, ForeignKey("access_tokens.token", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     interval_seconds = Column(Integer, nullable=False, default=3600)
     enabled = Column(Boolean, default=True, nullable=False)
     last_refreshed = Column(DateTime, nullable=True)

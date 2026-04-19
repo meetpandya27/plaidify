@@ -11,6 +11,8 @@ export {
   ServerError,
 } from "./errors";
 export type {
+  AccessJob,
+  AccessJobListResult,
   PlaidifyConfig,
   HealthStatus,
   BlueprintInfo,

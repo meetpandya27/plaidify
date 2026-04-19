@@ -5,9 +5,10 @@ All configuration is loaded from environment variables via Pydantic Settings.
 No hardcoded secrets — the app will fail fast if required secrets are not set.
 """
 
-from pydantic_settings import BaseSettings
-from pydantic import Field, field_validator
 from typing import Optional
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
     encryption_key: str = Field(
         ...,  # Required — no default
         description="Base64url-encoded 256-bit key for AES-256-GCM credential encryption. "
-        "Generate with: python -c \"import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())\"",
+        'Generate with: python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"',
     )
     encryption_key_version: int = Field(
         default=1,
@@ -49,8 +50,7 @@ class Settings(BaseSettings):
     # ── JWT / Auth ────────────────────────────────────────────
     jwt_secret_key: str = Field(
         ...,  # Required — no default
-        description="Secret key for signing JWT tokens. "
-        "Generate with: openssl rand -hex 32",
+        description="Secret key for signing JWT tokens. Generate with: openssl rand -hex 32",
     )
     jwt_algorithm: str = Field(default="HS256", description="JWT signing algorithm.")
     jwt_access_token_expire_minutes: int = Field(
@@ -64,16 +64,14 @@ class Settings(BaseSettings):
 
     # ── Server ────────────────────────────────────────────────
     app_name: str = Field(default="Plaidify", description="Application name.")
-    app_version: str = Field(default="0.3.0a1", description="Application version.")
+    app_version: str = Field(default="0.3.0b1", description="Application version.")
     env: str = Field(
         default="development",
         description="Environment: 'development', 'staging', or 'production'.",
     )
     debug: bool = Field(default=False, description="Enable debug mode.")
     log_level: str = Field(default="INFO", description="Logging level.")
-    log_format: str = Field(
-        default="json", description="Logging format: 'json' or 'text'."
-    )
+    log_format: str = Field(default="json", description="Logging format: 'json' or 'text'.")
     cors_origins: str = Field(
         default="http://localhost:3000,http://localhost:8000,http://localhost:8080",
         description="Comma-separated list of allowed CORS origins. Must be explicit in production.",
@@ -81,6 +79,16 @@ class Settings(BaseSettings):
     enforce_https: bool = Field(
         default=False,
         description="Redirect HTTP to HTTPS and add HSTS header. Auto-enabled in production.",
+    )
+
+    # ── Observability ───────────────────────────────────────────
+    sentry_dsn: Optional[str] = Field(
+        default=None,
+        description="Sentry DSN for error tracking. Leave unset to disable.",
+    )
+    otel_endpoint: Optional[str] = Field(
+        default=None,
+        description="OpenTelemetry OTLP endpoint (e.g. http://localhost:4317). Leave unset to disable.",
     )
 
     # ── Connectors ────────────────────────────────────────────
@@ -113,6 +121,36 @@ class Settings(BaseSettings):
         description="Redis URL for shared state (RSA keys, rate limiting). Example: redis://localhost:6379/0",
     )
 
+    # ── Access Job Execution ─────────────────────────────────
+    access_job_execution_mode: str = Field(
+        default="inprocess",
+        description="How detached access jobs run: 'inprocess' or 'redis-worker'.",
+    )
+    access_job_stream_key: str = Field(
+        default="plaidify:access_jobs:stream",
+        description="Redis stream used to dispatch detached access jobs.",
+    )
+    access_job_consumer_group: str = Field(
+        default="plaidify-access-jobs",
+        description="Redis consumer group name for access job workers.",
+    )
+    access_job_payload_ttl: int = Field(
+        default=3600,
+        description="Seconds to retain encrypted access job dispatch payloads in Redis.",
+    )
+    access_job_reclaim_idle_ms: int = Field(
+        default=30000,
+        description="Milliseconds before a worker may reclaim an unacked access job stream message.",
+    )
+    access_job_worker_block_ms: int = Field(
+        default=5000,
+        description="Milliseconds workers block waiting for the next access job.",
+    )
+    access_job_worker_concurrency: int = Field(
+        default=2,
+        description="Number of concurrent access job consumers in a worker process.",
+    )
+
     # ── Browser Engine ────────────────────────────────────────
     browser_headless: bool = Field(
         default=True,
@@ -141,6 +179,18 @@ class Settings(BaseSettings):
     browser_stealth: bool = Field(
         default=True,
         description="Enable anti-detection measures (randomized viewport, user-agent).",
+    )
+    strict_read_only_mode: bool = Field(
+        default=True,
+        description="Enforce strict post-auth read-only restrictions for all browser-driven blueprints.",
+    )
+    browser_allow_read_downloads: bool = Field(
+        default=True,
+        description="Allow downloads during the post-auth read phase and capture them as temporary browser artifacts.",
+    )
+    browser_download_root: str = Field(
+        default="/tmp/plaidify-downloads",
+        description="Root directory for temporary browser download artifacts.",
     )
 
     # ── LLM Extraction ────────────────────────────────────────
@@ -197,6 +247,14 @@ class Settings(BaseSettings):
             raise ValueError("env must be 'development', 'staging', or 'production'")
         return v
 
+    @field_validator("access_job_execution_mode")
+    @classmethod
+    def validate_access_job_execution_mode(cls, v: str) -> str:
+        v = v.lower().strip()
+        if v not in ("inprocess", "redis-worker"):
+            raise ValueError("access_job_execution_mode must be 'inprocess' or 'redis-worker'")
+        return v
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -212,6 +270,40 @@ class Settings(BaseSettings):
         v = v.lower()
         if v not in ("json", "text"):
             raise ValueError("log_format must be 'json' or 'text'")
+        return v
+
+    # ── Health Check ─────────────────────────────────────────────
+    health_check_token: Optional[str] = Field(
+        default=None,
+        description="Bearer token required for /health/detailed. If unset, detailed health is unrestricted.",
+    )
+
+    # ── Audit Retention ───────────────────────────────────────────
+    audit_retention_days: int = Field(
+        default=730,
+        description="Number of days to retain audit log entries. Older entries are archived/deleted.",
+    )
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, v: str, info) -> str:
+        env = info.data.get("env", "development")
+        if env == "production" and v.startswith("sqlite"):
+            raise ValueError(
+                "SQLite is not supported in production. Set DATABASE_URL to a PostgreSQL connection string."
+            )
+        return v
+
+    @field_validator("cors_origins")
+    @classmethod
+    def validate_cors_origins(cls, v: str, info) -> str:
+        env = info.data.get("env", "development")
+        origins = [o.strip() for o in v.split(",") if o.strip()]
+        if env == "production" and "*" in origins:
+            raise ValueError(
+                "CORS wildcard (*) is not allowed in production. "
+                "Set CORS_ORIGINS to specific origins (e.g. 'https://app.example.com')."
+            )
         return v
 
     model_config = {
@@ -267,7 +359,7 @@ def get_settings() -> Settings:
             file=sys.stderr,
         )
         print(
-            "║    \"import base64,os;                                       ║",
+            '║    "import base64,os;                                       ║',
             file=sys.stderr,
         )
         print(

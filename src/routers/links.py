@@ -6,12 +6,14 @@ fetch_data, link/token CRUD, public token exchange.
 import base64
 import json as json_mod
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from src import session_store
+from src.access_jobs import run_access_job
 from src.audit import record_audit_event
 from src.config import get_settings
 from src.core.engine import connect_to_site
@@ -22,14 +24,19 @@ from src.database import (
     Link,
     PublicToken,
     User,
-    encrypt_credential_for_user,
     decrypt_credential_for_user,
+    encrypt_credential_for_user,
     get_current_key_version,
     get_db,
 )
-from src.dependencies import get_current_user, get_current_user_or_api_key
+from src.dependencies import (
+    constrain_requested_scopes,
+    ensure_site_allowed_for_request,
+    get_current_user,
+    get_current_user_or_api_key,
+    get_principal_allowed_scopes,
+)
 from src.logging_config import get_logger
-from src import session_store
 
 settings = get_settings()
 logger = get_logger("api.links")
@@ -63,6 +70,9 @@ async def create_link(
     except Exception:
         pass  # No body or non-JSON body is fine
 
+    ensure_site_allowed_for_request(request, site)
+    effective_scopes = constrain_requested_scopes(request, scopes)
+
     link_token = str(uuid.uuid4())
     new_link = Link(link_token=link_token, site=site, user_id=user.id)
     db.add(new_link)
@@ -71,13 +81,11 @@ async def create_link(
     # Generate ephemeral RSA keypair for client-side encryption
     public_key_pem = generate_keypair(link_token)
 
-    logger.info(
-        "Link created", extra={"extra_data": {"site": site, "user_id": user.id}}
-    )
+    logger.info("Link created", extra={"extra_data": {"site": site, "user_id": user.id}})
     result = {"link_token": link_token, "public_key": public_key_pem}
-    if scopes is not None:
-        session_store.set_link_scopes(link_token, json_mod.dumps(scopes))
-        result["scopes"] = scopes
+    if effective_scopes is not None:
+        session_store.set_link_scopes(link_token, json_mod.dumps(effective_scopes))
+        result["scopes"] = effective_scopes
     return result
 
 
@@ -97,21 +105,15 @@ async def submit_credentials(
     Step 2 of the multi-step flow. Credentials are encrypted at rest.
     Accepts plaintext or RSA-OAEP encrypted credentials.
     """
-    existing_link = (
-        db.query(Link).filter_by(link_token=link_token, user_id=user.id).first()
-    )
+    existing_link = db.query(Link).filter_by(link_token=link_token, user_id=user.id).first()
     if not existing_link:
         raise HTTPException(status_code=404, detail="Invalid link token.")
 
     # Resolve credentials — encrypted takes precedence
     if encrypted_username and encrypted_password:
         try:
-            plain_user = decrypt_with_session_key(
-                link_token, base64.b64decode(encrypted_username)
-            )
-            plain_pass = decrypt_with_session_key(
-                link_token, base64.b64decode(encrypted_password)
-            )
+            plain_user = decrypt_with_session_key(link_token, base64.b64decode(encrypted_username))
+            plain_pass = decrypt_with_session_key(link_token, base64.b64decode(encrypted_password))
             destroy_session_key(link_token)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -167,11 +169,7 @@ async def submit_instructions(
     db: Session = Depends(get_db),
 ):
     """Store processing instructions for an access token."""
-    token_record = (
-        db.query(AccessToken)
-        .filter_by(token=access_token, user_id=user.id)
-        .first()
-    )
+    token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user.id).first()
     if not token_record:
         raise HTTPException(status_code=401, detail="Invalid access token.")
     token_record.instructions = instructions
@@ -181,6 +179,7 @@ async def submit_instructions(
 
 @router.get("/fetch_data")
 async def fetch_data(
+    request: Request,
     access_token: str,
     consent_token: Optional[str] = None,
     user: User = Depends(get_current_user_or_api_key),
@@ -195,43 +194,29 @@ async def fetch_data(
     If a consent_token is provided, the returned data is filtered to only the
     scopes granted by that consent.
     """
-    token_record = (
-        db.query(AccessToken)
-        .filter_by(token=access_token, user_id=user.id)
-        .first()
-    )
+    token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user.id).first()
     if not token_record:
         raise HTTPException(status_code=401, detail="Invalid access token.")
 
-    site = (
-        db.query(Link)
-        .filter_by(link_token=token_record.link_token, user_id=user.id)
-        .first()
-    )
+    site = db.query(Link).filter_by(link_token=token_record.link_token, user_id=user.id).first()
     if not site:
         raise HTTPException(status_code=401, detail="Linked data not found.")
+
+    auth_context = ensure_site_allowed_for_request(request, site.site)
 
     # Validate consent token if provided
     allowed_fields = None
     if consent_token:
-        grant = (
-            db.query(ConsentGrant)
-            .filter_by(token=consent_token, user_id=user.id)
-            .first()
-        )
+        grant = db.query(ConsentGrant).filter_by(token=consent_token, user_id=user.id).first()
         if not grant:
             raise HTTPException(status_code=401, detail="Invalid consent token.")
         if grant.revoked:
-            raise HTTPException(
-                status_code=403, detail="Consent has been revoked."
-            )
+            raise HTTPException(status_code=403, detail="Consent has been revoked.")
         grant_expires = grant.expires_at
         if grant_expires.tzinfo is None:
             grant_expires = grant_expires.replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) > grant_expires:
-            raise HTTPException(
-                status_code=403, detail="Consent token has expired."
-            )
+            raise HTTPException(status_code=403, detail="Consent token has expired.")
         if grant.access_token != access_token:
             raise HTTPException(
                 status_code=403,
@@ -263,19 +248,45 @@ async def fetch_data(
     elif token_allowed is not None:
         allowed_fields = token_allowed
 
+    principal_allowed = get_principal_allowed_scopes(request)
+    if principal_allowed is not None and allowed_fields is not None:
+        allowed_fields = allowed_fields & principal_allowed
+    elif principal_allowed is not None:
+        allowed_fields = set(principal_allowed)
+
     username = decrypt_credential_for_user(user, token_record.username_encrypted)
     password = decrypt_credential_for_user(user, token_record.password_encrypted)
     user_instructions = token_record.instructions
 
-    response_data = await connect_to_site(site.site, username, password)
+    job, response_data = await run_access_job(
+        db,
+        site=site.site,
+        job_type="fetch_data",
+        executor=connect_to_site,
+        executor_kwargs={
+            "site": site.site,
+            "username": username,
+            "password": password,
+            "extract_fields": sorted(allowed_fields) if allowed_fields is not None else None,
+        },
+        user_id=user.id,
+        metadata={
+            "access_token_prefix": access_token[:12],
+            "auth_method": auth_context.auth_method if auth_context else "jwt",
+            "agent_id": auth_context.agent_id if auth_context else None,
+            "api_key_id": auth_context.api_key_id if auth_context else None,
+            "consent_token_provided": consent_token is not None,
+            "extract_fields": sorted(allowed_fields) if allowed_fields is not None else [],
+            "instructions_present": bool(user_instructions),
+        },
+    )
+    response_data["job_id"] = job.id
     if user_instructions:
         response_data["instructions_applied"] = user_instructions
 
     # Filter data by scopes if applicable (consent + access token)
     if allowed_fields is not None and "data" in response_data:
-        response_data["data"] = {
-            k: v for k, v in response_data["data"].items() if k in allowed_fields
-        }
+        response_data["data"] = {k: v for k, v in response_data["data"].items() if k in allowed_fields}
         response_data["scopes_applied"] = sorted(allowed_fields)
 
     record_audit_event(
@@ -294,12 +305,10 @@ async def fetch_data(
 
 
 @router.get("/links")
-async def list_links(
-    user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+async def list_links(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all links for the current user."""
     links = db.query(Link).filter_by(user_id=user.id).all()
-    return [{"link_token": l.link_token, "site": l.site} for l in links]
+    return [{"link_token": link.link_token, "site": link.site} for link in links]
 
 
 @router.delete("/links/{link_token}")
@@ -309,14 +318,10 @@ async def delete_link(
     db: Session = Depends(get_db),
 ):
     """Delete a link and all its associated access tokens."""
-    link = (
-        db.query(Link).filter_by(link_token=link_token, user_id=user.id).first()
-    )
+    link = db.query(Link).filter_by(link_token=link_token, user_id=user.id).first()
     if not link:
         raise HTTPException(status_code=404, detail="Link not found.")
-    db.query(AccessToken).filter_by(
-        link_token=link_token, user_id=user.id
-    ).delete()
+    db.query(AccessToken).filter_by(link_token=link_token, user_id=user.id).delete()
     db.delete(link)
     db.commit()
     record_audit_event(
@@ -331,9 +336,7 @@ async def delete_link(
 
 
 @router.get("/tokens")
-async def list_tokens(
-    user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+async def list_tokens(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all access tokens for the current user."""
     tokens = db.query(AccessToken).filter_by(user_id=user.id).all()
     return [{"token": t.token, "link_token": t.link_token} for t in tokens]
@@ -346,9 +349,7 @@ async def delete_token(
     db: Session = Depends(get_db),
 ):
     """Delete a specific access token."""
-    token_obj = (
-        db.query(AccessToken).filter_by(token=token, user_id=user.id).first()
-    )
+    token_obj = db.query(AccessToken).filter_by(token=token, user_id=user.id).first()
     if not token_obj:
         raise HTTPException(status_code=404, detail="Token not found.")
     db.delete(token_obj)
@@ -382,18 +383,10 @@ async def exchange_public_token(
     if not pt:
         raise HTTPException(status_code=404, detail="Invalid public_token.")
     if pt.user_id != user.id:
-        raise HTTPException(
-            status_code=403, detail="Not authorized to exchange this token."
-        )
+        raise HTTPException(status_code=403, detail="Not authorized to exchange this token.")
     if pt.exchanged:
-        raise HTTPException(
-            status_code=410, detail="public_token has already been exchanged."
-        )
-    expires_at = (
-        pt.expires_at.replace(tzinfo=timezone.utc)
-        if pt.expires_at.tzinfo is None
-        else pt.expires_at
-    )
+        raise HTTPException(status_code=410, detail="public_token has already been exchanged.")
+    expires_at = pt.expires_at.replace(tzinfo=timezone.utc) if pt.expires_at.tzinfo is None else pt.expires_at
     if datetime.now(timezone.utc) > expires_at:
         raise HTTPException(status_code=410, detail="public_token has expired.")
 

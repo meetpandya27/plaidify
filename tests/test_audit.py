@@ -2,15 +2,10 @@
 Tests for tamper-evident audit logging with hash chains.
 """
 
-import hashlib
 import json
-
-import pytest
-from sqlalchemy.orm import Session
 
 from src.audit import _compute_hash, record_audit_event, verify_audit_chain
 from src.database import AuditLog
-
 
 # ── Hash chain core ──────────────────────────────────────────────────────────
 
@@ -18,6 +13,7 @@ from src.database import AuditLog
 class TestHashChain:
     def _get_test_db(self):
         from tests.conftest import TestSessionLocal
+
         return TestSessionLocal()
 
     def test_record_first_entry(self, client):
@@ -80,7 +76,10 @@ class TestHashChain:
         """Metadata dict should be stored as JSON string."""
         db = self._get_test_db()
         entry = record_audit_event(
-            db, "auth", "login", user_id=1,
+            db,
+            "auth",
+            "login",
+            user_id=1,
             metadata={"ip": "127.0.0.1", "browser": "test"},
         )
         parsed = json.loads(entry.metadata_json)
@@ -141,17 +140,18 @@ class TestAuditInstrumentation:
         """User registration should create an audit log entry."""
         from tests.conftest import TestSessionLocal
 
-        resp = client.post("/auth/register", json={
-            "username": "audit_user",
-            "email": "audit@test.com",
-            "password": "securepassword123",
-        })
+        resp = client.post(
+            "/auth/register",
+            json={
+                "username": "audit_user",
+                "email": "audit@test.com",
+                "password": "Secure@pass123",
+            },
+        )
         assert resp.status_code == 200
 
         db = TestSessionLocal()
-        entry = db.query(AuditLog).filter_by(
-            event_type="auth", action="register"
-        ).first()
+        entry = db.query(AuditLog).filter_by(event_type="auth", action="register").first()
         assert entry is not None
         meta = json.loads(entry.metadata_json)
         assert meta["username"] == "audit_user"
@@ -161,16 +161,17 @@ class TestAuditInstrumentation:
         """Successful login should create an audit log entry."""
         from tests.conftest import TestSessionLocal
 
-        resp = client.post("/auth/token", data={
-            "username": "testuser",
-            "password": "securepassword123",
-        })
+        resp = client.post(
+            "/auth/token",
+            data={
+                "username": "testuser",
+                "password": "Secure@pass123",
+            },
+        )
         assert resp.status_code == 200
 
         db = TestSessionLocal()
-        entry = db.query(AuditLog).filter_by(
-            event_type="auth", action="login"
-        ).first()
+        entry = db.query(AuditLog).filter_by(event_type="auth", action="login").first()
         assert entry is not None
         db.close()
 
@@ -178,16 +179,17 @@ class TestAuditInstrumentation:
         """Failed login should create an audit log entry."""
         from tests.conftest import TestSessionLocal
 
-        resp = client.post("/auth/token", data={
-            "username": "testuser",
-            "password": "wrongpassword",
-        })
+        resp = client.post(
+            "/auth/token",
+            data={
+                "username": "testuser",
+                "password": "wrongpassword",
+            },
+        )
         assert resp.status_code == 400
 
         db = TestSessionLocal()
-        entry = db.query(AuditLog).filter_by(
-            event_type="auth", action="login_failed"
-        ).first()
+        entry = db.query(AuditLog).filter_by(event_type="auth", action="login_failed").first()
         assert entry is not None
         db.close()
 
@@ -207,9 +209,7 @@ class TestAuditInstrumentation:
         assert resp.status_code == 200
 
         db = TestSessionLocal()
-        entry = db.query(AuditLog).filter_by(
-            event_type="token", action="create"
-        ).first()
+        entry = db.query(AuditLog).filter_by(event_type="token", action="create").first()
         assert entry is not None
         db.close()
 
@@ -231,9 +231,7 @@ class TestAuditInstrumentation:
         assert resp.status_code == 200
 
         db = TestSessionLocal()
-        entry = db.query(AuditLog).filter_by(
-            event_type="token", action="revoke"
-        ).first()
+        entry = db.query(AuditLog).filter_by(event_type="token", action="revoke").first()
         assert entry is not None
         db.close()
 
@@ -244,13 +242,17 @@ class TestAuditInstrumentation:
 class TestAuditAgentAndIP:
     def _get_test_db(self):
         from tests.conftest import TestSessionLocal
+
         return TestSessionLocal()
 
     def test_record_with_agent_id(self, client):
         """Audit entry should store agent_id."""
         db = self._get_test_db()
         entry = record_audit_event(
-            db, "data_access", "fetch", user_id=1,
+            db,
+            "data_access",
+            "fetch",
+            user_id=1,
             agent_id="agent-abc123",
         )
         assert entry.agent_id == "agent-abc123"
@@ -260,7 +262,10 @@ class TestAuditAgentAndIP:
         """Audit entry should store ip_address."""
         db = self._get_test_db()
         entry = record_audit_event(
-            db, "auth", "login", user_id=1,
+            db,
+            "auth",
+            "login",
+            user_id=1,
             ip_address="192.168.1.100",
         )
         assert entry.ip_address == "192.168.1.100"
@@ -283,8 +288,12 @@ class TestAuditAgentAndIP:
         db = self._get_test_db()
         record_audit_event(db, "auth", "login", user_id=1, ip_address="10.0.0.1")
         record_audit_event(
-            db, "data_access", "fetch", user_id=1,
-            agent_id="agent-x", ip_address="10.0.0.2",
+            db,
+            "data_access",
+            "fetch",
+            user_id=1,
+            agent_id="agent-x",
+            ip_address="10.0.0.2",
         )
         record_audit_event(db, "auth", "logout", user_id=1)
 
@@ -297,16 +306,17 @@ class TestAuditAgentAndIP:
         """Registration audit entry should include IP address."""
         from tests.conftest import TestSessionLocal
 
-        client.post("/auth/register", json={
-            "username": "ip_user",
-            "email": "ip@test.com",
-            "password": "securepassword123",
-        })
+        client.post(
+            "/auth/register",
+            json={
+                "username": "ip_user",
+                "email": "ip@test.com",
+                "password": "Secure@pass123",
+            },
+        )
 
         db = TestSessionLocal()
-        entry = db.query(AuditLog).filter_by(
-            event_type="auth", action="register"
-        ).first()
+        entry = db.query(AuditLog).filter_by(event_type="auth", action="register").first()
         assert entry is not None
         # TestClient uses "testclient" as host
         assert entry.ip_address is not None
@@ -318,8 +328,12 @@ class TestAuditAgentAndIP:
 
         db = TestSessionLocal()
         record_audit_event(
-            db, "data_access", "fetch", user_id=1,
-            agent_id="agent-test", ip_address="1.2.3.4",
+            db,
+            "data_access",
+            "fetch",
+            user_id=1,
+            agent_id="agent-test",
+            ip_address="1.2.3.4",
         )
         db.close()
 

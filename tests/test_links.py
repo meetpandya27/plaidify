@@ -20,11 +20,15 @@ class TestLinkTokenFlow:
         assert link_token
 
         # Step 2: Submit credentials
-        r2 = client.post("/submit_credentials", params={
-            "link_token": link_token,
-            "username": "demo_user",
-            "password": "secret123",
-        }, headers=auth_headers)
+        r2 = client.post(
+            "/submit_credentials",
+            params={
+                "link_token": link_token,
+                "username": "demo_user",
+                "password": "secret123",
+            },
+            headers=auth_headers,
+        )
         assert r2.status_code == 200
         access_token = r2.json()["access_token"]
         assert access_token
@@ -40,17 +44,25 @@ class TestLinkTokenFlow:
         assert response.status_code == 401
 
     def test_submit_credentials_invalid_link(self, client, auth_headers):
-        response = client.post("/submit_credentials", params={
-            "link_token": "nonexistent-token",
-            "username": "user",
-            "password": "pass",
-        }, headers=auth_headers)
+        response = client.post(
+            "/submit_credentials",
+            params={
+                "link_token": "nonexistent-token",
+                "username": "user",
+                "password": "pass",
+            },
+            headers=auth_headers,
+        )
         assert response.status_code == 404
 
     def test_fetch_data_invalid_token(self, client, auth_headers):
-        response = client.get("/fetch_data", params={
-            "access_token": "nonexistent-token",
-        }, headers=auth_headers)
+        response = client.get(
+            "/fetch_data",
+            params={
+                "access_token": "nonexistent-token",
+            },
+            headers=auth_headers,
+        )
         assert response.status_code == 401
 
 
@@ -63,18 +75,26 @@ class TestInstructions:
         r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
 
-        r2 = client.post("/submit_credentials", params={
-            "link_token": link_token,
-            "username": "demo_user",
-            "password": "secret123",
-        }, headers=auth_headers)
+        r2 = client.post(
+            "/submit_credentials",
+            params={
+                "link_token": link_token,
+                "username": "demo_user",
+                "password": "secret123",
+            },
+            headers=auth_headers,
+        )
         access_token = r2.json()["access_token"]
 
         # Submit instructions — this should work
-        r3 = client.post("/submit_instructions", params={
-            "access_token": access_token,
-            "instructions": "Extract only active accounts",
-        }, headers=auth_headers)
+        r3 = client.post(
+            "/submit_instructions",
+            params={
+                "access_token": access_token,
+                "instructions": "Extract only active accounts",
+            },
+            headers=auth_headers,
+        )
         assert r3.status_code == 200
 
         # Fetch data — mocked engine returns stub data
@@ -82,10 +102,14 @@ class TestInstructions:
         assert r4.status_code == 200
 
     def test_submit_instructions_invalid_token(self, client, auth_headers):
-        response = client.post("/submit_instructions", params={
-            "access_token": "invalid",
-            "instructions": "some instructions",
-        }, headers=auth_headers)
+        response = client.post(
+            "/submit_instructions",
+            params={
+                "access_token": "invalid",
+                "instructions": "some instructions",
+            },
+            headers=auth_headers,
+        )
         assert response.status_code == 401
 
 
@@ -101,7 +125,7 @@ class TestLinkManagement:
         assert response.status_code == 200
         links = response.json()
         assert len(links) == 2
-        sites = {l["site"] for l in links}
+        sites = {link["site"] for link in links}
         assert "demo_site" in sites
         assert "mock_site" in sites
 
@@ -125,11 +149,15 @@ class TestLinkManagement:
         # Create link and submit credentials
         r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
-        client.post("/submit_credentials", params={
-            "link_token": link_token,
-            "username": "user",
-            "password": "pass",
-        }, headers=auth_headers)
+        client.post(
+            "/submit_credentials",
+            params={
+                "link_token": link_token,
+                "username": "user",
+                "password": "pass",
+            },
+            headers=auth_headers,
+        )
 
         tokens = client.get("/tokens", headers=auth_headers).json()
         assert len(tokens) == 1
@@ -137,11 +165,15 @@ class TestLinkManagement:
     def test_delete_token(self, client, auth_headers):
         r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
-        r2 = client.post("/submit_credentials", params={
-            "link_token": link_token,
-            "username": "user",
-            "password": "pass",
-        }, headers=auth_headers)
+        r2 = client.post(
+            "/submit_credentials",
+            params={
+                "link_token": link_token,
+                "username": "user",
+                "password": "pass",
+            },
+            headers=auth_headers,
+        )
         access_token = r2.json()["access_token"]
 
         # Delete token
@@ -180,15 +212,23 @@ class TestUserIsolation:
         # User 1 creates full flow
         r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
-        r2 = client.post("/submit_credentials", params={
-            "link_token": link_token,
-            "username": "user",
-            "password": "pass",
-        }, headers=auth_headers)
+        r2 = client.post(
+            "/submit_credentials",
+            params={
+                "link_token": link_token,
+                "username": "user",
+                "password": "pass",
+            },
+            headers=auth_headers,
+        )
         access_token = r2.json()["access_token"]
 
         # User 2 tries to fetch user 1's data
-        response = client.get("/fetch_data", params={
-            "access_token": access_token,
-        }, headers=second_user_headers)
+        response = client.get(
+            "/fetch_data",
+            params={
+                "access_token": access_token,
+            },
+            headers=second_user_headers,
+        )
         assert response.status_code == 401

@@ -31,8 +31,7 @@ def _compute_hash(
 ) -> str:
     """Compute SHA-256 hash for an audit log entry."""
     payload = (
-        f"{event_type}|{user_id}|{agent_id}|{resource}|{action}"
-        f"|{metadata_json}|{ip_address}|{timestamp}|{prev_hash}"
+        f"{event_type}|{user_id}|{agent_id}|{resource}|{action}|{metadata_json}|{ip_address}|{timestamp}|{prev_hash}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -62,8 +61,15 @@ def record_audit_event(
     Returns:
         The created AuditLog entry.
     """
-    # Get the hash of the most recent entry for chain continuity
-    last_entry = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+    # Get the hash of the most recent entry for chain continuity.
+    # Use SELECT ... FOR UPDATE to prevent concurrent inserts from reading
+    # the same prev_hash (PostgreSQL). SQLite serializes writes automatically.
+    last_query = db.query(AuditLog).order_by(AuditLog.id.desc())
+    try:
+        last_entry = last_query.with_for_update().first()
+    except Exception:
+        # SQLite doesn't support FOR UPDATE — fall back to plain query
+        last_entry = last_query.first()
     prev_hash = last_entry.entry_hash if last_entry else None
 
     ts = datetime.now(timezone.utc)
@@ -72,8 +78,7 @@ def record_audit_event(
     metadata_json = json.dumps(metadata, default=str) if metadata else None
 
     entry_hash = _compute_hash(
-        event_type, user_id, agent_id, resource, action,
-        metadata_json, ip_address, ts_str, prev_hash
+        event_type, user_id, agent_id, resource, action, metadata_json, ip_address, ts_str, prev_hash
     )
 
     entry = AuditLog(
@@ -107,12 +112,14 @@ def verify_audit_chain(db: Session) -> dict:
     for entry in entries:
         # Check prev_hash linkage
         if entry.prev_hash != prev_hash:
-            errors.append({
-                "id": entry.id,
-                "error": "prev_hash mismatch",
-                "expected": prev_hash,
-                "actual": entry.prev_hash,
-            })
+            errors.append(
+                {
+                    "id": entry.id,
+                    "error": "prev_hash mismatch",
+                    "expected": prev_hash,
+                    "actual": entry.prev_hash,
+                }
+            )
 
         # Recompute and verify entry_hash
         expected_hash = _compute_hash(
@@ -127,12 +134,14 @@ def verify_audit_chain(db: Session) -> dict:
             entry.prev_hash,
         )
         if entry.entry_hash != expected_hash:
-            errors.append({
-                "id": entry.id,
-                "error": "entry_hash mismatch",
-                "expected": expected_hash,
-                "actual": entry.entry_hash,
-            })
+            errors.append(
+                {
+                    "id": entry.id,
+                    "error": "entry_hash mismatch",
+                    "expected": expected_hash,
+                    "actual": entry.entry_hash,
+                }
+            )
 
         prev_hash = entry.entry_hash
 

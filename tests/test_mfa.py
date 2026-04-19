@@ -3,9 +3,30 @@ Tests for MFA session manager — creation, submission, expiry.
 """
 
 import asyncio
+from unittest.mock import patch
+
 import pytest
 
-from src.core.mfa_manager import MFAManager, MFASession
+from src.core.mfa_manager import MFAManager
+
+
+class FakeRedisKV:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def set(self, key, value, ex=None):
+        self.values[key] = value
+        return True
+
+    def delete(self, key):
+        self.values.pop(key, None)
+        return 1
+
+    def ping(self):
+        return True
 
 
 @pytest.fixture
@@ -77,6 +98,29 @@ class TestMFACodeSubmission:
         session = await mfa_manager.create_session("sess_4", "bank", "otp", ttl=1)
         code = await session.wait_for_code(timeout=0.2)
         assert code is None
+
+    @pytest.mark.asyncio
+    async def test_recreate_session_preserves_submitted_code_from_redis(self):
+        fake_redis = FakeRedisKV()
+        first_manager = MFAManager()
+        second_manager = MFAManager()
+
+        with patch("src.core.mfa_manager.session_store._redis", return_value=fake_redis):
+            await first_manager.create_session("sess_resume", "bank", "otp")
+            submitted = await first_manager.submit_code("sess_resume", "123456")
+            assert submitted is True
+
+            resumed = await second_manager.create_session(
+                "sess_resume",
+                "bank",
+                "otp",
+                metadata={"prompt": "Enter the one-time code"},
+            )
+
+            assert resumed.code == "123456"
+            assert resumed.metadata["prompt"] == "Enter the one-time code"
+            code = await resumed.wait_for_code(timeout=0.1)
+            assert code == "123456"
 
 
 # ── Session Retrieval ─────────────────────────────────────────────────────────

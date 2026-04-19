@@ -3,8 +3,9 @@ Tests for Blueprint V2 schema — parsing, validation, and V1 conversion.
 """
 
 import json
-import pytest
 from pathlib import Path
+
+import pytest
 from pydantic import ValidationError
 
 from src.core.blueprint import (
@@ -24,7 +25,6 @@ from src.core.blueprint import (
     convert_v1_to_v2,
     load_blueprint,
 )
-
 
 # ── Step Model Tests ──────────────────────────────────────────────────────────
 
@@ -80,21 +80,15 @@ class TestExtractionField:
         assert field.transform == TransformType.STRIP_DOLLAR_SIGN
 
     def test_sensitive_field(self):
-        field = ExtractionField(
-            selector="#ssn", type=FieldType.TEXT, sensitive=True
-        )
+        field = ExtractionField(selector="#ssn", type=FieldType.TEXT, sensitive=True)
         assert field.sensitive is True
 
     def test_field_with_default(self):
-        field = ExtractionField(
-            selector="#missing", type=FieldType.TEXT, default="N/A"
-        )
+        field = ExtractionField(selector="#missing", type=FieldType.TEXT, default="N/A")
         assert field.default == "N/A"
 
     def test_field_with_attribute(self):
-        field = ExtractionField(
-            selector="a.link", type=FieldType.TEXT, attribute="href"
-        )
+        field = ExtractionField(selector="a.link", type=FieldType.TEXT, attribute="href")
         assert field.attribute == "href"
 
 
@@ -247,12 +241,16 @@ class TestV1Conversion:
 class TestLoadBlueprint:
     def test_load_v1_blueprint(self, tmp_path):
         bp_file = tmp_path / "site.json"
-        bp_file.write_text(json.dumps({
-            "name": "File Test",
-            "login_url": "https://file.com/login",
-            "fields": {"username": "#u", "password": "#p", "submit": "#s"},
-            "post_login": [{"extract": {"data": "#d"}}],
-        }))
+        bp_file.write_text(
+            json.dumps(
+                {
+                    "name": "File Test",
+                    "login_url": "https://file.com/login",
+                    "fields": {"username": "#u", "password": "#p", "submit": "#s"},
+                    "post_login": [{"extract": {"data": "#d"}}],
+                }
+            )
+        )
         bp = load_blueprint(bp_file)
         assert bp.name == "File Test"
         assert bp.schema_version == "2.0"

@@ -24,6 +24,11 @@ const { blueprints } = await client.listBlueprints();
 // Connect to a site
 const result = await client.connect("greengrid_energy", "demo_user", "demo_pass");
 console.log(result.data);
+
+if (result.status === "pending" && result.job_id) {
+  const job = await client.waitForAccessJob(result.job_id);
+  console.log(job.result);
+}
 ```
 
 ## React Integration
@@ -60,8 +65,32 @@ function ConnectButton() {
 | `listBlueprints()` | List available site connectors |
 | `getBlueprint(name)` | Get blueprint details |
 | `connect(site, username, password)` | Direct connect + extract |
+| `listAccessJobs(options?)` | List tracked access jobs |
+| `getAccessJob(jobId)` | Get one access job |
+| `waitForAccessJob(jobId, options?)` | Poll until a job leaves pending/running |
 | `submitMfa(sessionId, code)` | Submit MFA code |
 | `fetchData(accessToken)` | Fetch data with access token |
+
+### Detached Connect Jobs
+
+`connect()` can return `{ status: "pending", job_id }` when the server detaches
+the browser flow into a background access job. Poll the job until it reaches a
+terminal state:
+
+```typescript
+const result = await client.connect("greengrid_energy", "demo_user", "demo_pass");
+
+if (result.status === "pending" && result.job_id) {
+  const job = await client.waitForAccessJob(result.job_id, {
+    pollIntervalMs: 500,
+    timeoutMs: 30000,
+  });
+
+  if (job.status === "completed") {
+    console.log(job.result);
+  }
+}
+```
 
 ### Auth
 

@@ -1,0 +1,52 @@
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+dist
+build
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Development databases
+*.db
+*.sqlite3
+
+# Tests
+tests/
+test_results.txt
+.pytest_cache
+.coverage
+htmlcov/
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# Documentation (not needed in runtime image)
+docs/
+*.md
+!README.md
+LICENSE
+
+# SDK (separate package)
+sdk/
+sdk-js/
+
+# Load test scripts
+scripts/
+
+# CI/CD
+.github/
+ISSUE_TEMPLATE/
+issues/

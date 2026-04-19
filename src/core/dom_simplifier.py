@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 from html.parser import HTMLParser
 from io import StringIO
+from typing import Dict, List, Optional
 
 from src.logging_config import get_logger
 
@@ -29,36 +29,118 @@ logger = get_logger("dom_simplifier")
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 # Elements to strip entirely (including their children)
-STRIP_TAGS = frozenset({
-    "script", "style", "svg", "noscript", "iframe", "link", "meta",
-    "head", "template", "object", "embed", "applet",
-})
+STRIP_TAGS = frozenset(
+    {
+        "script",
+        "style",
+        "svg",
+        "noscript",
+        "iframe",
+        "link",
+        "meta",
+        "head",
+        "template",
+        "object",
+        "embed",
+        "applet",
+    }
+)
 
 # Elements that are invisible / structural noise
-SKIP_TAGS = frozenset({
-    "br", "hr", "wbr", "col", "colgroup", "source", "track", "param",
-})
+SKIP_TAGS = frozenset(
+    {
+        "br",
+        "hr",
+        "wbr",
+        "col",
+        "colgroup",
+        "source",
+        "track",
+        "param",
+    }
+)
 
 # Self-closing tags (no children)
-VOID_TAGS = frozenset({
-    "area", "base", "br", "col", "embed", "hr", "img", "input",
-    "link", "meta", "param", "source", "track", "wbr",
-})
+VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
 
 # Attributes to keep (all others are dropped to save tokens)
-KEEP_ATTRS = frozenset({
-    "id", "class", "name", "type", "value", "placeholder", "href", "src",
-    "alt", "title", "role", "aria-label", "aria-labelledby", "aria-describedby",
-    "for", "action", "method", "data-pid",
-})
+KEEP_ATTRS = frozenset(
+    {
+        "id",
+        "class",
+        "name",
+        "type",
+        "value",
+        "placeholder",
+        "href",
+        "src",
+        "alt",
+        "title",
+        "role",
+        "aria-label",
+        "aria-labelledby",
+        "aria-describedby",
+        "for",
+        "action",
+        "method",
+        "data-pid",
+    }
+)
 
 # Tags that carry interactive or semantic meaning (always keep)
-IMPORTANT_TAGS = frozenset({
-    "a", "button", "input", "select", "textarea", "form", "label",
-    "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody",
-    "tr", "th", "td", "ul", "ol", "li", "nav", "main", "article",
-    "section", "header", "footer", "img", "p", "span", "div",
-})
+IMPORTANT_TAGS = frozenset(
+    {
+        "a",
+        "button",
+        "input",
+        "select",
+        "textarea",
+        "form",
+        "label",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "ul",
+        "ol",
+        "li",
+        "nav",
+        "main",
+        "article",
+        "section",
+        "header",
+        "footer",
+        "img",
+        "p",
+        "span",
+        "div",
+    }
+)
 
 # Approximate chars per token (for GPT-family models)
 CHARS_PER_TOKEN = 4
@@ -73,6 +155,7 @@ DEFAULT_TOKEN_BUDGET = 30_000
 @dataclass
 class ElementInfo:
     """Info about a single DOM element, stored in the element map."""
+
     tag: str
     pid: str
     text: str = ""
@@ -83,6 +166,7 @@ class ElementInfo:
 @dataclass
 class SimplifiedDOM:
     """Result of DOM simplification."""
+
     html: str
     element_map: Dict[str, ElementInfo]
     token_estimate: int
@@ -106,7 +190,7 @@ class _DOMCleaner(HTMLParser):
         self._output = StringIO()
         self._element_map: Dict[str, ElementInfo] = {}
         self._pid_counter = 0
-        self._skip_depth = 0          # > 0 means we're inside a stripped tag
+        self._skip_depth = 0  # > 0 means we're inside a stripped tag
         self._tag_stack: List[str] = []  # stack of open tags for nesting
 
     def _next_pid(self) -> str:

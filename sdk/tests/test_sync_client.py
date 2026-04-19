@@ -25,12 +25,28 @@ class TestSyncClient:
     def test_connect(self):
         respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
             "status": "connected",
+            "job_id": "ajob-1",
             "data": {"balance": 42.0},
         }))
         with PlaidifySync(server_url=BASE) as pfy:
             result = pfy.connect("bank", username="u", password="p")
         assert result.connected
+        assert result.job_id == "ajob-1"
         assert result.data["balance"] == 42.0
+
+    @respx.mock
+    def test_get_access_job(self):
+        respx.get(f"{BASE}/access_jobs/ajob-1").mock(return_value=httpx.Response(200, json={
+            "job_id": "ajob-1",
+            "site": "bank",
+            "job_type": "connect",
+            "status": "completed",
+            "result": {"status": "connected", "data": {"balance": 42.0}},
+        }))
+        with PlaidifySync(server_url=BASE) as pfy:
+            job = pfy.get_access_job("ajob-1")
+        assert job.completed is True
+        assert job.result["status"] == "connected"
 
     @respx.mock
     def test_list_blueprints(self):

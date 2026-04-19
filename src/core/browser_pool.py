@@ -13,10 +13,13 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import os
 import random
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from playwright.async_api import (
     Browser,
@@ -26,6 +29,7 @@ from playwright.async_api import (
 )
 
 from src.config import get_settings
+from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
 from src.logging_config import get_logger
 
 logger = get_logger("browser_pool")
@@ -71,6 +75,9 @@ class PooledContext:
 
     context: BrowserContext
     session_id: str
+    read_only_policy: Optional[ReadOnlyExecutionPolicy] = None
+    download_dir: Optional[str] = None
+    downloads: list[dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
 
@@ -117,6 +124,8 @@ class BrowserPool:
         self._stealth: bool = settings.browser_stealth
         self._nav_timeout: int = settings.browser_navigation_timeout
         self._action_timeout: int = settings.browser_action_timeout
+        self._allow_read_downloads: bool = settings.browser_allow_read_downloads
+        self._download_root: str = settings.browser_download_root
 
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
@@ -133,11 +142,13 @@ class BrowserPool:
 
         logger.info(
             "Starting browser pool",
-            extra={"extra_data": {
-                "max_size": self._max_size,
-                "headless": self._headless,
-                "stealth": self._stealth,
-            }},
+            extra={
+                "extra_data": {
+                    "max_size": self._max_size,
+                    "headless": self._headless,
+                    "stealth": self._stealth,
+                }
+            },
         )
 
         self._playwright = await async_playwright().start()
@@ -173,7 +184,7 @@ class BrowserPool:
 
         # Close all contexts
         async with self._lock:
-            for session_id, pooled in list(self._contexts.items()):
+            for pooled in list(self._contexts.values()):
                 try:
                     await pooled.context.close()
                 except Exception:
@@ -202,6 +213,7 @@ class BrowserPool:
         self,
         session_id: str,
         proxy: Optional[dict] = None,
+        read_only_policy: Optional[ReadOnlyExecutionPolicy] = None,
     ) -> PooledContext:
         """
         Acquire a browser context for the given session.
@@ -221,6 +233,8 @@ class BrowserPool:
             # Return existing context if session already has one
             if session_id in self._contexts:
                 self._contexts[session_id].touch()
+                if read_only_policy is not None:
+                    self._contexts[session_id].read_only_policy = read_only_policy
                 self._semaphore.release()  # Didn't actually use a new slot
                 return self._contexts[session_id]
 
@@ -235,11 +249,18 @@ class BrowserPool:
             context.set_default_navigation_timeout(self._nav_timeout)
             context.set_default_timeout(self._action_timeout)
 
-            # Set up resource blocking
-            if self._block_resources:
-                await self._setup_resource_blocking(context)
+            pooled = PooledContext(
+                context=context,
+                session_id=session_id,
+                read_only_policy=read_only_policy,
+                download_dir=self._ensure_download_dir(session_id),
+            )
 
-            pooled = PooledContext(context=context, session_id=session_id)
+            # Set up route-based request filtering.
+            if self._block_resources or read_only_policy is not None:
+                await self._setup_resource_blocking(context, pooled)
+            await self._setup_page_guards(context, pooled)
+
             self._contexts[session_id] = pooled
 
             logger.debug(
@@ -266,6 +287,8 @@ class BrowserPool:
                         "Error closing context",
                         extra={"extra_data": {"session_id": session_id, "error": str(e)}},
                     )
+                if pooled.download_dir:
+                    shutil.rmtree(pooled.download_dir, ignore_errors=True)
 
         self._semaphore.release()
         logger.debug(
@@ -288,6 +311,7 @@ class BrowserPool:
         options: dict = {
             "ignore_https_errors": True,
             "java_script_enabled": True,
+            "accept_downloads": True,
         }
 
         if self._stealth:
@@ -301,15 +325,45 @@ class BrowserPool:
 
         return options
 
-    async def _setup_resource_blocking(self, context: BrowserContext) -> None:
-        """Set up route-based resource blocking on a context."""
+    def _ensure_download_dir(self, session_id: str) -> str:
+        os.makedirs(self._download_root, exist_ok=True)
+        return tempfile.mkdtemp(prefix=f"{session_id[:12]}-", dir=self._download_root)
+
+    async def _setup_resource_blocking(
+        self,
+        context: BrowserContext,
+        pooled: PooledContext,
+    ) -> None:
+        """Set up route-based request filtering on a context."""
 
         async def block_resources(route):
-            if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+            request = route.request
+            policy = pooled.read_only_policy
+
+            if policy is not None:
+                reason = policy.evaluate_request(request)
+                if reason:
+                    policy.record_blocked("request", reason, target=request.url)
+                    logger.warning(
+                        "Read-only policy blocked request",
+                        extra={
+                            "extra_data": {
+                                "session_id": pooled.session_id,
+                                "phase": policy.phase.value,
+                                "method": request.method,
+                                "url": request.url,
+                                "reason": reason,
+                            }
+                        },
+                    )
+                    await route.abort()
+                    return
+
+            if request.resource_type in BLOCKED_RESOURCE_TYPES:
                 await route.abort()
                 return
 
-            url = route.request.url.lower()
+            url = request.url.lower()
             for pattern in BLOCKED_URL_PATTERNS:
                 if pattern in url:
                     await route.abort()
@@ -318,6 +372,96 @@ class BrowserPool:
             await route.continue_()
 
         await context.route("**/*", block_resources)
+
+    async def _setup_page_guards(
+        self,
+        context: BrowserContext,
+        pooled: PooledContext,
+    ) -> None:
+        def on_page(page) -> None:
+            self._register_page_handlers(page, pooled)
+            if (
+                pooled.read_only_policy
+                and pooled.read_only_policy.enabled
+                and pooled.read_only_policy.phase == ExecutionPhase.READ
+                and len(context.pages) > 1
+            ):
+                asyncio.create_task(self._close_extra_page(page, pooled))
+
+        context.on("page", on_page)
+
+    def _register_page_handlers(self, page: Any, pooled: PooledContext) -> None:
+        page.on(
+            "download",
+            lambda download: asyncio.create_task(self._handle_download(download, pooled)),
+        )
+        page.on(
+            "dialog",
+            lambda dialog: asyncio.create_task(dialog.dismiss()),
+        )
+
+    async def _close_extra_page(self, page: Any, pooled: PooledContext) -> None:
+        policy = pooled.read_only_policy
+        if policy is not None:
+            policy.record_blocked(
+                "popup",
+                "extra browser pages are blocked after authentication in strict read-only mode",
+            )
+        try:
+            await page.close()
+        except Exception as exc:
+            logger.warning(
+                "Failed to close extra page",
+                extra={"extra_data": {"session_id": pooled.session_id, "error": str(exc)}},
+            )
+
+    async def _handle_download(self, download: Any, pooled: PooledContext) -> None:
+        policy = pooled.read_only_policy
+        download_url = getattr(download, "url", None)
+
+        if policy is not None and policy.enabled:
+            if policy.phase != ExecutionPhase.READ or not self._allow_read_downloads:
+                reason = "downloads are only allowed during the read phase in strict read-only mode"
+                policy.record_blocked("download", reason, target=download_url)
+                cancel = getattr(download, "cancel", None)
+                if callable(cancel):
+                    try:
+                        await cancel()
+                    except Exception:
+                        pass
+                return
+
+        suggested_filename = getattr(download, "suggested_filename", None) or "download.bin"
+        destination = self._unique_download_path(
+            pooled.download_dir or self._ensure_download_dir(pooled.session_id), suggested_filename
+        )
+
+        try:
+            await download.save_as(destination)
+            size_bytes = os.path.getsize(destination)
+            pooled.downloads.append(
+                {
+                    "filename": os.path.basename(destination),
+                    "size_bytes": size_bytes,
+                    "url": download_url,
+                    "path": destination,
+                }
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist browser download",
+                extra={"extra_data": {"session_id": pooled.session_id, "error": str(exc)}},
+            )
+
+    def _unique_download_path(self, directory: str, filename: str) -> str:
+        base_name = os.path.basename(filename) or "download.bin"
+        stem, suffix = os.path.splitext(base_name)
+        candidate = os.path.join(directory, base_name)
+        counter = 1
+        while os.path.exists(candidate):
+            candidate = os.path.join(directory, f"{stem}-{counter}{suffix}")
+            counter += 1
+        return candidate
 
     async def _cleanup_loop(self) -> None:
         """Background task that closes idle contexts."""

@@ -1,21 +1,11 @@
 """Tests for multimodal (screenshot-based) extraction."""
 
 import base64
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.core.multimodal_extractor import (
-    DEFAULT_CONFIDENCE_THRESHOLD,
-    MAX_SCREENSHOT_HEIGHT,
-    MAX_SCREENSHOT_WIDTH,
-    MultimodalExtractor,
-    MultimodalExtractionResult,
-    VISION_SYSTEM_PROMPT,
-)
 from src.core.extraction_prompt import (
-    ExtractionResult,
     FieldDefinition,
     ListFieldDefinition,
 )
@@ -25,12 +15,20 @@ from src.core.llm_provider import (
     LLMResponse,
     TokenUsage,
 )
+from src.core.multimodal_extractor import (
+    VISION_SYSTEM_PROMPT,
+    MultimodalExtractionResult,
+    MultimodalExtractor,
+)
 from tests.conftest import (
     FAKE_SCREENSHOT,
+)
+from tests.conftest import (
     make_mock_llm_provider as make_mock_provider,
+)
+from tests.conftest import (
     make_mock_playwright_page as make_mock_page,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -124,9 +122,7 @@ class TestMultimodalExtractor:
         page = make_mock_page()
 
         extractor = MultimodalExtractor(provider)
-        await extractor.extract_from_screenshot(
-            page, SAMPLE_FIELDS, page_context="Utility bill dashboard"
-        )
+        await extractor.extract_from_screenshot(page, SAMPLE_FIELDS, page_context="Utility bill dashboard")
 
         call_args = provider._call.call_args
         messages = call_args[0][0]
@@ -167,9 +163,7 @@ class TestMultimodalExtractor:
         extractor = MultimodalExtractor(provider, max_width=1280, max_height=1024)
         await extractor.extract_from_screenshot(page, SAMPLE_FIELDS)
 
-        page.set_viewport_size.assert_called_once_with(
-            {"width": 1280, "height": 1024}
-        )
+        page.set_viewport_size.assert_called_once_with({"width": 1280, "height": 1024})
 
     @pytest.mark.asyncio
     async def test_low_confidence_result(self):
@@ -323,9 +317,7 @@ class TestVisionPromptBuilding:
     def test_vision_prompt_with_page_context(self):
         """Vision prompt includes page context when provided."""
         extractor = MultimodalExtractor(MagicMock())
-        prompt = extractor._build_vision_prompt(
-            SAMPLE_FIELDS, page_context="Energy bill dashboard"
-        )
+        prompt = extractor._build_vision_prompt(SAMPLE_FIELDS, page_context="Energy bill dashboard")
 
         assert "## Page Context" in prompt
         assert "Energy bill dashboard" in prompt

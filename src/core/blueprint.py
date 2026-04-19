@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
-
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
 
@@ -449,6 +448,7 @@ def convert_v1_to_v2(v1_data: dict) -> BlueprintV2:
     domain = ""
     if login_url:
         from urllib.parse import urlparse
+
         parsed = urlparse(login_url)
         domain = parsed.netloc or parsed.hostname or ""
 
@@ -478,7 +478,7 @@ def load_blueprint(path: Path) -> BlueprintV2:
         json.JSONDecodeError: If the file contains invalid JSON.
         pydantic.ValidationError: If the blueprint fails schema validation.
     """
-    with open(path, "r") as f:
+    with open(path) as f:
         data = json.load(f)
 
     # Detect version

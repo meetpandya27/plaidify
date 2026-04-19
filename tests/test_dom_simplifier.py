@@ -12,20 +12,20 @@ Covers:
 - Playwright integration (DOMSimplifier class)
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from src.core.dom_simplifier import (
-    simplify_html,
-    estimate_tokens,
-    DOMSimplifier,
-    SimplifiedDOM,
-    ElementInfo,
-    _collapse_whitespace,
-    STRIP_TAGS,
     DEFAULT_TOKEN_BUDGET,
+    STRIP_TAGS,
+    DOMSimplifier,
+    ElementInfo,
+    SimplifiedDOM,
+    _collapse_whitespace,
+    estimate_tokens,
+    simplify_html,
 )
-
 
 # ── Fixtures: Sample DOM strings ──────────────────────────────────────────────
 
@@ -249,7 +249,7 @@ class TestSimplifyHTML:
 
     def test_element_map_has_correct_structure(self):
         result = simplify_html(SIMPLE_HTML)
-        for pid, info in result.element_map.items():
+        for _pid, info in result.element_map.items():
             assert isinstance(info, ElementInfo)
             assert isinstance(info.tag, str)
             assert isinstance(info.pid, str)
@@ -376,9 +376,9 @@ class TestAttributeFiltering:
     def test_drops_data_attributes_except_pid(self):
         html = '<div data-testid="foo" data-analytics="track">Content</div>'
         result = simplify_html(html)
-        assert 'data-testid' not in result.html
-        assert 'data-analytics' not in result.html
-        assert 'data-pid=' in result.html
+        assert "data-testid" not in result.html
+        assert "data-analytics" not in result.html
+        assert "data-pid=" in result.html
 
 
 # ── Tests: Helpers ────────────────────────────────────────────────────────────
@@ -396,10 +396,11 @@ class TestHelpers:
     def test_all_strip_tags_handled(self):
         """Every tag in STRIP_TAGS is actually stripped."""
         from src.core.dom_simplifier import VOID_TAGS
+
         for tag in STRIP_TAGS:
             if tag == "head":
                 # head needs to be inside html
-                html = f"<html><head><title>T</title></head><body><p>keep</p></body></html>"
+                html = "<html><head><title>T</title></head><body><p>keep</p></body></html>"
             elif tag in VOID_TAGS or tag == "meta" or tag == "link":
                 # Void tags can't contain children — just confirm the tag itself is stripped
                 html = f'<div><{tag} class="remove-me"/><p>keep</p></div>'
@@ -479,7 +480,7 @@ class TestEdgeCases:
     def test_large_html_performance(self):
         """Simplification should handle large pages without error."""
         # Generate ~100KB of HTML
-        rows = "\n".join(f'<tr><td>Row {i}</td><td>${i * 10}.00</td></tr>' for i in range(2000))
+        rows = "\n".join(f"<tr><td>Row {i}</td><td>${i * 10}.00</td></tr>" for i in range(2000))
         html = f"<html><body><table><tbody>{rows}</tbody></table></body></html>"
         result = simplify_html(html)
         assert result.token_estimate > 0

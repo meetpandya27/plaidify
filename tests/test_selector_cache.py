@@ -2,18 +2,15 @@
 
 import json
 import time
-import pytest
 from pathlib import Path
-from unittest.mock import patch
 
 from src.core.selector_cache import (
+    DEFAULT_TTL,
+    MAX_FAILURES,
     CacheEntry,
     SelectorCache,
     make_cache_key,
-    DEFAULT_TTL,
-    MAX_FAILURES,
 )
-
 
 # ── Cache Key ─────────────────────────────────────────────────────────────────
 

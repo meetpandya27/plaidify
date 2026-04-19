@@ -7,24 +7,24 @@
   <link rel="stylesheet" href="link-page.css" />
 </head>
 <body>
-  <div class="link-container">
-    <div class="link-card">
+  <div class="link-container" role="main">
+    <div class="link-card" role="dialog" aria-label="Plaidify Link — Connect your account">
 
       <!-- Header -->
       <div class="link-header">
-        <div class="link-logo">&#9670; <span class="accent">Plaidify</span></div>
-        <button class="link-close-btn" id="close-btn" title="Close">&times;</button>
+        <div class="link-logo" aria-hidden="true">&#9670; <span class="accent">Plaidify</span></div>
+        <button class="link-close-btn" id="close-btn" title="Close" aria-label="Close">&times;</button>
       </div>
 
       <!-- Step indicators -->
-      <div class="step-indicator">
-        <div class="step-dot current" id="dot-1"></div>
-        <div class="step-dot" id="dot-2"></div>
-        <div class="step-dot" id="dot-3"></div>
+      <div class="step-indicator" role="progressbar" aria-valuenow="1" aria-valuemin="1" aria-valuemax="3" aria-label="Step 1 of 3">
+        <div class="step-dot current" id="dot-1" aria-label="Step 1: Select provider"></div>
+        <div class="step-dot" id="dot-2" aria-label="Step 2: Enter credentials"></div>
+        <div class="step-dot" id="dot-3" aria-label="Step 3: Verify"></div>
       </div>
 
       <!-- Step 1: Select Provider -->
-      <div class="link-step active" id="step-select">
+      <div class="link-step active" id="step-select" role="region" aria-label="Select your provider">
         <div class="step-content">
           <input
             type="text"
@@ -32,6 +32,7 @@
             id="institution-search"
             placeholder="Search providers..."
             autocomplete="off"
+            aria-label="Search providers"
           />
           <div class="institution-list" id="institution-list">
             <div class="institution-empty">Loading providers...</div>
@@ -40,21 +41,23 @@
       </div>
 
       <!-- Step 2: Enter Credentials -->
-      <div class="link-step" id="step-credentials">
+      <div class="link-step" id="step-credentials" role="region" aria-label="Enter your credentials">
         <div class="step-content">
           <div class="selected-provider">
-            <span class="provider-icon" id="provider-icon">&#9889;</span>
+            <span class="provider-icon" id="provider-icon" aria-hidden="true">&#9889;</span>
             <span class="provider-name" id="provider-name">Provider</span>
-            <button class="provider-change-btn" id="change-provider-btn">Change</button>
+            <button class="provider-change-btn" id="change-provider-btn" aria-label="Change provider">Change</button>
           </div>
-          <form id="credentials-form" autocomplete="off">
+          <form id="credentials-form" autocomplete="off" aria-label="Login credentials">
             <div class="form-group">
               <label for="link-username">Username</label>
-              <input type="text" id="link-username" placeholder="Enter username" required />
+              <input type="text" id="link-username" placeholder="Enter username" required aria-required="true" />
+              <span class="field-error" id="username-error" role="alert" aria-live="polite"></span>
             </div>
             <div class="form-group">
               <label for="link-password">Password</label>
-              <input type="password" id="link-password" placeholder="Enter password" required />
+              <input type="password" id="link-password" placeholder="Enter password" required aria-required="true" />
+              <span class="field-error" id="password-error" role="alert" aria-live="polite"></span>
             </div>
             <button type="submit" class="submit-btn" id="connect-btn">Connect</button>
           </form>
@@ -62,13 +65,13 @@
       </div>
 
       <!-- Step 3a: MFA -->
-      <div class="link-step" id="step-mfa">
+      <div class="link-step" id="step-mfa" role="region" aria-label="Multi-factor authentication">
         <div class="step-content">
           <div class="mfa-info">
-            <div class="mfa-label">Verification Required</div>
-            <div class="mfa-message" id="mfa-message">Enter the code sent to your device.</div>
+            <div class="mfa-label" id="mfa-label">Verification Required</div>
+            <div class="mfa-message" id="mfa-message" aria-live="polite">Enter the code sent to your device.</div>
           </div>
-          <form id="mfa-form" autocomplete="off">
+          <form id="mfa-form" autocomplete="off" aria-labelledby="mfa-label">
             <input
               type="text"
               class="mfa-input"
@@ -78,6 +81,8 @@
               autocomplete="one-time-code"
               inputmode="numeric"
               required
+              aria-required="true"
+              aria-label="Verification code"
             />
             <button type="submit" class="submit-btn" id="mfa-submit-btn">Verify</button>
           </form>
@@ -85,18 +90,18 @@
       </div>
 
       <!-- Step 3b: Connecting (progress) -->
-      <div class="link-step" id="step-connecting">
-        <div class="connecting-status">
-          <div class="spinner"></div>
+      <div class="link-step" id="step-connecting" role="region" aria-label="Connecting">
+        <div class="connecting-status" aria-live="polite">
+          <div class="spinner" role="status" aria-label="Loading"></div>
           <div class="connecting-text" id="connecting-text">Connecting...</div>
           <div class="connecting-sub" id="connecting-sub">Securely logging in to your account</div>
         </div>
       </div>
 
       <!-- Step 4: Success -->
-      <div class="link-step" id="step-success">
-        <div class="success-content">
-          <div class="success-icon">&#10003;</div>
+      <div class="link-step" id="step-success" role="region" aria-label="Connection successful">
+        <div class="success-content" aria-live="assertive">
+          <div class="success-icon" aria-hidden="true">&#10003;</div>
           <div class="success-title">Connected!</div>
           <div class="success-message">Your account has been linked successfully.</div>
           <div class="access-token-display" id="access-token-display"></div>
@@ -105,11 +110,11 @@
       </div>
 
       <!-- Step 5: Error -->
-      <div class="link-step" id="step-error">
-        <div class="error-content">
-          <div class="error-icon">&#10007;</div>
+      <div class="link-step" id="step-error" role="region" aria-label="Connection error">
+        <div class="error-content" aria-live="assertive">
+          <div class="error-icon" aria-hidden="true">&#10007;</div>
           <div class="error-title">Connection Failed</div>
-          <div class="error-message" id="error-message">Something went wrong. Please try again.</div>
+          <div class="error-message" id="error-message" role="alert">Something went wrong. Please try again.</div>
           <button class="retry-btn" id="retry-btn">Try Again</button>
         </div>
       </div>

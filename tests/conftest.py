@@ -2,9 +2,11 @@
 Shared test fixtures and configuration.
 """
 
+import json
 import os
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -16,9 +18,9 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///test_plaidify.db")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 os.environ.setdefault("LOG_FORMAT", "text")
 
+from src.core.llm_provider import LLMResponse, TokenUsage
 from src.database import Base, get_db
 from src.main import app
-
 
 # ── Test Database Setup ───────────────────────────────────────────────────────
 
@@ -55,7 +57,9 @@ def reset_rate_limiter():
         limiter.enabled = True
     """
     from limits.storage.memory import MemoryStorage
+
     from src.dependencies import limiter
+
     limiter.enabled = False
     # Replace storage with a fresh instance to guarantee no stale counters
     limiter._limiter.storage = MemoryStorage()
@@ -73,11 +77,14 @@ def client():
 @pytest.fixture
 def auth_headers(client):
     """Register a user and return auth headers with a valid JWT."""
-    response = client.post("/auth/register", json={
-        "username": "testuser",
-        "email": "test@example.com",
-        "password": "securepassword123",
-    })
+    response = client.post(
+        "/auth/register",
+        json={
+            "username": "testuser",
+            "email": "test@example.com",
+            "password": "Secure@pass123",
+        },
+    )
     assert response.status_code == 200
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -86,11 +93,14 @@ def auth_headers(client):
 @pytest.fixture
 def second_user_headers(client):
     """Register a second user and return auth headers."""
-    response = client.post("/auth/register", json={
-        "username": "seconduser",
-        "email": "second@example.com",
-        "password": "securepassword456",
-    })
+    response = client.post(
+        "/auth/register",
+        json={
+            "username": "seconduser",
+            "email": "second@example.com",
+            "password": "Secure@pass456",
+        },
+    )
     assert response.status_code == 200
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -116,8 +126,7 @@ async def _mock_connect_to_site(site, username=None, password=None, **kwargs):
     """
     from src.exceptions import BlueprintNotFoundError
 
-    known_sites = {"demo_site", "mock_site", "test_bank", "greengrid_energy",
-                   "greengrid_energy_v3", "hydro_one"}
+    known_sites = {"demo_site", "mock_site", "test_bank", "greengrid_energy", "greengrid_energy_v3", "hydro_one"}
     if site not in known_sites:
         raise BlueprintNotFoundError(site=site)
     return _MOCK_CONNECT_RESPONSE
@@ -135,20 +144,11 @@ def mock_browser_engine(request):
         return
 
     mock = AsyncMock(side_effect=_mock_connect_to_site)
-    with patch("src.routers.connection.connect_to_site", mock), \
-         patch("src.routers.links.connect_to_site", mock):
+    with patch("src.routers.connection.connect_to_site", mock), patch("src.routers.links.connect_to_site", mock):
         yield mock
 
 
 # ── Shared LLM / Playwright Mocks ────────────────────────────────────────────
-
-
-import json
-from unittest.mock import AsyncMock, MagicMock
-
-from src.core.llm_provider import LLMResponse, TokenUsage
-
-
 FAKE_SCREENSHOT = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 
 
@@ -213,7 +213,5 @@ def make_mock_playwright_page(
     page.viewport_size = {"width": viewport_width, "height": viewport_height}
     page.screenshot = AsyncMock(return_value=FAKE_SCREENSHOT)
     page.set_viewport_size = AsyncMock()
-    page.content = AsyncMock(
-        return_value="<html><body><div id='balance'>$1,234.56</div></body></html>"
-    )
+    page.content = AsyncMock(return_value="<html><body><div id='balance'>$1,234.56</div></body></html>")
     return page

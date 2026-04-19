@@ -440,3 +440,24 @@ body {
   .link-container { margin: 12px; }
   .step-content { padding: 16px; }
 }
+
+/* ── Form Validation ──────────────────────────────────────── */
+
+.field-error {
+  display: block;
+  color: var(--danger, #ef4444);
+  font-size: 12px;
+  margin-top: 4px;
+  min-height: 0;
+  transition: min-height 0.15s ease;
+}
+
+.field-error:not(:empty) {
+  min-height: 18px;
+}
+
+input:invalid,
+input.input-error {
+  border-color: var(--danger, #ef4444) !important;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.12);
+}

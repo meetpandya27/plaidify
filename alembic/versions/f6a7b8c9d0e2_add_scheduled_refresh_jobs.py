@@ -1,7 +1,7 @@
 """Add scheduled_refresh_jobs table
 
-Revision ID: f6a7b8c9d0e1
-Revises: e5f6a7b8c9d0
+Revision ID: f6a7b8c9d0e2
+Revises: f6a7b8c9d0e1
 Create Date: 2025-01-01 00:00:00.000000
 """
 from alembic import op
@@ -9,8 +9,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 'f6a7b8c9d0e1'
-down_revision = 'e5f6a7b8c9d0'
+revision = 'f6a7b8c9d0e2'
+down_revision = 'f6a7b8c9d0e1'
 branch_labels = None
 depends_on = None
 

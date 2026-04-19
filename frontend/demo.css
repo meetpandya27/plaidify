@@ -385,3 +385,24 @@ body {
   font-size: 12px;
   color: var(--text-dim);
 }
+
+/* ── Form Validation ──────────────────────────────────────── */
+
+.field-error {
+  display: block;
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 4px;
+  min-height: 0;
+  transition: min-height 0.15s ease;
+}
+
+.field-error:not(:empty) {
+  min-height: 18px;
+}
+
+input:invalid,
+input.input-error {
+  border-color: var(--danger) !important;
+  box-shadow: 0 0 0 2px var(--danger-dim);
+}

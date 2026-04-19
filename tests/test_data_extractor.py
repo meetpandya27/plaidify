@@ -2,8 +2,7 @@
 Tests for Data Extractor — transforms, type coercion, and extraction logic.
 """
 
-import pytest
-
+from src.core.blueprint import FieldType, TransformType
 from src.core.data_extractor import (
     apply_transform,
     coerce_type,
@@ -17,8 +16,6 @@ from src.core.data_extractor import (
     transform_to_number,
     transform_to_uppercase,
 )
-from src.core.blueprint import FieldType, TransformType
-
 
 # ── Transform Tests ───────────────────────────────────────────────────────────
 

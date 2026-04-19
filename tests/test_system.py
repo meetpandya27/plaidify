@@ -15,13 +15,11 @@ class TestSystemEndpoints:
         assert "version" in data
 
     def test_health(self, client):
+        """Simple public health probe returns just status."""
         response = client.get("/health")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] in ("healthy", "degraded")
-        assert "version" in data
-        assert "checks" in data
-        assert data["checks"]["database"] == "ok"
+        assert data["status"] == "healthy"
 
     def test_status(self, client):
         response = client.get("/status")
@@ -33,11 +31,14 @@ class TestConnectEndpoint:
     """Tests for the POST /connect endpoint."""
 
     def test_connect_demo_site(self, client):
-        response = client.post("/connect", json={
-            "site": "demo_site",
-            "username": "demo_user",
-            "password": "secret123",
-        })
+        response = client.post(
+            "/connect",
+            json={
+                "site": "demo_site",
+                "username": "demo_user",
+                "password": "secret123",
+            },
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "connected"
@@ -46,11 +47,14 @@ class TestConnectEndpoint:
         assert data["data"]["last_synced"] == "2025-04-17T12:00:00Z"
 
     def test_connect_mock_site(self, client):
-        response = client.post("/connect", json={
-            "site": "mock_site",
-            "username": "mock_user",
-            "password": "mock_password",
-        })
+        response = client.post(
+            "/connect",
+            json={
+                "site": "mock_site",
+                "username": "mock_user",
+                "password": "mock_password",
+            },
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "connected"
@@ -58,11 +62,14 @@ class TestConnectEndpoint:
         assert "mock_synced" in data["data"]
 
     def test_connect_nonexistent_site(self, client):
-        response = client.post("/connect", json={
-            "site": "nonexistent_site_xyz",
-            "username": "user",
-            "password": "pass",
-        })
+        response = client.post(
+            "/connect",
+            json={
+                "site": "nonexistent_site_xyz",
+                "username": "user",
+                "password": "pass",
+            },
+        )
         assert response.status_code == 404
         assert "error" in response.json()
 

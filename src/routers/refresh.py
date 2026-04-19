@@ -8,6 +8,7 @@ from typing import Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from src.access_jobs import run_access_job
 from src.audit import record_audit_event
 from src.config import get_settings
 from src.core.engine import connect_to_site
@@ -39,71 +40,51 @@ def _get_refresh_scheduler() -> RefreshScheduler:
             """Perform a data refresh using the same logic as GET /fetch_data."""
             db = next(get_db())
             try:
-                token_record = (
-                    db.query(AccessToken)
-                    .filter_by(token=access_token, user_id=user_id)
-                    .first()
-                )
+                token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user_id).first()
                 if not token_record:
                     raise ValueError("Access token not found")
-                site = (
-                    db.query(Link)
-                    .filter_by(
-                        link_token=token_record.link_token, user_id=user_id
-                    )
-                    .first()
-                )
+                site = db.query(Link).filter_by(link_token=token_record.link_token, user_id=user_id).first()
                 if not site:
                     raise ValueError("Link not found")
                 user = db.query(User).filter_by(id=user_id).first()
                 if not user:
                     raise ValueError("User not found")
-                username = decrypt_credential_for_user(
-                    user, token_record.username_encrypted
+                username = decrypt_credential_for_user(user, token_record.username_encrypted)
+                password = decrypt_credential_for_user(user, token_record.password_encrypted)
+                _job, result = await run_access_job(
+                    db,
+                    site=site.site,
+                    job_type="scheduled_refresh",
+                    executor=connect_to_site,
+                    executor_kwargs={
+                        "site": site.site,
+                        "username": username,
+                        "password": password,
+                    },
+                    user_id=user_id,
+                    metadata={"access_token_prefix": access_token[:12]},
                 )
-                password = decrypt_credential_for_user(
-                    user, token_record.password_encrypted
-                )
-                result = await connect_to_site(site.site, username, password)
                 return result
             finally:
                 db.close()
 
-        async def _on_refresh_webhook(
-            access_token: str, user_id: int, data: Dict
-        ) -> None:
+        async def _on_refresh_webhook(access_token: str, user_id: int, data: Dict) -> None:
             """Fire DATA_REFRESHED webhooks after a successful refresh."""
             from src.routers.webhooks import _deliver_webhook
 
             db = next(get_db())
             try:
-                token_record = (
-                    db.query(AccessToken)
-                    .filter_by(token=access_token, user_id=user_id)
-                    .first()
-                )
+                token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user_id).first()
                 if token_record:
-                    webhooks = (
-                        db.query(Webhook)
-                        .filter_by(link_token=token_record.link_token)
-                        .all()
-                    )
+                    webhooks = db.query(Webhook).filter_by(link_token=token_record.link_token).all()
                     payload = {
                         "event": "DATA_REFRESHED",
                         "access_token_prefix": access_token[:12] + "...",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "fields_updated": (
-                            list(data.keys())
-                            if isinstance(data, dict)
-                            else []
-                        ),
+                        "fields_updated": (list(data.keys()) if isinstance(data, dict) else []),
                     }
                     for wh in webhooks:
-                        asyncio.create_task(
-                            _deliver_webhook(
-                                wh.id, wh.url, wh.secret, payload
-                            )
-                        )
+                        asyncio.create_task(_deliver_webhook(wh.id, wh.url, wh.secret, payload))
             finally:
                 db.close()
 
@@ -132,9 +113,7 @@ async def schedule_refresh(
     interval = body.get("interval_seconds", 3600)
 
     if not access_token:
-        raise HTTPException(
-            status_code=400, detail="access_token is required."
-        )
+        raise HTTPException(status_code=400, detail="access_token is required.")
     if interval < 300:
         raise HTTPException(
             status_code=400,
@@ -142,20 +121,14 @@ async def schedule_refresh(
         )
 
     # Verify the token belongs to this user
-    token_record = (
-        db.query(AccessToken)
-        .filter_by(token=access_token, user_id=user.id)
-        .first()
-    )
+    token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user.id).first()
     if not token_record:
-        raise HTTPException(
-            status_code=404, detail="Access token not found."
-        )
+        raise HTTPException(status_code=404, detail="Access token not found.")
 
     scheduler = _get_refresh_scheduler()
     if not scheduler.running:
         scheduler.start()
-    job = scheduler.schedule(access_token, user.id, interval)
+    scheduler.schedule(access_token, user.id, interval)
 
     record_audit_event(
         db,
@@ -179,15 +152,9 @@ async def unschedule_refresh(
     db: Session = Depends(get_db),
 ):
     """Remove a scheduled refresh for an access token."""
-    token_record = (
-        db.query(AccessToken)
-        .filter_by(token=access_token, user_id=user.id)
-        .first()
-    )
+    token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user.id).first()
     if not token_record:
-        raise HTTPException(
-            status_code=404, detail="Access token not found."
-        )
+        raise HTTPException(status_code=404, detail="Access token not found.")
 
     scheduler = _get_refresh_scheduler()
     removed = scheduler.unschedule(access_token)

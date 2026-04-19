@@ -1,0 +1,240 @@
+name: Deploy Azure
+
+on:
+  workflow_dispatch:
+    inputs:
+      github_environment:
+        description: GitHub environment containing Azure deployment secrets and variables
+        required: true
+        default: production
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to Azure Container Apps
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github_environment }}
+    concurrency:
+      group: deploy-azure-${{ inputs.github_environment }}
+      cancel-in-progress: false
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
+      AZURE_APP_ENV: ${{ vars.AZURE_APP_ENV }}
+      AZURE_CORS_ORIGINS: ${{ vars.AZURE_CORS_ORIGINS }}
+      AZURE_LLM_PROVIDER: ${{ vars.AZURE_LLM_PROVIDER }}
+      AZURE_LLM_MODEL: ${{ vars.AZURE_LLM_MODEL }}
+      POSTGRES_ADMIN_LOGIN: ${{ secrets.AZURE_POSTGRES_ADMIN_LOGIN }}
+      POSTGRES_ADMIN_PASSWORD: ${{ secrets.AZURE_POSTGRES_ADMIN_PASSWORD }}
+      ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+      JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate repository configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_values=(
+            AZURE_RESOURCE_GROUP
+            AZURE_LOCATION
+            AZURE_NAME_PREFIX
+            AZURE_APP_ENV
+            AZURE_CORS_ORIGINS
+            POSTGRES_ADMIN_LOGIN
+            POSTGRES_ADMIN_PASSWORD
+            ENCRYPTION_KEY
+            JWT_SECRET_KEY
+          )
+
+          for value_name in "${required_values[@]}"; do
+            if [[ -z "${!value_name:-}" ]]; then
+              echo "::error::Missing required GitHub environment value: ${value_name}"
+              exit 1
+            fi
+          done
+
+          echo "AZURE_LLM_PROVIDER=${AZURE_LLM_PROVIDER:-openai}" >> "$GITHUB_ENV"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create or update resource group
+        shell: bash
+        run: az group create --name "$AZURE_RESOURCE_GROUP" --location "$AZURE_LOCATION"
+
+      - name: Bootstrap Azure infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          az deployment group create \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "plaidify-bootstrap-${GITHUB_RUN_ID}" \
+            --template-file infra/main.bicep \
+            --parameters @infra/main.bicepparam \
+            --parameters \
+              namePrefix="$AZURE_NAME_PREFIX" \
+              environmentName="${{ inputs.github_environment }}" \
+              location="$AZURE_LOCATION" \
+              appEnv="$AZURE_APP_ENV" \
+              corsOrigins="$AZURE_CORS_ORIGINS" \
+              llmProvider="${AZURE_LLM_PROVIDER:-openai}" \
+              llmModel="${AZURE_LLM_MODEL:-}" \
+              postgresAdminLogin="$POSTGRES_ADMIN_LOGIN" \
+              postgresAdminPassword="$POSTGRES_ADMIN_PASSWORD" \
+              deployApplication=false \
+            --output json > bootstrap.json
+
+          echo "ACR_NAME=$(jq -r '.properties.outputs.acrName.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "ACR_LOGIN_SERVER=$(jq -r '.properties.outputs.acrLoginServer.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "KEY_VAULT_NAME=$(jq -r '.properties.outputs.keyVaultName.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "POSTGRES_FQDN=$(jq -r '.properties.outputs.postgresFqdn.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "POSTGRES_DATABASE_NAME=$(jq -r '.properties.outputs.postgresDatabaseName.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "REDIS_NAME=$(jq -r '.properties.outputs.redisName.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "REDIS_HOST=$(jq -r '.properties.outputs.redisHostName.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "REDIS_SSL_PORT=$(jq -r '.properties.outputs.redisSslPort.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "CONTAINER_APP_NAME=$(jq -r '.properties.outputs.containerAppName.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "ACCESS_EXECUTOR_APP_NAME=$(jq -r '.properties.outputs.accessExecutorAppName.value' bootstrap.json)" >> "$GITHUB_ENV"
+          echo "MIGRATION_JOB_NAME=$(jq -r '.properties.outputs.migrationJobName.value' bootstrap.json)" >> "$GITHUB_ENV"
+
+      - name: Populate Key Vault runtime secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REDIS_PRIMARY_KEY="$(az redis list-keys --name "$REDIS_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query primaryKey -o tsv)"
+
+          export POSTGRES_PASSWORD="$POSTGRES_ADMIN_PASSWORD"
+          export REDIS_PRIMARY_KEY
+
+          POSTGRES_PASSWORD_ENCODED="$(python -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['POSTGRES_PASSWORD'], safe=''))")"
+          REDIS_KEY_ENCODED="$(python -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['REDIS_PRIMARY_KEY'], safe=''))")"
+
+          DATABASE_URL="postgresql://${POSTGRES_ADMIN_LOGIN}:${POSTGRES_PASSWORD_ENCODED}@${POSTGRES_FQDN}:5432/${POSTGRES_DATABASE_NAME}?sslmode=require"
+          REDIS_URL="rediss://:${REDIS_KEY_ENCODED}@${REDIS_HOST}:${REDIS_SSL_PORT}/0"
+
+          az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name encryption-key --value "$ENCRYPTION_KEY" --output none
+          az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name jwt-secret-key --value "$JWT_SECRET_KEY" --output none
+          az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name database-url --value "$DATABASE_URL" --output none
+          az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name redis-url --value "$REDIS_URL" --output none
+
+          if [[ -n "${LLM_API_KEY:-}" ]]; then
+            az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name llm-api-key --value "$LLM_API_KEY" --output none
+            echo "ENABLE_LLM_API_KEY_SECRET=true" >> "$GITHUB_ENV"
+          else
+            echo "ENABLE_LLM_API_KEY_SECRET=false" >> "$GITHUB_ENV"
+          fi
+
+          if [[ -n "${HEALTH_CHECK_TOKEN:-}" ]]; then
+            az keyvault secret set --vault-name "$KEY_VAULT_NAME" --name health-check-token --value "$HEALTH_CHECK_TOKEN" --output none
+            echo "ENABLE_HEALTH_CHECK_TOKEN_SECRET=true" >> "$GITHUB_ENV"
+          else
+            echo "ENABLE_HEALTH_CHECK_TOKEN_SECRET=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build and push container image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_REF="${ACR_LOGIN_SERVER}/plaidify:${GITHUB_SHA}"
+
+          az acr login --name "$ACR_NAME"
+          docker build -t "$IMAGE_REF" .
+          docker push "$IMAGE_REF"
+
+          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_ENV"
+
+      - name: Deploy Plaidify application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          az deployment group create \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "plaidify-application-${GITHUB_RUN_ID}" \
+            --template-file infra/main.bicep \
+            --parameters @infra/main.bicepparam \
+            --parameters \
+              namePrefix="$AZURE_NAME_PREFIX" \
+              environmentName="${{ inputs.github_environment }}" \
+              location="$AZURE_LOCATION" \
+              appEnv="$AZURE_APP_ENV" \
+              corsOrigins="$AZURE_CORS_ORIGINS" \
+              llmProvider="${AZURE_LLM_PROVIDER:-openai}" \
+              llmModel="${AZURE_LLM_MODEL:-}" \
+              postgresAdminLogin="$POSTGRES_ADMIN_LOGIN" \
+              postgresAdminPassword="$POSTGRES_ADMIN_PASSWORD" \
+              deployApplication=true \
+              containerImage="$IMAGE_REF" \
+              enableLlmApiKeySecret="${ENABLE_LLM_API_KEY_SECRET:-false}" \
+              enableHealthCheckTokenSecret="${ENABLE_HEALTH_CHECK_TOKEN_SECRET:-false}" \
+            --output json > app-deploy.json
+
+      - name: Run database migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MIGRATION_EXECUTION_NAME="$(az containerapp job start --name "$MIGRATION_JOB_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query name -o tsv)"
+
+          if [[ -z "$MIGRATION_EXECUTION_NAME" ]]; then
+            echo "::error::Failed to start the migration job"
+            exit 1
+          fi
+
+          for attempt in $(seq 1 60); do
+            MIGRATION_STATUS="$(az containerapp job execution show --name "$MIGRATION_JOB_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --job-execution-name "$MIGRATION_EXECUTION_NAME" --query properties.status -o tsv 2>/dev/null || true)"
+
+            case "$MIGRATION_STATUS" in
+              Succeeded)
+                echo "::notice::Database migrations completed successfully (${MIGRATION_EXECUTION_NAME})"
+                exit 0
+                ;;
+              Failed)
+                echo "::error::Database migrations failed (${MIGRATION_EXECUTION_NAME})"
+                az containerapp job execution show --name "$MIGRATION_JOB_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --job-execution-name "$MIGRATION_EXECUTION_NAME"
+                exit 1
+                ;;
+              '')
+                ;;
+              *)
+                echo "Migration status: ${MIGRATION_STATUS}"
+                ;;
+            esac
+
+            sleep 10
+          done
+
+          echo "::error::Timed out waiting for database migrations to finish"
+          exit 1
+
+      - name: Health check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_FQDN="$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)"
+          APP_URL="https://${APP_FQDN}"
+          EXECUTOR_READY_REVISION="$(az containerapp show --name "$ACCESS_EXECUTOR_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query properties.latestReadyRevisionName -o tsv)"
+
+          curl --fail --silent --show-error --retry 12 --retry-delay 10 --retry-all-errors "${APP_URL}/health"
+          if [[ -z "$EXECUTOR_READY_REVISION" ]]; then
+            echo "::error::Access executor app did not report a ready revision"
+            exit 1
+          fi
+          echo "::notice::Application URL: ${APP_URL}"
+          echo "::notice::Access executor revision: ${EXECUTOR_READY_REVISION}"

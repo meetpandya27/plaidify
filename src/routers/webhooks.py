@@ -16,14 +16,27 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from src.database import User, Webhook, get_db
+from src import session_store
+from src.database import User, Webhook, decrypt_credential, encrypt_credential, get_db
 from src.dependencies import get_current_user
 from src.logging_config import get_logger
-from src import session_store
 
 logger = get_logger("api.webhooks")
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+def _encrypt_webhook_secret(secret: str) -> str:
+    """Encrypt webhook secrets before storing them in the database."""
+    return encrypt_credential(secret)
+
+
+def _decrypt_webhook_secret(stored_secret: str) -> str:
+    """Decrypt webhook secrets with backward-compatible plaintext fallback."""
+    try:
+        return decrypt_credential(stored_secret)
+    except Exception:
+        return stored_secret
 
 
 @router.post("/register")
@@ -49,9 +62,7 @@ async def register_webhook(
         )
 
     # Validate URL format
-    if not url.startswith("https://") and not url.startswith(
-        "http://localhost"
-    ):
+    if not url.startswith("https://") and not url.startswith("http://localhost"):
         raise HTTPException(
             status_code=422,
             detail="Webhook URL must use HTTPS (http://localhost allowed for development).",
@@ -61,16 +72,14 @@ async def register_webhook(
 
     session = _get_link_session(link_token)
     if not session:
-        raise HTTPException(
-            status_code=404, detail="Link session not found."
-        )
+        raise HTTPException(status_code=404, detail="Link session not found.")
 
     webhook_id = str(uuid.uuid4())
     db_webhook = Webhook(
         id=webhook_id,
         link_token=link_token,
         url=url,
-        secret=webhook_secret,
+        secret=_encrypt_webhook_secret(webhook_secret),
         user_id=user.id,
     )
     db.add(db_webhook)
@@ -78,9 +87,7 @@ async def register_webhook(
 
     logger.info(
         "Webhook registered",
-        extra={
-            "extra_data": {"webhook_id": webhook_id, "link_token": link_token}
-        },
+        extra={"extra_data": {"webhook_id": webhook_id, "link_token": link_token}},
     )
     return {"webhook_id": webhook_id, "status": "registered"}
 
@@ -98,9 +105,7 @@ async def list_webhooks(
                 "webhook_id": wh.id,
                 "link_token": wh.link_token,
                 "url": wh.url,
-                "created_at": (
-                    wh.created_at.isoformat() if wh.created_at else None
-                ),
+                "created_at": (wh.created_at.isoformat() if wh.created_at else None),
             }
             for wh in webhooks
         ],
@@ -115,9 +120,7 @@ async def delete_webhook(
     db: Session = Depends(get_db),
 ):
     """Delete a registered webhook."""
-    wh = (
-        db.query(Webhook).filter_by(id=webhook_id, user_id=user.id).first()
-    )
+    wh = db.query(Webhook).filter_by(id=webhook_id, user_id=user.id).first()
     if not wh:
         raise HTTPException(status_code=404, detail="Webhook not found.")
     db.delete(wh)
@@ -129,6 +132,7 @@ async def delete_webhook(
 @router.post("/test")
 async def test_webhook(
     request: Request,
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Send a test event to a registered webhook URL."""
@@ -137,7 +141,7 @@ async def test_webhook(
 
     if not webhook_id:
         raise HTTPException(status_code=404, detail="Webhook not found.")
-    wh = db.query(Webhook).filter_by(id=webhook_id).first()
+    wh = db.query(Webhook).filter_by(id=webhook_id, user_id=user.id).first()
     if not wh:
         raise HTTPException(status_code=404, detail="Webhook not found.")
 
@@ -148,9 +152,7 @@ async def test_webhook(
         "data": {"message": "This is a test webhook event."},
     }
 
-    success = await _deliver_webhook(
-        wh.id, wh.url, wh.secret, test_payload
-    )
+    success = await _deliver_webhook(wh.id, wh.url, _decrypt_webhook_secret(wh.secret), test_payload)
     return {"status": "delivered" if success else "failed"}
 
 
@@ -161,9 +163,7 @@ async def get_webhook_deliveries(
     db: Session = Depends(get_db),
 ):
     """Get delivery history for a webhook."""
-    wh = (
-        db.query(Webhook).filter_by(id=webhook_id, user_id=user.id).first()
-    )
+    wh = db.query(Webhook).filter_by(id=webhook_id, user_id=user.id).first()
     if not wh:
         raise HTTPException(status_code=404, detail="Webhook not found.")
     deliveries = session_store.get_webhook_deliveries(webhook_id)
@@ -186,9 +186,7 @@ async def _deliver_webhook(
     retries: int = 3,
 ) -> bool:
     """Deliver a webhook payload with HMAC signature and retry logic."""
-    payload_bytes = json_mod.dumps(payload, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    payload_bytes = json_mod.dumps(payload, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(
         secret.encode("utf-8"),
         payload_bytes,
@@ -206,9 +204,7 @@ async def _deliver_webhook(
     for attempt in range(retries):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    url, content=payload_bytes, headers=headers
-                )
+                resp = await client.post(url, content=payload_bytes, headers=headers)
                 delivery = {
                     "attempt": attempt + 1,
                     "status_code": resp.status_code,
@@ -235,9 +231,7 @@ async def _deliver_webhook(
     return False
 
 
-async def fire_webhooks_for_session(
-    link_token: str, event: str, data: Optional[Dict] = None
-):
+async def fire_webhooks_for_session(link_token: str, event: str, data: Optional[Dict] = None):
     """Fire all registered webhooks for a link session event."""
     from src.routers.link_sessions import _get_link_session
 
@@ -260,7 +254,12 @@ async def fire_webhooks_for_session(
         webhooks = db.query(Webhook).filter_by(link_token=link_token).all()
         for wh in webhooks:
             asyncio.create_task(
-                _deliver_webhook(wh.id, wh.url, wh.secret, payload)
+                _deliver_webhook(
+                    wh.id,
+                    wh.url,
+                    _decrypt_webhook_secret(wh.secret),
+                    payload,
+                )
             )
     finally:
         db.close()

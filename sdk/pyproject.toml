@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "plaidify"
-version = "0.3.0a1"
+version = "0.3.0b1"
 description = "The open-source Python SDK for authenticated web data extraction — for developers and AI agents."
 readme = "README.md"
 license = "MIT"

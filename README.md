@@ -7,7 +7,7 @@
   <br /><br />
   <strong>The missing infrastructure between AI agents and the authenticated web.</strong>
   <br />
-  Give any app or agent a REST API to log in, read data, and take actions on <em>any</em> website — <br />
+  Give any app or agent a REST API to log in and read data from <em>any</em> website — <br />
   banks, utilities, portals, government sites — without writing a single scraper.
   <br /><br />
   <a href="#-try-the-demo">Try the Demo</a> &nbsp;·&nbsp;
@@ -57,7 +57,7 @@ Security layers:  Rate limiting ─► CORS ─► JWT auth ─► RSA decrypt
                   ─► Per-user DEK envelope encryption ─► Key rotation
 ```
 
-**One call. Structured JSON out. Any website. Enterprise-grade security.**
+**One call. Structured JSON out. Any website. Strict read-only defaults.**
 
 ```bash
 curl -X POST http://localhost:8000/connect \
@@ -81,6 +81,22 @@ curl -X POST http://localhost:8000/connect \
   }
 }
 ```
+
+---
+
+## Production Safety Defaults
+
+Plaidify now defaults to a strict post-auth read-only runtime for browser-driven blueprints.
+
+- Login and MFA are treated as bounded setup phases.
+- After authentication, the runtime blocks fill, select, and execute_js steps.
+- Post-auth navigation requests that look like form submissions are blocked, along with PUT, PATCH, and DELETE requests.
+- Risky clicks such as pay, transfer, delete, approve, and save are denied by policy.
+- Extra browser windows are closed during the read phase.
+- Downloads are only allowed during the read phase and are captured as temporary session artifacts.
+- API keys and registered agents are constrained by their allowed sites and allowed scopes.
+
+This means open-source users can still attempt arbitrary authenticated sites, while production deployments get a consistent safe-by-default posture without relying on a curated site allowlist.
 
 ---
 
@@ -206,6 +222,21 @@ docker compose up --build
 # → API live at http://localhost:8000
 # → Swagger docs at http://localhost:8000/docs
 ```
+
+### Option A2: Production-style Docker Compose
+
+```bash
+cp .env.production.example .env.production
+mkdir -p .secrets nginx/certs
+openssl rand -base64 32 > .secrets/postgres_password
+openssl rand -base64 32 > .secrets/redis_password
+chmod 600 .secrets/postgres_password .secrets/redis_password
+
+# Add TLS certs to nginx/certs/fullchain.pem and nginx/certs/privkey.pem
+docker compose -f docker-compose.production.yml up --build -d
+```
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full production checklist.
 
 ### Option B: Local
 

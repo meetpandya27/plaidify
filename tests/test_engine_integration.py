@@ -7,12 +7,12 @@ to verify the full flow: login → extract data → logout.
 Requires: playwright browsers installed (run: playwright install chromium)
 """
 
-import asyncio
-import os
-import pytest
 import multiprocessing
+import os
 import time
+
 import httpx
+import pytest
 
 # Mark all tests in this module as requiring playwright
 pytestmark = pytest.mark.skipif(
@@ -26,8 +26,10 @@ pytestmark = pytest.mark.skipif(
 
 def _run_test_site():
     """Run the test site in a subprocess."""
-    from example_site.server import app
     import uvicorn
+
+    from example_site.server import app
+
     uvicorn.run(app, host="127.0.0.1", port=18080, log_level="error")
 
 
@@ -62,6 +64,7 @@ def test_site():
 def test_bank_blueprint():
     """Load the test_bank V2 blueprint."""
     from pathlib import Path
+
     from src.core.blueprint import load_blueprint
 
     path = Path("connectors/test_bank.json")
@@ -83,6 +86,7 @@ class TestStepExecutor:
     async def test_login_flow(self, test_site, test_bank_blueprint):
         """Test that the step executor can log into the test site."""
         from playwright.async_api import async_playwright
+
         from src.core.step_executor import StepExecutor
 
         async with async_playwright() as pw:
@@ -106,6 +110,7 @@ class TestStepExecutor:
     async def test_login_invalid_creds(self, test_site, test_bank_blueprint):
         """Test that invalid credentials don't reach the dashboard."""
         from playwright.async_api import async_playwright
+
         from src.core.step_executor import StepExecutor
         from src.exceptions import ConnectionFailedError
 
@@ -133,8 +138,9 @@ class TestDataExtraction:
     async def test_extract_account_data(self, test_site, test_bank_blueprint):
         """Test that we can extract structured data from the dashboard."""
         from playwright.async_api import async_playwright
-        from src.core.step_executor import StepExecutor
+
         from src.core.data_extractor import DataExtractor
+        from src.core.step_executor import StepExecutor
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
@@ -173,8 +179,9 @@ class TestDataExtraction:
     async def test_extract_specific_fields(self, test_site, test_bank_blueprint):
         """Test extracting only a subset of fields."""
         from playwright.async_api import async_playwright
-        from src.core.step_executor import StepExecutor
+
         from src.core.data_extractor import DataExtractor
+        from src.core.step_executor import StepExecutor
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
@@ -186,10 +193,7 @@ class TestDataExtraction:
             await executor.execute_steps(test_bank_blueprint.auth.steps, context="auth")
 
             # Extract only current_bill
-            limited_fields = {
-                k: v for k, v in test_bank_blueprint.extract.items()
-                if k == "current_bill"
-            }
+            limited_fields = {k: v for k, v in test_bank_blueprint.extract.items() if k == "current_bill"}
             extractor = DataExtractor(page)
             data = await extractor.extract(limited_fields, site="test_bank")
 
@@ -234,7 +238,7 @@ class TestBrowserPool:
 
         async with BrowserPool() as pool:
             assert pool.active_count == 0
-            ctx = await pool.acquire("cm_session")
+            await pool.acquire("cm_session")
             assert pool.active_count == 1
             await pool.release("cm_session")
 
@@ -261,8 +265,9 @@ class TestEngineIntegration:
         import json
         import tempfile
         from pathlib import Path
-        from src.core.engine import connect_to_site
+
         from src.core.browser_pool import shutdown_browser_pool
+        from src.core.engine import connect_to_site
 
         # Create a modified blueprint pointing to test port
         bp_path = Path("connectors/test_bank.json")
@@ -283,7 +288,6 @@ class TestEngineIntegration:
             os.environ["CONNECTORS_DIR"] = tmpdir
 
             try:
-                from src.config import Settings
                 # Use a fresh settings load to pick up the new dir
                 # The engine uses settings.connectors_dir
                 result = await connect_to_site(

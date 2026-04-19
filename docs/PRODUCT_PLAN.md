@@ -112,6 +112,19 @@ data = await tool.fetch(blueprint="state_farm_insurance", user_token="usr_abc123
 └──────────────────┘        └─────────────────────────────────────┘
 ```
 
+### Execution Isolation Direction
+
+Plaidify should evolve from session-level browser isolation to **access-job isolation**.
+
+Recommended model:
+
+- The API remains the control plane for auth, consent, queueing, and audit.
+- Website access runs in an isolated executor per access job.
+- Each executor owns its own browser session, temporary storage, artifacts, and cleanup lifecycle.
+- AI agents request scoped jobs and receive structured output, not raw credentials or unrestricted browser control.
+
+See [docs/ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md) for the detailed runtime model.
+
 ### Target Architecture (End of Phase 5)
 
 ```
@@ -128,13 +141,14 @@ data = await tool.fetch(blueprint="state_farm_insurance", user_token="usr_abc123
 │  │                     ORCHESTRATION LAYER                          │   │
 │  │  • Session Manager    • Consent Engine    • Rate Limiter         │   │
 │  │  • Retry/Circuit Breaker   • Queue (Redis)                      │   │
+│  │  • Access Job Orchestrator • User/Site Lock Manager             │   │
 │  └──────────────────────────────┬──────────────────────────────────┘   │
 │                                 ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                      BROWSER ENGINE  ✅                          │   │
+│  │                 ISOLATED ACCESS EXECUTORS                       │   │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐     │   │
-│  │  │  Playwright   │  │  Step        │  │  Browser Pool     │     │   │
-│  │  │  Driver  ✅   │  │  Executor ✅ │  │  Manager ✅       │     │   │
+│  │  │  Playwright   │  │  Step        │  │  Job-scoped Temp  │     │   │
+│  │  │  Driver  ✅   │  │  Executor ✅ │  │  Storage / Cleanup│     │   │
 │  │  └──────────────┘  └──────────────┘  └───────────────────┘     │   │
 │  └──────────────────────────────┬──────────────────────────────────┘   │
 │                                 ▼                                       │

@@ -8,12 +8,10 @@ Tests for the agent-integration endpoints:
 - MCP server tools
 """
 
-import json
-import pytest
 from unittest.mock import AsyncMock, patch
 
-from fastapi.testclient import TestClient
-from src.main import app
+import pytest
+
 from src import session_store
 
 
@@ -88,6 +86,7 @@ class TestLinkSessions:
         resp = client.post(
             f"/link/sessions/{token}/event",
             json={"event": "INSTITUTION_SELECTED", "site": "greengrid_energy"},
+            headers=auth_headers,
         )
         assert resp.status_code == 200
 
@@ -107,7 +106,7 @@ class TestLinkSessions:
             ("CONNECTED", "completed"),
         ]
         for event_name, expected_status in events:
-            client.post(f"/link/sessions/{token}/event", json={"event": event_name})
+            client.post(f"/link/sessions/{token}/event", json={"event": event_name}, headers=auth_headers)
             status = client.get(f"/link/sessions/{token}/status").json()
             assert status["status"] == expected_status
 
@@ -115,14 +114,14 @@ class TestLinkSessions:
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        client.post(f"/link/sessions/{token}/event", json={"event": "INSTITUTION_SELECTED"})
-        client.post(f"/link/sessions/{token}/event", json={"event": "CREDENTIALS_SUBMITTED"})
-        client.post(f"/link/sessions/{token}/event", json={"event": "MFA_REQUIRED"})
+        client.post(f"/link/sessions/{token}/event", json={"event": "INSTITUTION_SELECTED"}, headers=auth_headers)
+        client.post(f"/link/sessions/{token}/event", json={"event": "CREDENTIALS_SUBMITTED"}, headers=auth_headers)
+        client.post(f"/link/sessions/{token}/event", json={"event": "MFA_REQUIRED"}, headers=auth_headers)
 
         status = client.get(f"/link/sessions/{token}/status").json()
         assert status["status"] == "mfa_required"
 
-        client.post(f"/link/sessions/{token}/event", json={"event": "MFA_SUBMITTED"})
+        client.post(f"/link/sessions/{token}/event", json={"event": "MFA_SUBMITTED"}, headers=auth_headers)
         status = client.get(f"/link/sessions/{token}/status").json()
         assert status["status"] == "verifying_mfa"
 
@@ -133,7 +132,7 @@ class TestLinkSessions:
         # Manually expire the session
         session_store._mem_link_sessions[token]["created_at"] = 0
 
-        resp = client.post(f"/link/sessions/{token}/event", json={"event": "TEST"})
+        resp = client.post(f"/link/sessions/{token}/event", json={"event": "TEST"}, headers=auth_headers)
         assert resp.status_code == 410
 
 
@@ -146,11 +145,15 @@ class TestWebhooks:
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        resp = client.post("/webhooks/register", json={
-            "link_token": token,
-            "url": "http://localhost:9999/webhook",
-            "secret": "test-secret-key",
-        }, headers=auth_headers)
+        resp = client.post(
+            "/webhooks/register",
+            json={
+                "link_token": token,
+                "url": "http://localhost:9999/webhook",
+                "secret": "test-secret-key",
+            },
+            headers=auth_headers,
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "webhook_id" in data
@@ -164,23 +167,31 @@ class TestWebhooks:
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        resp = client.post("/webhooks/register", json={
-            "link_token": token,
-            "url": "http://not-localhost:9999/webhook",
-            "secret": "s",
-        }, headers=auth_headers)
+        resp = client.post(
+            "/webhooks/register",
+            json={
+                "link_token": token,
+                "url": "http://not-localhost:9999/webhook",
+                "secret": "s",
+            },
+            headers=auth_headers,
+        )
         assert resp.status_code == 422
 
     def test_register_webhook_session_not_found(self, client, auth_headers):
-        resp = client.post("/webhooks/register", json={
-            "link_token": "nonexistent",
-            "url": "https://example.com/hook",
-            "secret": "s",
-        }, headers=auth_headers)
+        resp = client.post(
+            "/webhooks/register",
+            json={
+                "link_token": "nonexistent",
+                "url": "https://example.com/hook",
+                "secret": "s",
+            },
+            headers=auth_headers,
+        )
         assert resp.status_code == 404
 
-    def test_test_webhook_not_found(self, client):
-        resp = client.post("/webhooks/test", json={"webhook_id": "nope"})
+    def test_test_webhook_not_found(self, client, auth_headers):
+        resp = client.post("/webhooks/test", json={"webhook_id": "nope"}, headers=auth_headers)
         assert resp.status_code == 404
 
     @patch("src.routers.webhooks._deliver_webhook", new_callable=AsyncMock, return_value=True)
@@ -188,14 +199,18 @@ class TestWebhooks:
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        reg_resp = client.post("/webhooks/register", json={
-            "link_token": token,
-            "url": "http://localhost:9999/hook",
-            "secret": "secret",
-        }, headers=auth_headers)
+        reg_resp = client.post(
+            "/webhooks/register",
+            json={
+                "link_token": token,
+                "url": "http://localhost:9999/hook",
+                "secret": "secret",
+            },
+            headers=auth_headers,
+        )
         webhook_id = reg_resp.json()["webhook_id"]
 
-        resp = client.post("/webhooks/test", json={"webhook_id": webhook_id})
+        resp = client.post("/webhooks/test", json={"webhook_id": webhook_id}, headers=auth_headers)
         assert resp.status_code == 200
         assert resp.json()["status"] == "delivered"
         mock_deliver.assert_called_once()
@@ -205,12 +220,24 @@ class TestWebhooks:
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        client.post("/webhooks/register", json={
-            "link_token": token, "url": "http://localhost:9999/hook1", "secret": "s1",
-        }, headers=auth_headers)
-        client.post("/webhooks/register", json={
-            "link_token": token, "url": "http://localhost:9999/hook2", "secret": "s2",
-        }, headers=auth_headers)
+        client.post(
+            "/webhooks/register",
+            json={
+                "link_token": token,
+                "url": "http://localhost:9999/hook1",
+                "secret": "s1",
+            },
+            headers=auth_headers,
+        )
+        client.post(
+            "/webhooks/register",
+            json={
+                "link_token": token,
+                "url": "http://localhost:9999/hook2",
+                "secret": "s2",
+            },
+            headers=auth_headers,
+        )
 
         resp = client.get("/webhooks", headers=auth_headers)
         assert resp.status_code == 200
@@ -231,9 +258,15 @@ class TestWebhooks:
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        reg_resp = client.post("/webhooks/register", json={
-            "link_token": token, "url": "http://localhost:9999/hook", "secret": "s",
-        }, headers=auth_headers)
+        reg_resp = client.post(
+            "/webhooks/register",
+            json={
+                "link_token": token,
+                "url": "http://localhost:9999/hook",
+                "secret": "s",
+            },
+            headers=auth_headers,
+        )
         webhook_id = reg_resp.json()["webhook_id"]
 
         resp = client.delete(f"/webhooks/{webhook_id}", headers=auth_headers)
@@ -252,9 +285,15 @@ class TestWebhooks:
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        reg_resp = client.post("/webhooks/register", json={
-            "link_token": token, "url": "http://localhost:9999/hook", "secret": "s",
-        }, headers=auth_headers)
+        reg_resp = client.post(
+            "/webhooks/register",
+            json={
+                "link_token": token,
+                "url": "http://localhost:9999/hook",
+                "secret": "s",
+            },
+            headers=auth_headers,
+        )
         webhook_id = reg_resp.json()["webhook_id"]
 
         # Second user can't delete first user's webhook
@@ -273,6 +312,7 @@ class TestPublicTokenExchange:
 
         # Create a real access token in DB first
         from src.database import AccessToken, Link, get_db
+
         db = next(get_db())
         # Ensure a Link record exists
         link = db.query(Link).filter_by(link_token=token).first()
@@ -295,10 +335,14 @@ class TestPublicTokenExchange:
         db.close()
 
         # Fire CONNECTED event (this creates the public_token)
-        resp = client.post(f"/link/sessions/{token}/event", json={
-            "event": "CONNECTED",
-            "access_token": "at-test-123",
-        })
+        resp = client.post(
+            f"/link/sessions/{token}/event",
+            json={
+                "event": "CONNECTED",
+                "access_token": "at-test-123",
+            },
+            headers=auth_headers,
+        )
         return token, resp.json()
 
     def test_connected_event_returns_public_token(self, client, auth_headers):
@@ -315,9 +359,13 @@ class TestPublicTokenExchange:
         token, data = self._create_session_with_access_token(client, auth_headers)
         public_token = data["public_token"]
 
-        resp = client.post("/exchange/public_token", json={
-            "public_token": public_token,
-        }, headers=auth_headers)
+        resp = client.post(
+            "/exchange/public_token",
+            json={
+                "public_token": public_token,
+            },
+            headers=auth_headers,
+        )
         assert resp.status_code == 200
         assert resp.json()["access_token"] == "at-test-123"
 
@@ -326,21 +374,33 @@ class TestPublicTokenExchange:
         public_token = data["public_token"]
 
         # First exchange succeeds
-        resp1 = client.post("/exchange/public_token", json={
-            "public_token": public_token,
-        }, headers=auth_headers)
+        resp1 = client.post(
+            "/exchange/public_token",
+            json={
+                "public_token": public_token,
+            },
+            headers=auth_headers,
+        )
         assert resp1.status_code == 200
 
         # Second exchange fails (already used)
-        resp2 = client.post("/exchange/public_token", json={
-            "public_token": public_token,
-        }, headers=auth_headers)
+        resp2 = client.post(
+            "/exchange/public_token",
+            json={
+                "public_token": public_token,
+            },
+            headers=auth_headers,
+        )
         assert resp2.status_code == 410
 
     def test_exchange_public_token_invalid(self, client, auth_headers):
-        resp = client.post("/exchange/public_token", json={
-            "public_token": "invalid-token",
-        }, headers=auth_headers)
+        resp = client.post(
+            "/exchange/public_token",
+            json={
+                "public_token": "invalid-token",
+            },
+            headers=auth_headers,
+        )
         assert resp.status_code == 404
 
     def test_exchange_public_token_missing(self, client, auth_headers):
@@ -356,9 +416,13 @@ class TestPublicTokenExchange:
         public_token = data["public_token"]
 
         # Second user can't exchange first user's token
-        resp = client.post("/exchange/public_token", json={
-            "public_token": public_token,
-        }, headers=second_user_headers)
+        resp = client.post(
+            "/exchange/public_token",
+            json={
+                "public_token": public_token,
+            },
+            headers=second_user_headers,
+        )
         assert resp.status_code == 403
 
 
@@ -367,12 +431,14 @@ class TestPublicTokenExchange:
 
 class TestSDKModels:
     def test_link_session_model(self):
-        import sys
         import os
+        import sys
+
         sdk_path = os.path.join(os.path.dirname(__file__), "..", "sdk")
         sys.path.insert(0, sdk_path)
         try:
             from plaidify.models import LinkSession
+
             session = LinkSession(link_token="abc", link_url="/link?token=abc")
             assert session.link_token == "abc"
             assert session.status == "awaiting_institution"
@@ -380,24 +446,28 @@ class TestSDKModels:
             sys.path.pop(0)
 
     def test_link_event_model(self):
-        import sys
         import os
+        import sys
+
         sdk_path = os.path.join(os.path.dirname(__file__), "..", "sdk")
         sys.path.insert(0, sdk_path)
         try:
             from plaidify.models import LinkEvent
+
             event = LinkEvent(event="CONNECTED", data={"access_token": "xyz"})
             assert event.event == "CONNECTED"
         finally:
             sys.path.pop(0)
 
     def test_webhook_registration_model(self):
-        import sys
         import os
+        import sys
+
         sdk_path = os.path.join(os.path.dirname(__file__), "..", "sdk")
         sys.path.insert(0, sdk_path)
         try:
             from plaidify.models import WebhookRegistration
+
             reg = WebhookRegistration(webhook_id="wh-123")
             assert reg.status == "registered"
         finally:

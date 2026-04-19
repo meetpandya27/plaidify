@@ -2,9 +2,10 @@
 Pydantic request/response models for the Plaidify API.
 """
 
-from pydantic import BaseModel, EmailStr, Field
+import re
 from typing import Any, Dict, Optional
 
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 # ── Connection Models ─────────────────────────────────────────────────────────
 
@@ -19,10 +20,18 @@ class ConnectRequest(BaseModel):
 
     site: str = Field(..., min_length=1, max_length=64, description="Site identifier matching a blueprint name.")
     username: Optional[str] = Field(default=None, max_length=256, description="Plaintext username (omit if encrypted).")
-    password: Optional[str] = Field(default=None, max_length=4096, description="Plaintext password (omit if encrypted).")
-    encrypted_username: Optional[str] = Field(default=None, max_length=4096, description="Base64-encoded RSA-OAEP encrypted username.")
-    encrypted_password: Optional[str] = Field(default=None, max_length=4096, description="Base64-encoded RSA-OAEP encrypted password.")
-    link_token: Optional[str] = Field(default=None, max_length=256, description="Link token whose ephemeral key encrypts the credentials.")
+    password: Optional[str] = Field(
+        default=None, max_length=4096, description="Plaintext password (omit if encrypted)."
+    )
+    encrypted_username: Optional[str] = Field(
+        default=None, max_length=4096, description="Base64-encoded RSA-OAEP encrypted username."
+    )
+    encrypted_password: Optional[str] = Field(
+        default=None, max_length=4096, description="Base64-encoded RSA-OAEP encrypted password."
+    )
+    link_token: Optional[str] = Field(
+        default=None, max_length=256, description="Link token whose ephemeral key encrypts the credentials."
+    )
     extract_fields: Optional[list[str]] = Field(
         default=None,
         max_length=100,
@@ -34,15 +43,10 @@ class ConnectResponse(BaseModel):
     """Response from POST /connect."""
 
     status: str = Field(..., description="Connection status (e.g., 'connected', 'mfa_required').")
-    data: Optional[Dict[str, Any]] = Field(
-        default=None, description="Extracted data from the target site."
-    )
-    session_id: Optional[str] = Field(
-        default=None, description="Session ID for MFA continuation."
-    )
-    mfa_type: Optional[str] = Field(
-        default=None, description="Type of MFA required (if status is 'mfa_required')."
-    )
+    job_id: Optional[str] = Field(default=None, description="Access job ID for tracking execution status.")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="Extracted data from the target site.")
+    session_id: Optional[str] = Field(default=None, description="Session ID for MFA continuation.")
+    mfa_type: Optional[str] = Field(default=None, description="Type of MFA required (if status is 'mfa_required').")
     metadata: Optional[Dict[str, Any]] = Field(
         default=None, description="Additional metadata (e.g., MFA question text)."
     )
@@ -73,7 +77,20 @@ class UserRegisterRequest(BaseModel):
 
     username: str = Field(..., min_length=3, max_length=50)
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter.")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter.")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one digit.")
+        if not re.search(r"[^A-Za-z0-9]", v):
+            raise ValueError("Password must contain at least one special character.")
+        return v
 
 
 class UserLoginRequest(BaseModel):
@@ -102,6 +119,32 @@ class OAuth2LoginRequest(BaseModel):
 
     provider: str = Field(..., max_length=64, description="OAuth2 provider name (e.g., 'google', 'github').")
     oauth_token: str = Field(..., max_length=4096, description="OAuth2 token from the provider.")
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Request body for POST /auth/forgot-password."""
+
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Request body for POST /auth/reset-password."""
+
+    token: str = Field(..., max_length=256)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter.")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter.")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one digit.")
+        if not re.search(r"[^A-Za-z0-9]", v):
+            raise ValueError("Password must contain at least one special character.")
+        return v
 
 
 class UserProfileResponse(BaseModel):

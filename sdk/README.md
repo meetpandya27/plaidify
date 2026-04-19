@@ -38,6 +38,11 @@ from plaidify import PlaidifySync
 with PlaidifySync(server_url="http://localhost:8000") as pfy:
     result = pfy.connect("greengrid_energy", username="demo_user", password="demo_pass")
     print(result.data)
+
+    # Detached jobs can also be polled explicitly
+    if result.pending:
+        job = pfy.wait_for_access_job(result.job_id)
+        print(job.result)
 ```
 
 ### With MFA Handling
@@ -52,6 +57,35 @@ result = await pfy.connect(
     password="mfa_pass",
     mfa_handler=handle_mfa,
 )
+
+# With a handler, the SDK follows the same detached job through MFA and
+# returns the final connected result when the job completes.
+
+### Detached Connect Jobs
+
+Plaidify may return a detached connect job instead of immediate data when the
+browser flow needs more time.
+
+```python
+result = await pfy.connect(
+    "greengrid_energy",
+    username="demo_user",
+    password="demo_pass",
+)
+
+if result.pending:
+    print(result.job_id)
+    job = await pfy.wait_for_access_job(result.job_id)
+    print(job.status)
+    print(job.result)
+```
+
+You can also list or fetch jobs directly:
+
+```python
+jobs = await pfy.list_access_jobs(limit=10)
+job = await pfy.get_access_job("ajob-123")
+```
 ```
 
 ### Multi-Step Link Flow (Plaid-style)
@@ -102,6 +136,9 @@ plaidify health
 | Method | Description |
 |--------|-------------|
 | `connect(site, *, username, password, extract_fields, mfa_handler)` | Connect + extract in one call |
+| `list_access_jobs(limit, site, status, job_type)` | List tracked access jobs |
+| `get_access_job(job_id)` | Fetch one access job |
+| `wait_for_access_job(job_id, poll_interval, timeout)` | Poll a job to terminal state |
 | `submit_mfa(session_id, code)` | Submit MFA code |
 | `mfa_status(session_id)` | Check MFA session status |
 | `create_link(site)` | Create a link token (step 1) |
@@ -120,7 +157,8 @@ Same API as above, but blocking. Use `with` instead of `async with`.
 
 ### Models
 
-- **`ConnectResult`** — `status`, `data`, `session_id`, `mfa_type`, `metadata`
+- **`ConnectResult`** — `status`, `job_id`, `data`, `session_id`, `mfa_type`, `metadata`
+- **`AccessJobInfo`** — `job_id`, `site`, `job_type`, `status`, `result`, `metadata`
 - **`BlueprintInfo`** — `site`, `name`, `domain`, `tags`, `has_mfa`, `extract_fields`
 - **`LinkResult`** — `link_token`, `access_token`, `site`
 - **`MFAChallenge`** — `session_id`, `site`, `mfa_type`, `metadata`

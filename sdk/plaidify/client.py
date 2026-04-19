@@ -41,6 +41,8 @@ from plaidify.exceptions import (
     ServerError,
 )
 from plaidify.models import (
+    AccessJobInfo,
+    AccessJobListResult,
     AgentInfo,
     AgentListResult,
     ApiKeyInfo,
@@ -298,6 +300,9 @@ class Plaidify:
 
         result = self._parse_connect_response(r.json(), site)
 
+        if result.pending and mfa_handler and result.job_id:
+            return await self._resolve_connect_job(site, result.job_id, mfa_handler)
+
         # Auto-handle MFA if handler provided
         if result.mfa_required and mfa_handler and result.session_id:
             challenge = MFAChallenge(
@@ -313,7 +318,9 @@ class Plaidify:
                     message=mfa_result.error or "MFA submission failed.",
                     status_code=400,
                 )
-            # After MFA, reconnect to get the data
+            if result.job_id:
+                return await self._resolve_connect_job(site, result.job_id, mfa_handler)
+            # Fallback for older servers that do not return job_id.
             r2 = await self._http.post("/connect", json=payload)
             _raise_for_api_error(r2)
             result = self._parse_connect_response(r2.json(), site)
@@ -328,6 +335,73 @@ class Plaidify:
             )
 
         return result
+
+    async def list_access_jobs(
+        self,
+        *,
+        limit: int = 20,
+        site: Optional[str] = None,
+        status: Optional[str] = None,
+        job_type: Optional[str] = None,
+    ) -> AccessJobListResult:
+        """List tracked access jobs for the authenticated user."""
+        params: Dict[str, Any] = {"limit": limit}
+        if site is not None:
+            params["site"] = site
+        if status is not None:
+            params["status"] = status
+        if job_type is not None:
+            params["job_type"] = job_type
+
+        try:
+            r = await self._http.get("/access_jobs", params=params)
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        jobs = [self._parse_access_job(item) for item in d.get("jobs", [])]
+        return AccessJobListResult(jobs=jobs, count=d.get("count", len(jobs)))
+
+    async def get_access_job(self, job_id: str) -> AccessJobInfo:
+        """Fetch a single access job by ID."""
+        try:
+            r = await self._http.get(f"/access_jobs/{job_id}")
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+
+        if r.status_code == 404:
+            raise PlaidifyError(
+                message=f"Access job not found: {job_id}",
+                status_code=404,
+                detail={"job_id": job_id},
+            )
+
+        _raise_for_api_error(r)
+        return self._parse_access_job(r.json())
+
+    async def wait_for_access_job(
+        self,
+        job_id: str,
+        *,
+        poll_interval: float = 0.5,
+        timeout: float = 30.0,
+    ) -> AccessJobInfo:
+        """Poll an access job until it leaves a pending/running state."""
+        deadline = time.monotonic() + timeout
+
+        while True:
+            job = await self.get_access_job(job_id)
+            if not job.pending:
+                return job
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PlaidifyError(
+                    message=f"Timed out waiting for access job: {job_id}",
+                    status_code=408,
+                    detail={"job_id": job_id, "status": job.status},
+                )
+            await asyncio.sleep(min(poll_interval, remaining))
 
     # ── MFA ───────────────────────────────────────────────────────────────────
 
@@ -1252,11 +1326,105 @@ class Plaidify:
         """Parse a raw JSON dict into a ConnectResult."""
         return ConnectResult(
             status=data.get("status", "unknown"),
+            job_id=data.get("job_id"),
             data=data.get("data"),
             session_id=data.get("session_id"),
             mfa_type=data.get("mfa_type"),
             metadata=data.get("metadata"),
         )
+
+    @staticmethod
+    def _parse_access_job(data: Dict[str, Any]) -> AccessJobInfo:
+        """Parse a raw JSON dict into an AccessJobInfo."""
+        return AccessJobInfo(
+            job_id=data["job_id"],
+            site=data["site"],
+            job_type=data["job_type"],
+            status=data["status"],
+            session_id=data.get("session_id"),
+            mfa_type=data.get("mfa_type"),
+            error_message=data.get("error_message"),
+            metadata=data.get("metadata"),
+            result=data.get("result"),
+            created_at=data.get("created_at"),
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
+        )
+
+    async def _resolve_connect_job(
+        self,
+        site: str,
+        job_id: str,
+        mfa_handler: MFAHandler,
+        *,
+        poll_interval: float = 0.5,
+        timeout: float = 60.0,
+    ) -> ConnectResult:
+        """Resolve a detached connect job, handling MFA on the same job if needed."""
+        deadline = time.monotonic() + timeout
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PlaidifyError(
+                    message=f"Timed out waiting for connect job: {job_id}",
+                    status_code=408,
+                    detail={"job_id": job_id},
+                )
+
+            job = await self.wait_for_access_job(
+                job_id,
+                poll_interval=poll_interval,
+                timeout=remaining,
+            )
+
+            if job.completed:
+                raw_result = dict(job.result or {})
+                raw_result.setdefault("job_id", job.job_id)
+                raw_result.setdefault("session_id", job.session_id)
+                raw_result.setdefault("mfa_type", job.mfa_type)
+                raw_result.setdefault("metadata", job.metadata)
+                if not raw_result:
+                    raw_result["status"] = "completed"
+                return self._parse_connect_response(raw_result, site)
+
+            if job.mfa_required:
+                if not job.session_id:
+                    raise PlaidifyError(
+                        message="Access job requires MFA but no session_id was returned.",
+                        status_code=500,
+                        detail={"job_id": job.job_id},
+                    )
+
+                code = await mfa_handler(
+                    MFAChallenge(
+                        session_id=job.session_id,
+                        site=job.site,
+                        mfa_type=job.mfa_type or "unknown",
+                        metadata=job.metadata,
+                    )
+                )
+                mfa_result = await self.submit_mfa(job.session_id, code)
+                if mfa_result.status == "error":
+                    raise PlaidifyError(
+                        message=mfa_result.error or "MFA submission failed.",
+                        status_code=400,
+                    )
+                await asyncio.sleep(min(poll_interval, max(deadline - time.monotonic(), 0)))
+                continue
+
+            if job.status == "blocked":
+                raise PlaidifyError(
+                    message=job.error_message or f"Access job blocked: {job.job_id}",
+                    status_code=409,
+                    detail={"job_id": job.job_id},
+                )
+
+            raise PlaidifyError(
+                message=job.error_message or f"Access job failed: {job.job_id}",
+                status_code=500,
+                detail={"job_id": job.job_id, "status": job.status},
+            )
 
     @staticmethod
     def _rsa_encrypt(pem_public_key: str, plaintext: str) -> str:
@@ -1340,6 +1508,41 @@ class PlaidifySync:
                 username=username,
                 password=password,
                 extract_fields=extract_fields,
+            )
+        )
+
+    def list_access_jobs(
+        self,
+        *,
+        limit: int = 20,
+        site: Optional[str] = None,
+        status: Optional[str] = None,
+        job_type: Optional[str] = None,
+    ) -> AccessJobListResult:
+        return self._run(
+            self._async_client.list_access_jobs(
+                limit=limit,
+                site=site,
+                status=status,
+                job_type=job_type,
+            )
+        )
+
+    def get_access_job(self, job_id: str) -> AccessJobInfo:
+        return self._run(self._async_client.get_access_job(job_id))
+
+    def wait_for_access_job(
+        self,
+        job_id: str,
+        *,
+        poll_interval: float = 0.5,
+        timeout: float = 30.0,
+    ) -> AccessJobInfo:
+        return self._run(
+            self._async_client.wait_for_access_job(
+                job_id,
+                poll_interval=poll_interval,
+                timeout=timeout,
             )
         )
 

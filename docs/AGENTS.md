@@ -83,6 +83,19 @@ Every AI agent eventually needs to access real-world data that's locked behind a
 └───────────────────────┘
 ```
 
+### Preferred Runtime Boundary
+
+For agent-driven website access, the agent should not directly own the browser runtime. The preferred pattern is:
+
+1. The agent asks Plaidify for a scoped read or write operation.
+2. Plaidify creates an access job with consent and policy context.
+3. An isolated Plaidify executor performs the website login and extraction or action.
+4. The agent receives structured output, job status, or approved artifacts.
+
+This keeps planning in the agent and privileged browser execution inside Plaidify.
+
+See [docs/ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md) for the full execution-isolation design.
+
 ---
 
 ## Integration Patterns
@@ -373,6 +386,23 @@ User provides credentials
 - **Audit trails** — every agent action logged with timestamp and context
 - **Credential vaulting** — HashiCorp Vault integration
 - **Rate limiting** — per-user, per-agent throttling
+
+### Agent-Executor Separation
+
+For future AI agents, Plaidify should enforce a hard boundary between the agent and the privileged website runtime.
+
+The agent should not receive:
+
+- Raw website credentials
+- Long-lived cookies or browser storage
+- Arbitrary browser access outside Plaidify policy
+
+The agent should receive:
+
+- Structured extracted data
+- Job progress and final status
+- Explicitly approved artifacts such as PDFs or screenshots
+- Narrow action results tied to consent and scope
 
 ---
 

@@ -8,7 +8,6 @@ Run:
 Web UI: http://localhost:8089
 """
 
-import json
 import random
 import string
 
@@ -26,7 +25,8 @@ class PlaidifyUser(HttpUser):
 
     def on_start(self):
         """Register and login to get a JWT token."""
-        self.username = f"loadtest_{random_string()}@test.com"
+        self.username = f"loadtest_{random_string()}"
+        self.email = f"{self.username}@test.com"
         self.password = "LoadTest!Pass123"
 
         # Register
@@ -34,6 +34,7 @@ class PlaidifyUser(HttpUser):
             "/auth/register",
             json={
                 "username": self.username,
+                "email": self.email,
                 "password": self.password,
             },
         )
@@ -64,9 +65,9 @@ class PlaidifyUser(HttpUser):
         self.client.get("/health")
 
     @task(3)
-    def list_connectors(self):
-        """List available site connectors."""
-        self.client.get("/connectors", headers=self.auth_headers)
+    def list_blueprints(self):
+        """List available site blueprints."""
+        self.client.get("/blueprints", headers=self.auth_headers)
 
     @task(2)
     def get_links(self):

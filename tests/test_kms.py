@@ -3,18 +3,17 @@ Tests for the KMS abstraction layer.
 """
 
 import os
+
 import pytest
-import asyncio
-from unittest.mock import patch
 
 from src.kms import (
-    KMSProvider,
-    LocalKMSProvider,
+    _PROVIDERS,
     AWSKMSProvider,
     AzureKeyVaultProvider,
     HashiCorpVaultProvider,
+    KMSProvider,
+    LocalKMSProvider,
     get_kms_provider,
-    _PROVIDERS,
 )
 
 
@@ -78,6 +77,7 @@ class TestLocalKMSProvider:
 class TestProviderRegistry:
     def test_default_provider_is_local(self):
         import src.kms
+
         src.kms._provider_instance = None  # Reset singleton
         provider = get_kms_provider("local")
         assert isinstance(provider, LocalKMSProvider)
@@ -90,6 +90,7 @@ class TestProviderRegistry:
 
     def test_unknown_provider_raises(self):
         import src.kms
+
         src.kms._provider_instance = None
         with pytest.raises(ValueError, match="Unknown KMS provider"):
             get_kms_provider("unknown_provider")

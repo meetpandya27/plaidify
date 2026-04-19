@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -152,7 +152,10 @@ class SelectorCache:
         if not entry.is_usable:
             logger.info(
                 "Cache entry not usable: domain=%s path=%s expired=%s invalidated=%s",
-                domain, page_path, entry.is_expired, entry.is_invalidated,
+                domain,
+                page_path,
+                entry.is_expired,
+                entry.is_invalidated,
             )
             return None
 
@@ -190,7 +193,10 @@ class SelectorCache:
         self._store[key] = entry
         logger.info(
             "Cached selectors: domain=%s path=%s fields=%d confidence=%.2f",
-            domain, page_path, len(selectors), confidence,
+            domain,
+            page_path,
+            len(selectors),
+            confidence,
         )
 
         if self._persist_path:
@@ -215,7 +221,10 @@ class SelectorCache:
             entry.record_failure()
             logger.warning(
                 "Cache failure recorded: domain=%s path=%s count=%d/%d",
-                domain, page_path, entry.failure_count, MAX_FAILURES,
+                domain,
+                page_path,
+                entry.failure_count,
+                MAX_FAILURES,
             )
             if self._persist_path:
                 self._save_to_disk()
@@ -239,9 +248,7 @@ class SelectorCache:
         Returns the number of entries removed.
         """
         domain = domain.lower().strip()
-        to_remove = [
-            k for k, v in self._store.items() if v.domain == domain
-        ]
+        to_remove = [k for k, v in self._store.items() if v.domain == domain]
         for k in to_remove:
             del self._store[k]
         if to_remove and self._persist_path:

@@ -1,24 +1,23 @@
 """Tests for the LLM extraction provider module."""
 
 import json
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from dataclasses import FrozenInstanceError
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from src.core.llm_provider import (
-    BaseLLMProvider,
-    OpenAIProvider,
     AnthropicProvider,
     FallbackChain,
-    LLMResponse,
-    TokenUsage,
-    LLMProviderError,
-    LLMRateLimitError,
     LLMAuthError,
     LLMBudgetExceededError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMResponse,
+    OpenAIProvider,
+    TokenUsage,
     create_provider,
 )
-
 
 # ── Data Classes ──────────────────────────────────────────────────────────────
 
@@ -107,9 +106,7 @@ class TestLLMResponse:
         assert r.parse_json() == {"ok": True}
 
     def test_frozen(self):
-        r = LLMResponse(
-            content="x", model="m", usage=TokenUsage(), latency_ms=0, provider="t"
-        )
+        r = LLMResponse(content="x", model="m", usage=TokenUsage(), latency_ms=0, provider="t")
         with pytest.raises(FrozenInstanceError):
             r.content = "y"
 
@@ -328,6 +325,7 @@ class TestOpenAIProvider:
     def test_get_client_creates_once(self):
         p = OpenAIProvider(api_key="sk-test")
         import httpx
+
         with patch.object(httpx, "AsyncClient") as mock_async:
             mock_async.return_value = MagicMock()
             c1 = p._get_client()
@@ -476,6 +474,7 @@ class TestAnthropicProvider:
     def test_get_client_headers(self):
         p = AnthropicProvider(api_key="sk-ant-test")
         import httpx
+
         with patch.object(httpx, "AsyncClient") as mock_async:
             mock_async.return_value = MagicMock()
             p._get_client()
@@ -681,9 +680,7 @@ class TestCreateProvider:
         assert p.model == "claude-sonnet-4-20250514"
 
     def test_anthropic_custom_model(self):
-        p = create_provider(
-            "anthropic", api_key="sk-ant-test", model="claude-opus-4-20250514"
-        )
+        p = create_provider("anthropic", api_key="sk-ant-test", model="claude-opus-4-20250514")
         assert p.model == "claude-opus-4-20250514"
 
     def test_custom_base_url(self):
@@ -745,8 +742,9 @@ class TestConfigIntegration:
 
         os.environ.setdefault("ENCRYPTION_KEY", "dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXQ=")
         os.environ.setdefault("JWT_SECRET_KEY", "testsecretkey1234567890abcdefghij")
-        from src.config import Settings
         from pydantic import ValidationError
+
+        from src.config import Settings
 
         with pytest.raises(ValidationError, match="llm_provider"):
             Settings(llm_provider="bedrock")  # type: ignore[call-arg]

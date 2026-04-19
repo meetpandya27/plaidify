@@ -2,19 +2,25 @@
 Connection endpoints: connect, disconnect, encryption sessions, MFA.
 """
 
+import asyncio
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
 
+from src.access_jobs import start_access_job, wait_for_mfa_session
 from src.config import get_settings
 from src.core.engine import connect_to_site, submit_mfa_code
 from src.core.mfa_manager import get_mfa_manager
 from src.crypto import generate_keypair, get_public_key
+from src.database import get_db
 from src.dependencies import limiter, resolve_credentials
 from src.exceptions import MFARequiredError
 from src.models import ConnectRequest, ConnectResponse
 
 settings = get_settings()
+_CONNECT_COMPLETION_WAIT_SECONDS = 1.5
+_CONNECT_MFA_DISCOVERY_WAIT_SECONDS = 0.75
 
 router = APIRouter(tags=["connection"])
 
@@ -50,7 +56,11 @@ async def create_encryption_session():
 
 @router.post("/connect", response_model=ConnectResponse)
 @limiter.limit(settings.rate_limit_connect)
-async def connect(request: Request, body: ConnectRequest):
+async def connect(
+    request: Request,
+    body: ConnectRequest,
+    db: Session = Depends(get_db),
+):
     """
     Connect to a site and extract data in a single step.
 
@@ -61,16 +71,62 @@ async def connect(request: Request, body: ConnectRequest):
     """
     username, password = resolve_credentials(body)
     try:
-        response_data = await connect_to_site(
+        job, task = await start_access_job(
+            db,
             site=body.site,
-            username=username,
-            password=password,
-            extract_fields=body.extract_fields,
+            job_type="connect",
+            executor=connect_to_site,
+            executor_name="connect_to_site",
+            executor_kwargs={
+                "site": body.site,
+                "username": username,
+                "password": password,
+                "extract_fields": body.extract_fields,
+            },
+            principal_hint=username,
+            metadata={"extract_fields": body.extract_fields or []},
         )
-        return response_data
+
+        try:
+            completed_job, response_data = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=_CONNECT_COMPLETION_WAIT_SECONDS,
+            )
+            response_data["job_id"] = completed_job.id
+            return response_data
+        except asyncio.TimeoutError:
+            mfa_session = await wait_for_mfa_session(
+                job.session_id,
+                timeout=_CONNECT_MFA_DISCOVERY_WAIT_SECONDS,
+            )
+            if mfa_session:
+                return ConnectResponse(
+                    status="mfa_required",
+                    job_id=job.id,
+                    session_id=mfa_session["session_id"],
+                    mfa_type=mfa_session["mfa_type"],
+                    metadata=mfa_session.get("metadata") or {},
+                )
+
+            if task.done():
+                completed_job, response_data = await task
+                response_data["job_id"] = completed_job.id
+                return response_data
+
+            return ConnectResponse(
+                status="pending",
+                job_id=job.id,
+                session_id=job.session_id,
+                metadata={
+                    "message": (
+                        "Connection is still running in the background. Poll /access_jobs/{job_id} for status updates."
+                    )
+                },
+            )
     except MFARequiredError as e:
         return ConnectResponse(
             status="mfa_required",
+            job_id=getattr(e, "job_id", None),
             mfa_type=e.mfa_type,
             session_id=e.session_id,
             metadata={"message": e.message},
@@ -108,9 +164,7 @@ async def mfa_status(session_id: str):
     mfa_manager = get_mfa_manager()
     session = await mfa_manager.get_session(session_id)
     if not session:
-        raise HTTPException(
-            status_code=404, detail="MFA session not found or expired."
-        )
+        raise HTTPException(status_code=404, detail="MFA session not found or expired.")
     return {
         "session_id": session.session_id,
         "site": session.site,

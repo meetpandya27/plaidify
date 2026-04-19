@@ -1,0 +1,180 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-plaidify}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB: ${POSTGRES_DB:-plaidify}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    secrets:
+      - postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plaidify} -d ${POSTGRES_DB:-plaidify}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    stop_grace_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -c
+      - exec redis-server --appendonly yes --save 60 1000 --requirepass "$$(cat /run/secrets/redis_password)"
+    secrets:
+      - redis_password
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    stop_grace_period: 30s
+
+  migrate:
+    image: ${PLAIDIFY_IMAGE:-plaidify:production}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    env_file:
+      - ${PLAIDIFY_ENV_FILE:-.env.production}
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LOG_FORMAT: json
+      ENV: production
+      DEBUG: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-plaidify}
+      POSTGRES_DB: ${POSTGRES_DB:-plaidify}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_SSLMODE: disable
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - postgres_password
+
+  plaidify:
+    image: ${PLAIDIFY_IMAGE:-plaidify:production}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ${PLAIDIFY_ENV_FILE:-.env.production}
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LOG_FORMAT: json
+      ENV: production
+      DEBUG: "false"
+      ENFORCE_HTTPS: "true"
+      ACCESS_JOB_EXECUTION_MODE: redis-worker
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-plaidify}
+      POSTGRES_DB: ${POSTGRES_DB:-plaidify}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_SSLMODE: disable
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      REDIS_SCHEME: redis
+    expose:
+      - "8000"
+    command: ["gunicorn", "src.main:app", "-c", "gunicorn.conf.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    secrets:
+      - postgres_password
+      - redis_password
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 45s
+
+  access-executor:
+    image: ${PLAIDIFY_IMAGE:-plaidify:production}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ${PLAIDIFY_ENV_FILE:-.env.production}
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LOG_FORMAT: json
+      ENV: production
+      DEBUG: "false"
+      ACCESS_JOB_EXECUTION_MODE: redis-worker
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-plaidify}
+      POSTGRES_DB: ${POSTGRES_DB:-plaidify}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_SSLMODE: disable
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      REDIS_SCHEME: redis
+    command: ["python", "-m", "src.access_job_worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    secrets:
+      - postgres_password
+      - redis_password
+    stop_grace_period: 45s
+
+  nginx:
+    image: nginx:1-alpine
+    restart: unless-stopped
+    depends_on:
+      plaidify:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    stop_grace_period: 30s
+
+secrets:
+  postgres_password:
+    file: ./.secrets/postgres_password
+  redis_password:
+    file: ./.secrets/redis_password
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  default:
+    driver: bridge

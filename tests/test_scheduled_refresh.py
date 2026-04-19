@@ -3,11 +3,12 @@ Tests for the scheduled data refresh worker.
 """
 
 import asyncio
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
-from src.scheduled_refresh import RefreshScheduler, RefreshJob
+import pytest
+
+from src.scheduled_refresh import RefreshJob, RefreshScheduler
 
 
 @pytest.fixture

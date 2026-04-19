@@ -12,31 +12,26 @@ Covers:
 
 import base64
 import os
-
-import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import patch
 
-from src.main import app
+import pytest
+
 import src.database as _db_mod
 from src.database import (
-    User,
-    Link,
     AccessToken,
-    Base,
-    encrypt_credential_for_user,
-    decrypt_credential_for_user,
+    Link,
+    User,
     create_user_dek,
-    ensure_user_dek,
-    wrap_dek,
-    unwrap_dek,
+    decrypt_credential_for_user,
+    encrypt_credential_for_user,
     generate_dek,
     get_current_key_version,
     re_encrypt_tokens,
     rotate_master_key,
+    unwrap_dek,
+    wrap_dek,
 )
 from tests.conftest import TestSessionLocal
-
 
 # The settings instance used inside src.database (must patch this one, not a local copy)
 db_settings = _db_mod.settings
@@ -48,6 +43,7 @@ db_settings = _db_mod.settings
 def _make_user(db, username="keyrotuser") -> User:
     """Create a user with a DEK for testing."""
     from passlib.context import CryptContext
+
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
     user = User(
         username=username,
@@ -64,6 +60,7 @@ def _make_user(db, username="keyrotuser") -> User:
 def _make_link(db, user, site="test_bank") -> Link:
     """Create a link for a user."""
     import uuid
+
     link = Link(link_token=str(uuid.uuid4()), site=site, user_id=user.id)
     db.add(link)
     db.commit()
@@ -73,6 +70,7 @@ def _make_link(db, user, site="test_bank") -> Link:
 def _make_access_token(db, user, link, plain_user="myuser", plain_pass="mypass", key_version=1) -> AccessToken:
     """Create an access token with encrypted credentials."""
     import uuid
+
     token = AccessToken(
         token=str(uuid.uuid4()),
         link_token=link.link_token,
@@ -117,11 +115,15 @@ class TestKeyVersionStamped:
         link_token = resp.json()["link_token"]
 
         # Submit credentials
-        resp = client.post("/submit_credentials", params={
-            "link_token": link_token,
-            "username": "siteuser",
-            "password": "sitepass",
-        }, headers=auth_headers)
+        resp = client.post(
+            "/submit_credentials",
+            params={
+                "link_token": link_token,
+                "username": "siteuser",
+                "password": "sitepass",
+            },
+            headers=auth_headers,
+        )
         assert resp.status_code == 200
         access_token = resp.json()["access_token"]
 
@@ -163,6 +165,7 @@ class TestUnwrapDekFallback:
         # Generate a "previous" master key and wrap a DEK with it
         old_master = base64.urlsafe_b64encode(os.urandom(32)).decode()
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         old_bytes = base64.urlsafe_b64decode(old_master)
         dek = generate_dek()
         nonce = os.urandom(12)
@@ -170,12 +173,11 @@ class TestUnwrapDekFallback:
         wrapped_with_old = base64.urlsafe_b64encode(nonce + ct).decode()
 
         # Without previous key set, should raise
-        with patch.object(db_settings, 'encryption_key_previous', None):
-            with pytest.raises(Exception):
-                unwrap_dek(wrapped_with_old)
+        with patch.object(db_settings, "encryption_key_previous", None), pytest.raises(Exception):
+            unwrap_dek(wrapped_with_old)
 
         # With previous key set, should succeed
-        with patch.object(db_settings, 'encryption_key_previous', old_master):
+        with patch.object(db_settings, "encryption_key_previous", old_master):
             result = unwrap_dek(wrapped_with_old)
             assert result == dek
 
@@ -183,15 +185,15 @@ class TestUnwrapDekFallback:
         """unwrap_dek raises an error for unknown keys with no fallback."""
         bogus_master = base64.urlsafe_b64encode(os.urandom(32)).decode()
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         bogus_bytes = base64.urlsafe_b64decode(bogus_master)
         dek = generate_dek()
         nonce = os.urandom(12)
         ct = AESGCM(bogus_bytes).encrypt(nonce, dek, None)
         wrapped = base64.urlsafe_b64encode(nonce + ct).decode()
 
-        with patch.object(db_settings, 'encryption_key_previous', None):
-            with pytest.raises(Exception):
-                unwrap_dek(wrapped)
+        with patch.object(db_settings, "encryption_key_previous", None), pytest.raises(Exception):
+            unwrap_dek(wrapped)
 
 
 # ── Tests: re_encrypt_tokens ─────────────────────────────────────────────────
@@ -211,7 +213,7 @@ class TestReEncryptTokens:
             old_password_enc = token.password_encrypted
 
             # Pretend we're on version 2
-            with patch.object(db_settings, 'encryption_key_version', 2):
+            with patch.object(db_settings, "encryption_key_version", 2):
                 count = re_encrypt_tokens(db)
                 assert count == 1
 
@@ -232,10 +234,10 @@ class TestReEncryptTokens:
         try:
             user = _make_user(db)
             link = _make_link(db, user)
-            token = _make_access_token(db, user, link, "bob", "pass", key_version=1)
+            _make_access_token(db, user, link, "bob", "pass", key_version=1)
 
             # Current version is also 1 — nothing to do
-            with patch.object(db_settings, 'encryption_key_version', 1):
+            with patch.object(db_settings, "encryption_key_version", 1):
                 count = re_encrypt_tokens(db)
                 assert count == 0
         finally:
@@ -250,7 +252,7 @@ class TestReEncryptTokens:
             for i in range(5):
                 _make_access_token(db, user, link, f"user{i}", f"pass{i}", key_version=1)
 
-            with patch.object(db_settings, 'encryption_key_version', 2):
+            with patch.object(db_settings, "encryption_key_version", 2):
                 count = re_encrypt_tokens(db, batch_size=2)
                 assert count == 2
 
@@ -269,6 +271,7 @@ class TestReEncryptTokens:
         db = TestSessionLocal()
         try:
             from passlib.context import CryptContext
+
             pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
             # Create a user WITHOUT a DEK
             user = User(
@@ -284,8 +287,10 @@ class TestReEncryptTokens:
             link = _make_link(db, user, site="demo_site")
 
             # Create token with master-key encryption (no DEK)
-            from src.database import encrypt_credential
             import uuid
+
+            from src.database import encrypt_credential
+
             token = AccessToken(
                 token=str(uuid.uuid4()),
                 link_token=link.link_token,
@@ -297,7 +302,7 @@ class TestReEncryptTokens:
             db.add(token)
             db.commit()
 
-            with patch.object(db_settings, 'encryption_key_version', 2):
+            with patch.object(db_settings, "encryption_key_version", 2):
                 count = re_encrypt_tokens(db)
                 assert count == 0  # Skipped because no DEK
         finally:
@@ -327,10 +332,11 @@ class TestFullRotationFlow:
             assert dek_count == 1
 
             # Now unwrap_dek needs the new key — patch settings
-            with patch.object(db_settings, 'encryption_key', new_key), \
-                 patch.object(db_settings, 'encryption_key_previous', old_key), \
-                 patch.object(db_settings, 'encryption_key_version', 2):
-
+            with (
+                patch.object(db_settings, "encryption_key", new_key),
+                patch.object(db_settings, "encryption_key_previous", old_key),
+                patch.object(db_settings, "encryption_key_version", 2),
+            ):
                 # Verify credentials are still decryptable (DEK is now wrapped with new key)
                 db.refresh(user)
                 db.refresh(token)
@@ -364,10 +370,11 @@ class TestFullRotationFlow:
             dek_count = rotate_master_key(old_key, new_key, db)
             assert dek_count == 2
 
-            with patch.object(db_settings, 'encryption_key', new_key), \
-                 patch.object(db_settings, 'encryption_key_previous', old_key), \
-                 patch.object(db_settings, 'encryption_key_version', 2):
-
+            with (
+                patch.object(db_settings, "encryption_key", new_key),
+                patch.object(db_settings, "encryption_key_previous", old_key),
+                patch.object(db_settings, "encryption_key_version", 2),
+            ):
                 count = re_encrypt_tokens(db)
                 assert count == 2
 
@@ -394,6 +401,7 @@ class TestCLIRotateKey:
         """Import CLI module without triggering the full SDK __init__.py."""
         import importlib.util
         import sys
+
         cli_path = os.path.join(os.path.dirname(__file__), "..", "sdk", "plaidify", "cli.py")
         spec = importlib.util.spec_from_file_location("plaidify_cli", os.path.abspath(cli_path))
         # Temporarily add a fake 'plaidify' to sys.modules so import inside cli.py works
@@ -414,6 +422,7 @@ class TestCLIRotateKey:
     def test_cli_rotate_key_rewraps_deks(self):
         """CLI rotate-key re-wraps DEKs without error."""
         from click.testing import CliRunner
+
         cli = self._import_cli()
 
         db = TestSessionLocal()
@@ -428,11 +437,16 @@ class TestCLIRotateKey:
         old_key = db_settings.encryption_key
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "rotate-key",
-            "--old-key", old_key,
-            "--new-key", new_key,
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "rotate-key",
+                "--old-key",
+                old_key,
+                "--new-key",
+                new_key,
+            ],
+        )
         assert result.exit_code == 0, result.output
         assert "Re-wrapped" in result.output
         assert "Key rotation complete" in result.output
@@ -440,6 +454,7 @@ class TestCLIRotateKey:
     def test_cli_rotate_key_with_re_encrypt(self):
         """CLI rotate-key with --re-encrypt also re-encrypts tokens."""
         from click.testing import CliRunner
+
         cli = self._import_cli()
 
         db = TestSessionLocal()
@@ -456,15 +471,22 @@ class TestCLIRotateKey:
         runner = CliRunner()
 
         # Need to patch key_version to 2 so re-encryption finds old tokens
-        with patch.object(db_settings, 'encryption_key', new_key), \
-             patch.object(db_settings, 'encryption_key_previous', old_key), \
-             patch.object(db_settings, 'encryption_key_version', 2):
-            result = runner.invoke(cli, [
-                "rotate-key",
-                "--old-key", old_key,
-                "--new-key", new_key,
-                "--re-encrypt",
-            ])
+        with (
+            patch.object(db_settings, "encryption_key", new_key),
+            patch.object(db_settings, "encryption_key_previous", old_key),
+            patch.object(db_settings, "encryption_key_version", 2),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "rotate-key",
+                    "--old-key",
+                    old_key,
+                    "--new-key",
+                    new_key,
+                    "--re-encrypt",
+                ],
+            )
 
         assert result.exit_code == 0, result.output
         assert "Re-encrypted" in result.output

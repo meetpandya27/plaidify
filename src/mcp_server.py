@@ -25,7 +25,7 @@ Environment variables:
 
 from __future__ import annotations
 
-import asyncio
+import os
 import sys
 from typing import Any, Optional
 
@@ -50,8 +50,6 @@ mcp = FastMCP(
 )
 
 # Default Plaidify server URL (override via PLAIDIFY_SERVER_URL env var)
-import os
-
 PLAIDIFY_SERVER_URL = os.environ.get("PLAIDIFY_SERVER_URL", "http://localhost:8000")
 PLAIDIFY_API_KEY = os.environ.get("PLAIDIFY_API_KEY", "")
 
@@ -67,6 +65,21 @@ def _headers() -> dict[str, str]:
     return h
 
 
+# Reuse a single httpx.AsyncClient for connection pooling
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            base_url=PLAIDIFY_SERVER_URL,
+            headers=_headers(),
+            timeout=60.0,
+        )
+    return _client
+
+
 async def _api(
     method: str,
     path: str,
@@ -74,17 +87,13 @@ async def _api(
     params: dict | None = None,
 ) -> dict[str, Any]:
     """Make an API call to the Plaidify server."""
-    async with httpx.AsyncClient(
-        base_url=PLAIDIFY_SERVER_URL,
-        headers=_headers(),
-        timeout=60.0,
-    ) as client:
-        if method == "GET":
-            resp = await client.get(path, params=params)
-        else:
-            resp = await client.post(path, json=json, params=params)
-        resp.raise_for_status()
-        return resp.json()
+    client = _get_client()
+    if method == "GET":
+        resp = await client.get(path, params=params)
+    else:
+        resp = await client.post(path, json=json, params=params)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _format_data(extracted: dict | list) -> str:
@@ -149,11 +158,15 @@ async def connect_site(site: str, username: str, password: str) -> str:
         Extracted data or MFA challenge details.
     """
     try:
-        data = await _api("POST", "/connect", json={
-            "site": site,
-            "username": username,
-            "password": password,
-        })
+        data = await _api(
+            "POST",
+            "/connect",
+            json={
+                "site": site,
+                "username": username,
+                "password": password,
+            },
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             return f"Site '{site}' not found. Use list_available_sites() to see options."
@@ -296,9 +309,13 @@ async def exchange_public_token(public_token: str) -> str:
         The permanent access_token for data retrieval.
     """
     try:
-        data = await _api("POST", "/exchange/public_token", json={
-            "public_token": public_token,
-        })
+        data = await _api(
+            "POST",
+            "/exchange/public_token",
+            json={
+                "public_token": public_token,
+            },
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 410:
             return "This public token has already been exchanged or has expired."
@@ -375,10 +392,14 @@ async def submit_mfa(session_id: str, code: str) -> str:
     """
     try:
         # The API expects query params, not JSON body
-        data = await _api("POST", "/mfa/submit", params={
-            "session_id": session_id,
-            "code": code,
-        })
+        data = await _api(
+            "POST",
+            "/mfa/submit",
+            params={
+                "session_id": session_id,
+                "code": code,
+            },
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             return f"MFA session '{session_id}' not found. It may have expired."
@@ -416,12 +437,16 @@ async def request_consent(
         Consent request status and instructions for the user.
     """
     try:
-        data = await _api("POST", "/consent/request", json={
-            "access_token": access_token,
-            "scopes": scopes,
-            "agent_name": agent_name,
-            "duration_seconds": duration_seconds,
-        })
+        data = await _api(
+            "POST",
+            "/consent/request",
+            json={
+                "access_token": access_token,
+                "scopes": scopes,
+                "agent_name": agent_name,
+                "duration_seconds": duration_seconds,
+            },
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code in (401, 403):
             return "Authentication required. Set PLAIDIFY_API_KEY."
@@ -455,10 +480,7 @@ async def list_connections() -> str:
             return "Authentication required. Set PLAIDIFY_API_KEY to a valid JWT or API key."
         return f"Error listing connections: {e.response.text}"
 
-    if isinstance(data, list):
-        links = data
-    else:
-        links = data if isinstance(data, list) else []
+    links = data if isinstance(data, list) else []
 
     if not links:
         return "No active connections found."

@@ -17,6 +17,7 @@ class ConnectResult:
 
     Attributes:
         status: Connection outcome — ``"connected"``, ``"mfa_required"``, etc.
+        job_id: Access job ID for polling detached execution.
         data: Extracted data keyed by field name (None until connected).
         session_id: MFA session ID (present when status is ``"mfa_required"``).
         mfa_type: MFA type (``"otp"``, ``"email_code"``, ``"push"``, etc.).
@@ -24,6 +25,7 @@ class ConnectResult:
     """
 
     status: str
+    job_id: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
     mfa_type: Optional[str] = None
@@ -38,6 +40,49 @@ class ConnectResult:
     def mfa_required(self) -> bool:
         """True if multi-factor authentication is needed."""
         return self.status == "mfa_required"
+
+    @property
+    def pending(self) -> bool:
+        """True if the connect job is still executing in the background."""
+        return self.status in {"pending", "running"}
+
+
+@dataclass(frozen=True)
+class AccessJobInfo:
+    """Status for a tracked server-side access job."""
+
+    job_id: str
+    site: str
+    job_type: str
+    status: str
+    session_id: Optional[str] = None
+    mfa_type: Optional[str] = None
+    error_message: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    result: Optional[Dict[str, Any]] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+    @property
+    def pending(self) -> bool:
+        return self.status in {"pending", "running"}
+
+    @property
+    def completed(self) -> bool:
+        return self.status == "completed"
+
+    @property
+    def mfa_required(self) -> bool:
+        return self.status == "mfa_required"
+
+
+@dataclass(frozen=True)
+class AccessJobListResult:
+    """Result of listing access jobs."""
+
+    jobs: List[AccessJobInfo]
+    count: int
 
 
 @dataclass(frozen=True)

@@ -6,11 +6,10 @@ Supports two formats:
 - 'text': Human-readable colored logs (development)
 """
 
+import json
 import logging
 import sys
-import json
 from datetime import datetime, timezone
-from typing import Optional
 
 
 class JSONFormatter(logging.Formatter):
@@ -43,10 +42,10 @@ class TextFormatter(logging.Formatter):
     """Human-readable colored log formatter for development."""
 
     COLORS = {
-        "DEBUG": "\033[36m",     # Cyan
-        "INFO": "\033[32m",      # Green
-        "WARNING": "\033[33m",   # Yellow
-        "ERROR": "\033[31m",     # Red
+        "DEBUG": "\033[36m",  # Cyan
+        "INFO": "\033[32m",  # Green
+        "WARNING": "\033[33m",  # Yellow
+        "ERROR": "\033[31m",  # Red
         "CRITICAL": "\033[41m",  # Red background
     }
     RESET = "\033[0m"

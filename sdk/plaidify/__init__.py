@@ -9,10 +9,12 @@ Quick start:
     print(result.data["current_bill"])
 """
 
-__version__ = "0.3.0a1"
+__version__ = "0.3.0b1"
 __all__ = [
     "Plaidify",
     "PlaidifySync",
+    "AccessJobInfo",
+    "AccessJobListResult",
     "ConnectResult",
     "BlueprintInfo",
     "LinkResult",
@@ -40,6 +42,8 @@ __all__ = [
 
 from plaidify.client import Plaidify, PlaidifySync
 from plaidify.models import (
+    AccessJobInfo,
+    AccessJobListResult,
     AgentInfo,
     AgentListResult,
     ApiKeyInfo,

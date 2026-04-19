@@ -148,11 +148,17 @@ class AWSKMSProvider(KMSProvider):
         self._key_id = key_id or os.environ.get("KMS_AWS_KEY_ID", "")
         self._region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self._client = None
+        if not self._key_id:
+            raise ValueError(
+                "AWS KMS requires KMS_AWS_KEY_ID environment variable "
+                "(CMK ARN or alias). See docs/DEPLOYMENT.md for setup."
+            )
 
     def _get_client(self):
         if self._client is None:
             try:
                 import boto3
+
                 self._client = boto3.client("kms", region_name=self._region)
             except ImportError:
                 raise RuntimeError("boto3 is required for AWS KMS. Install with: pip install boto3")
@@ -225,13 +231,18 @@ class AzureKeyVaultProvider(KMSProvider):
         self._vault_url = vault_url or os.environ.get("KMS_AZURE_VAULT_URL", "")
         self._key_name = key_name or os.environ.get("KMS_AZURE_KEY_NAME", "plaidify-master")
         self._client = None
+        if not self._vault_url:
+            raise ValueError(
+                "Azure Key Vault requires KMS_AZURE_VAULT_URL environment variable "
+                "(e.g. https://myvault.vault.azure.net/). See docs/DEPLOYMENT.md for setup."
+            )
 
     def _get_client(self):
         if self._client is None:
             try:
                 from azure.identity import DefaultAzureCredential
-                from azure.keyvault.keys.crypto import CryptographyClient, KeyWrapAlgorithm
                 from azure.keyvault.keys import KeyClient
+                from azure.keyvault.keys.crypto import CryptographyClient, KeyWrapAlgorithm
 
                 credential = DefaultAzureCredential()
                 key_client = KeyClient(vault_url=self._vault_url, credential=credential)
@@ -248,12 +259,14 @@ class AzureKeyVaultProvider(KMSProvider):
     async def wrap_key(self, plaintext_key: bytes) -> str:
         client = self._get_client()
         from azure.keyvault.keys.crypto import KeyWrapAlgorithm
+
         result = client.wrap_key(KeyWrapAlgorithm.rsa_oaep_256, plaintext_key)
         return base64.urlsafe_b64encode(result.encrypted_key).decode("ascii")
 
     async def unwrap_key(self, wrapped_key: str) -> bytes:
         client = self._get_client()
         from azure.keyvault.keys.crypto import KeyWrapAlgorithm
+
         result = client.unwrap_key(
             KeyWrapAlgorithm.rsa_oaep_256,
             base64.urlsafe_b64decode(wrapped_key),
@@ -307,11 +320,16 @@ class HashiCorpVaultProvider(KMSProvider):
         self._token = token or os.environ.get("KMS_VAULT_TOKEN", "")
         self._key_name = key_name or os.environ.get("KMS_VAULT_KEY_NAME", "plaidify-master")
         self._client = None
+        if not self._token:
+            raise ValueError(
+                "HashiCorp Vault requires KMS_VAULT_TOKEN environment variable. See docs/DEPLOYMENT.md for setup."
+            )
 
     def _get_client(self):
         if self._client is None:
             try:
                 import hvac
+
                 self._client = hvac.Client(url=self._vault_addr, token=self._token)
             except ImportError:
                 raise RuntimeError("hvac is required for HashiCorp Vault. Install with: pip install hvac")
@@ -394,10 +412,7 @@ def get_kms_provider(provider_name: Optional[str] = None) -> KMSProvider:
     name = (provider_name or os.environ.get("KMS_PROVIDER", "local")).lower()
     cls = _PROVIDERS.get(name)
     if cls is None:
-        raise ValueError(
-            f"Unknown KMS provider: {name!r}. "
-            f"Available: {', '.join(_PROVIDERS.keys())}"
-        )
+        raise ValueError(f"Unknown KMS provider: {name!r}. Available: {', '.join(_PROVIDERS.keys())}")
 
     instance = cls()
     if provider_name is None:

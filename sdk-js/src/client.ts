@@ -12,6 +12,8 @@
  */
 
 import type {
+  AccessJob,
+  AccessJobListResult,
   PlaidifyConfig,
   HealthStatus,
   BlueprintInfo,
@@ -145,6 +147,10 @@ export class Plaidify {
     return this.request<T>("DELETE", path);
   }
 
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   // ── Health ─────────────────────────────────────────────────────────────
 
   async health(): Promise<HealthStatus> {
@@ -182,6 +188,46 @@ export class Plaidify {
       session_id: sessionId,
       mfa_code: code,
     });
+  }
+
+  async listAccessJobs(options?: {
+    limit?: number;
+    site?: string;
+    status?: string;
+    jobType?: string;
+  }): Promise<AccessJobListResult> {
+    return this.get<AccessJobListResult>("/access_jobs", {
+      limit: options?.limit ?? 20,
+      ...(options?.site && { site: options.site }),
+      ...(options?.status && { status: options.status }),
+      ...(options?.jobType && { job_type: options.jobType }),
+    });
+  }
+
+  async getAccessJob(jobId: string): Promise<AccessJob> {
+    return this.get<AccessJob>(`/access_jobs/${encodeURIComponent(jobId)}`);
+  }
+
+  async waitForAccessJob(
+    jobId: string,
+    options?: { pollIntervalMs?: number; timeoutMs?: number },
+  ): Promise<AccessJob> {
+    const pollIntervalMs = options?.pollIntervalMs ?? 500;
+    const timeoutMs = options?.timeoutMs ?? 30_000;
+    const deadline = Date.now() + timeoutMs;
+
+    while (true) {
+      const job = await this.getAccessJob(jobId);
+      if (job.status !== "pending" && job.status !== "running") {
+        return job;
+      }
+
+      if (Date.now() >= deadline) {
+        throw new PlaidifyError(`Timed out waiting for access job: ${jobId}`, 408);
+      }
+
+      await this.sleep(Math.min(pollIntervalMs, Math.max(deadline - Date.now(), 0)));
+    }
   }
 
   // ── Auth ───────────────────────────────────────────────────────────────

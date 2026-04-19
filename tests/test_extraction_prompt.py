@@ -1,18 +1,18 @@
 """Tests for extraction prompt engineering module."""
 
 import json
-import pytest
 from dataclasses import FrozenInstanceError
+
+import pytest
 
 from src.core.extraction_prompt import (
     SYSTEM_PROMPT,
+    ExtractionPromptBuilder,
+    ExtractionResult,
     FieldDefinition,
     ListFieldDefinition,
-    ExtractionResult,
-    ExtractionPromptBuilder,
     fields_from_blueprint_extract,
 )
-
 
 # ── FieldDefinition ──────────────────────────────────────────────────────────
 
@@ -255,11 +255,13 @@ class TestParseResponse:
         assert result.raw_response == data
 
     def test_parse_string(self):
-        data = json.dumps({
-            "data": {"x": 1},
-            "selectors": {"x": ".x"},
-            "confidence": 0.8,
-        })
+        data = json.dumps(
+            {
+                "data": {"x": 1},
+                "selectors": {"x": ".x"},
+                "confidence": 0.8,
+            }
+        )
         result = self.builder.parse_response(data)
         assert result.data["x"] == 1
         assert result.confidence == 0.8
@@ -419,9 +421,7 @@ class TestFullPromptRoundtrip:
         </div>
         """
 
-        prompt = builder.build_extraction_prompt(
-            html, fields, page_context="Utility bill dashboard"
-        )
+        builder.build_extraction_prompt(html, fields, page_context="Utility bill dashboard")
 
         # Simulate LLM response
         llm_output = {
@@ -456,7 +456,7 @@ class TestFullPromptRoundtrip:
             )
         ]
 
-        prompt = builder.build_extraction_prompt("<table>...</table>", fields)
+        builder.build_extraction_prompt("<table>...</table>", fields)
 
         llm_output = {
             "data": {

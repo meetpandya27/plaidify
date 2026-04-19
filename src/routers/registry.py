@@ -47,9 +47,7 @@ async def registry_publish(
         try:
             blueprint_json = json_mod.loads(blueprint_json)
         except json_mod.JSONDecodeError:
-            raise HTTPException(
-                status_code=422, detail="'blueprint' is not valid JSON."
-            )
+            raise HTTPException(status_code=422, detail="'blueprint' is not valid JSON.")
 
     # Validate the blueprint by parsing it
     try:
@@ -57,9 +55,7 @@ async def registry_publish(
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid blueprint: {e}")
 
-    site = (
-        blueprint_json.get("domain", "").replace(".", "_").replace(" ", "_").lower()
-    )
+    site = blueprint_json.get("domain", "").replace(".", "_").replace(" ", "_").lower()
     if not site:
         site = bp.name.lower().replace(" ", "_")
 
@@ -110,9 +106,7 @@ async def registry_publish(
     )
     db.add(record)
     db.commit()
-    logger.info(
-        "Blueprint published to registry", extra={"extra_data": {"site": site}}
-    )
+    logger.info("Blueprint published to registry", extra={"extra_data": {"site": site}})
     return {
         "status": "published",
         "site": site,
@@ -163,9 +157,7 @@ async def registry_search(
                 "tags": json_mod.loads(r.tags) if r.tags else [],
                 "has_mfa": r.has_mfa,
                 "quality_tier": r.quality_tier,
-                "extract_fields": (
-                    json_mod.loads(r.extract_fields) if r.extract_fields else []
-                ),
+                "extract_fields": (json_mod.loads(r.extract_fields) if r.extract_fields else []),
                 "downloads": r.downloads,
             }
             for r in results
@@ -204,9 +196,7 @@ async def registry_get(
         "tags": json_mod.loads(record.tags) if record.tags else [],
         "has_mfa": record.has_mfa,
         "quality_tier": record.quality_tier,
-        "extract_fields": (
-            json_mod.loads(record.extract_fields) if record.extract_fields else []
-        ),
+        "extract_fields": (json_mod.loads(record.extract_fields) if record.extract_fields else []),
         "downloads": record.downloads,
         "blueprint": json_mod.loads(record.blueprint_json),
     }
@@ -226,9 +216,7 @@ async def registry_delete(
             detail=f"Blueprint '{site_name}' not found in registry.",
         )
     if record.published_by != user.id:
-        raise HTTPException(
-            status_code=403, detail="Only the blueprint owner can delete it."
-        )
+        raise HTTPException(status_code=403, detail="Only the blueprint owner can delete it.")
     db.delete(record)
     db.commit()
     return {"status": "deleted", "site": site_name}

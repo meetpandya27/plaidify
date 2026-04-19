@@ -11,13 +11,13 @@ select = [
     "W",   # pycodestyle warnings
     "F",   # pyflakes
     "I",   # isort
-    "UP",  # pyupgrade
     "B",   # flake8-bugbear
-    "SIM", # flake8-simplify
 ]
 ignore = [
     "E501",  # line length (handled by formatter)
     "B008",  # do not perform function calls in argument defaults (FastAPI Depends)
+    "B017",  # broad exception assertions are acceptable in crypto-focused tests
+    "B904",  # exception chaining is not required for HTTP/error translation paths
 ]
 
 [tool.ruff.lint.isort]
@@ -26,6 +26,7 @@ known-first-party = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "playwright: mark test as requiring a real Playwright browser (deselected by default)",
 ]
@@ -35,4 +36,4 @@ source = ["src"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 70
+fail_under = 73

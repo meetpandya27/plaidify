@@ -58,11 +58,7 @@ async def register_agent(
         key_hash=key_hash,
         key_prefix=key_prefix,
         user_id=user.id,
-        scopes=(
-            json.dumps(body.get("allowed_scopes"))
-            if body.get("allowed_scopes")
-            else None
-        ),
+        scopes=(json.dumps(body.get("allowed_scopes")) if body.get("allowed_scopes") else None),
     )
     db.add(db_key)
 
@@ -72,16 +68,8 @@ async def register_agent(
         description=body.get("description", ""),
         owner_id=user.id,
         api_key_id=api_key_id,
-        allowed_scopes=(
-            json.dumps(body.get("allowed_scopes"))
-            if body.get("allowed_scopes")
-            else None
-        ),
-        allowed_sites=(
-            json.dumps(body.get("allowed_sites"))
-            if body.get("allowed_sites")
-            else None
-        ),
+        allowed_scopes=(json.dumps(body.get("allowed_scopes")) if body.get("allowed_scopes") else None),
+        allowed_sites=(json.dumps(body.get("allowed_sites")) if body.get("allowed_sites") else None),
         rate_limit=body.get("rate_limit"),
     )
     db.add(agent)
@@ -116,34 +104,18 @@ async def list_agents(
     db: Session = Depends(get_db),
 ):
     """List all agents owned by the current user."""
-    agents = (
-        db.query(Agent).filter_by(owner_id=user.id, is_active=True).all()
-    )
+    agents = db.query(Agent).filter_by(owner_id=user.id, is_active=True).all()
     return {
         "agents": [
             {
                 "agent_id": a.id,
                 "name": a.name,
                 "description": a.description,
-                "allowed_scopes": (
-                    json.loads(a.allowed_scopes)
-                    if a.allowed_scopes
-                    else None
-                ),
-                "allowed_sites": (
-                    json.loads(a.allowed_sites)
-                    if a.allowed_sites
-                    else None
-                ),
+                "allowed_scopes": (json.loads(a.allowed_scopes) if a.allowed_scopes else None),
+                "allowed_sites": (json.loads(a.allowed_sites) if a.allowed_sites else None),
                 "rate_limit": a.rate_limit,
-                "last_active_at": (
-                    a.last_active_at.isoformat()
-                    if a.last_active_at
-                    else None
-                ),
-                "created_at": (
-                    a.created_at.isoformat() if a.created_at else None
-                ),
+                "last_active_at": (a.last_active_at.isoformat() if a.last_active_at else None),
+                "created_at": (a.created_at.isoformat() if a.created_at else None),
             }
             for a in agents
         ],
@@ -158,35 +130,19 @@ async def get_agent(
     db: Session = Depends(get_db),
 ):
     """Get details of a specific agent."""
-    agent = (
-        db.query(Agent).filter_by(id=agent_id, owner_id=user.id).first()
-    )
+    agent = db.query(Agent).filter_by(id=agent_id, owner_id=user.id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found.")
     return {
         "agent_id": agent.id,
         "name": agent.name,
         "description": agent.description,
-        "allowed_scopes": (
-            json.loads(agent.allowed_scopes)
-            if agent.allowed_scopes
-            else None
-        ),
-        "allowed_sites": (
-            json.loads(agent.allowed_sites)
-            if agent.allowed_sites
-            else None
-        ),
+        "allowed_scopes": (json.loads(agent.allowed_scopes) if agent.allowed_scopes else None),
+        "allowed_sites": (json.loads(agent.allowed_sites) if agent.allowed_sites else None),
         "rate_limit": agent.rate_limit,
         "is_active": agent.is_active,
-        "last_active_at": (
-            agent.last_active_at.isoformat()
-            if agent.last_active_at
-            else None
-        ),
-        "created_at": (
-            agent.created_at.isoformat() if agent.created_at else None
-        ),
+        "last_active_at": (agent.last_active_at.isoformat() if agent.last_active_at else None),
+        "created_at": (agent.created_at.isoformat() if agent.created_at else None),
     }
 
 
@@ -198,9 +154,7 @@ async def update_agent(
     db: Session = Depends(get_db),
 ):
     """Update an agent's configuration."""
-    agent = (
-        db.query(Agent).filter_by(id=agent_id, owner_id=user.id).first()
-    )
+    agent = db.query(Agent).filter_by(id=agent_id, owner_id=user.id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found.")
 
@@ -210,17 +164,9 @@ async def update_agent(
     if "description" in body:
         agent.description = body["description"]
     if "allowed_scopes" in body:
-        agent.allowed_scopes = (
-            json.dumps(body["allowed_scopes"])
-            if body["allowed_scopes"]
-            else None
-        )
+        agent.allowed_scopes = json.dumps(body["allowed_scopes"]) if body["allowed_scopes"] else None
     if "allowed_sites" in body:
-        agent.allowed_sites = (
-            json.dumps(body["allowed_sites"])
-            if body["allowed_sites"]
-            else None
-        )
+        agent.allowed_sites = json.dumps(body["allowed_sites"]) if body["allowed_sites"] else None
     if "rate_limit" in body:
         agent.rate_limit = body["rate_limit"]
 
@@ -243,9 +189,7 @@ async def deactivate_agent(
     db: Session = Depends(get_db),
 ):
     """Deactivate an agent and revoke its API key."""
-    agent = (
-        db.query(Agent).filter_by(id=agent_id, owner_id=user.id).first()
-    )
+    agent = db.query(Agent).filter_by(id=agent_id, owner_id=user.id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found.")
 
