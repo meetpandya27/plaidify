@@ -49,9 +49,9 @@
     "tsup": "^8.0.0",
     "vitest": "^1.0.0",
     "@types/node": "^20.0.0",
-    "react": "^18.2.0",
+    "react": "^19.2.5",
     "react-dom": "^18.2.0",
-    "@types/react": "^18.2.0",
+    "@types/react": "^19.2.14",
     "@types/react-dom": "^18.2.0"
   }
 }
