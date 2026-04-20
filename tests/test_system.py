@@ -82,6 +82,26 @@ class TestSystemEndpoints:
         assert response.json()["checks"]["browser_pool"] == "ok"
         browser_pool.assert_awaited_once()
 
+    def test_detailed_health_accepts_api_key_when_token_configured(self, client, auth_headers):
+        create_key = client.post(
+            "/api-keys",
+            json={"name": "health-check"},
+            headers=auth_headers,
+        )
+        assert create_key.status_code == 200
+        api_key = create_key.json()["key"]
+
+        browser_pool = AsyncMock(return_value=object())
+
+        with patch("src.routers.system.settings.health_check_token", "health-secret"), patch(
+            "src.routers.system.get_browser_pool", new=browser_pool
+        ):
+            response = client.get("/health/detailed", headers={"X-API-Key": api_key})
+
+        assert response.status_code == 200
+        assert response.json()["checks"]["browser_pool"] == "ok"
+        browser_pool.assert_awaited_once()
+
 
 class TestConnectEndpoint:
     """Tests for the POST /connect endpoint."""
