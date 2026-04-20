@@ -31,7 +31,7 @@ Store the following as GitHub environment secrets:
 - `ENCRYPTION_KEY`
 - `JWT_SECRET_KEY`
 - `LLM_API_KEY` (optional)
-- `HEALTH_CHECK_TOKEN` (optional)
+- `HEALTH_CHECK_TOKEN` (optional, only if you want bearer-token access to `GET /health/detailed` in addition to existing authenticated access)
 
 Store the following as GitHub environment variables:
 
@@ -55,6 +55,8 @@ Store the following as GitHub environment variables:
 	- the private `access-executor` worker that consumes detached access jobs from Redis
 7. The workflow starts a manual-trigger Container Apps Job that runs `alembic upgrade head` against the production database and waits for it to succeed.
 8. The workflow runs a public health check against `/health` and also verifies the executor app reports a ready revision.
+
+The current workflow does not require `HEALTH_CHECK_TOKEN` because it probes the public `/health` endpoint. Set that secret only if you also want bearer-token access to `/health/detailed` for private diagnostics.
 
 ## Local Overrides
 

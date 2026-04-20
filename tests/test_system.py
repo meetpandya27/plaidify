@@ -2,6 +2,8 @@
 Tests for system endpoints: /, /health, /status, /connect, /disconnect.
 """
 
+from unittest.mock import AsyncMock, patch
+
 
 class TestSystemEndpoints:
     """Tests for root, health, and status endpoints."""
@@ -25,6 +27,60 @@ class TestSystemEndpoints:
         response = client.get("/status")
         assert response.status_code == 200
         assert response.json()["status"] == "API is running"
+
+    def test_detailed_health_is_public_when_token_unset(self, client):
+        browser_pool = AsyncMock(return_value=object())
+
+        with patch("src.routers.system.settings.health_check_token", None), patch(
+            "src.routers.system.get_browser_pool", new=browser_pool
+        ):
+            response = client.get("/health/detailed")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["checks"]["database"] == "ok"
+        assert data["checks"]["browser_pool"] == "ok"
+        browser_pool.assert_awaited_once()
+
+    def test_detailed_health_requires_valid_token_when_configured(self, client):
+        browser_pool = AsyncMock(return_value=object())
+
+        with patch("src.routers.system.settings.health_check_token", "health-secret"), patch(
+            "src.routers.system.get_browser_pool", new=browser_pool
+        ):
+            response = client.get("/health/detailed")
+
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Invalid health check token or authentication."
+        browser_pool.assert_not_awaited()
+
+    def test_detailed_health_accepts_configured_token(self, client):
+        browser_pool = AsyncMock(return_value=object())
+
+        with patch("src.routers.system.settings.health_check_token", "health-secret"), patch(
+            "src.routers.system.get_browser_pool", new=browser_pool
+        ):
+            response = client.get(
+                "/health/detailed",
+                headers={"Authorization": "Bearer health-secret"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["checks"]["browser_pool"] == "ok"
+        browser_pool.assert_awaited_once()
+
+    def test_detailed_health_accepts_authenticated_user_when_token_configured(self, client, auth_headers):
+        browser_pool = AsyncMock(return_value=object())
+
+        with patch("src.routers.system.settings.health_check_token", "health-secret"), patch(
+            "src.routers.system.get_browser_pool", new=browser_pool
+        ):
+            response = client.get("/health/detailed", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json()["checks"]["browser_pool"] == "ok"
+        browser_pool.assert_awaited_once()
 
 
 class TestConnectEndpoint:

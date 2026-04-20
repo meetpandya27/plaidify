@@ -287,7 +287,7 @@ class Settings(BaseSettings):
     # ── Health Check ─────────────────────────────────────────────
     health_check_token: Optional[str] = Field(
         default=None,
-        description="Bearer token required for /health/detailed. If unset, detailed health is unrestricted.",
+        description="Optional bearer token for /health/detailed. If unset, detailed health is unrestricted; authenticated access remains valid when the token is configured.",
     )
 
     # ── Audit Retention ───────────────────────────────────────────

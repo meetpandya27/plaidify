@@ -133,7 +133,7 @@ What the production stack changes compared to the default compose file:
 |----------|---------|-------------|
 | `SENTRY_DSN` | `None` | Sentry DSN for application error reporting |
 | `OTEL_ENDPOINT` | `None` | OTLP endpoint for distributed tracing |
-| `HEALTH_CHECK_TOKEN` | `None` | Optional token injected by some deployments for infra-specific health integrations |
+| `HEALTH_CHECK_TOKEN` | `None` | Optional bearer token for `GET /health/detailed`; authenticated access also remains valid when configured |
 
 ### Rate Limiting
 
@@ -297,7 +297,7 @@ docker compose up -d
 
 - **Prometheus metrics** are exposed at `GET /metrics` when the optional instrumentator dependency is installed
 - **Public health check** at `GET /health` verifies database reachability and returns `200` or `503`
-- **Detailed health check** at `GET /health/detailed` requires authenticated access and reports database, browser pool, and Redis status with `healthy` or `degraded`
+- **Detailed health check** at `GET /health/detailed` reports database, browser pool, and Redis status with `healthy` or `degraded`; it is public when `HEALTH_CHECK_TOKEN` is unset, and when the token is configured it accepts either that bearer token or existing authenticated access
 - **Structured logs** use JSON format by default for log aggregation (ELK, Datadog, etc.)
 
 ### Scaling

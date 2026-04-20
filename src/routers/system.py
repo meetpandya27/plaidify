@@ -2,6 +2,7 @@
 System endpoints: root, health, status, blueprint discovery, blueprint generation.
 """
 
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 from src.config import get_settings
 from src.core.browser_pool import get_browser_pool
 from src.database import User, get_db
-from src.dependencies import get_current_user
+from src.dependencies import get_current_user, get_current_user_or_api_key
 from src.logging_config import get_logger
 from src.organization_catalog import get_organization_by_id, get_organization_summary, search_organizations
 
@@ -52,14 +53,29 @@ async def health(db: Session = Depends(get_db)):
 
 @router.get("/health/detailed")
 async def health_detailed(
+    request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
 ):
     """
-    Detailed health check (authenticated).
+    Detailed health check with optional bearer-token gating.
 
     Returns system status, version, database, browser pool, and Redis connectivity.
     """
+    if settings.health_check_token:
+        auth_header = request.headers.get("authorization", "")
+        bearer_token = auth_header[7:] if auth_header.startswith("Bearer ") else None
+
+        if not (bearer_token and secrets.compare_digest(bearer_token, settings.health_check_token)):
+            try:
+                get_current_user_or_api_key(request, db)
+            except HTTPException as exc:
+                if exc.status_code == 401:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Invalid health check token or authentication.",
+                    )
+                raise
+
     checks = {}
 
     # Database check
@@ -73,7 +89,7 @@ async def health_detailed(
 
     # Browser pool check
     try:
-        get_browser_pool()
+        await get_browser_pool()
         checks["browser_pool"] = "ok"
     except Exception:
         checks["browser_pool"] = "unavailable"
