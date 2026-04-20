@@ -288,7 +288,7 @@ class TestSubmitCredentialsWithDEK:
         from tests.conftest import TestSessionLocal
 
         # Create link
-        link_resp = client.post("/create_link?site=test_bank", headers=auth_headers)
+        link_resp = client.post("/create_link?site=internal_bank", headers=auth_headers)
         assert link_resp.status_code == 200
         link_token = link_resp.json()["link_token"]
 

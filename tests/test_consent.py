@@ -18,7 +18,7 @@ def _create_access_token(client, auth_headers):
 
     # Submit credentials to get an access token (query params, not JSON)
     resp = client.post(
-        f"/submit_credentials?link_token={link_token}&username=demo_user&password=demo_pass",
+        f"/submit_credentials?link_token={link_token}&username=test_user&password=test_pass",
         headers=auth_headers,
     )
     assert resp.status_code == 200

@@ -4,129 +4,265 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Plaidify Link</title>
-  <link rel="stylesheet" href="link-page.css" />
+  <link rel="stylesheet" href="/ui/link-page.css" />
 </head>
 <body>
-  <div class="link-container" role="main">
-    <div class="link-card" role="dialog" aria-label="Plaidify Link — Connect your account">
+  <div class="connect-shell" role="main">
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
 
-      <!-- Header -->
-      <div class="link-header">
-        <div class="link-logo" aria-hidden="true">&#9670; <span class="accent">Plaidify</span></div>
-        <button class="link-close-btn" id="close-btn" title="Close" aria-label="Close">&times;</button>
-      </div>
-
-      <!-- Step indicators -->
-      <div class="step-indicator" role="progressbar" aria-valuenow="1" aria-valuemin="1" aria-valuemax="3" aria-label="Step 1 of 3">
-        <div class="step-dot current" id="dot-1" aria-label="Step 1: Select provider"></div>
-        <div class="step-dot" id="dot-2" aria-label="Step 2: Enter credentials"></div>
-        <div class="step-dot" id="dot-3" aria-label="Step 3: Verify"></div>
-      </div>
-
-      <!-- Step 1: Select Provider -->
-      <div class="link-step active" id="step-select" role="region" aria-label="Select your provider">
-        <div class="step-content">
-          <input
-            type="text"
-            class="institution-search"
-            id="institution-search"
-            placeholder="Search providers..."
-            autocomplete="off"
-            aria-label="Search providers"
-          />
-          <div class="institution-list" id="institution-list">
-            <div class="institution-empty">Loading providers...</div>
+    <section class="connect-frame" role="dialog" aria-modal="true" aria-label="Plaidify Link">
+      <header class="frame-head">
+        <button class="close-button" id="close-btn" type="button" aria-label="Close">&times;</button>
+        <div class="brand-lockup">
+          <div class="brand-glyph" aria-hidden="true">&#9670;</div>
+          <div>
+            <div class="brand-name">Plaidify</div>
+            <div class="brand-caption">Secure account connection</div>
           </div>
         </div>
-      </div>
+        <div class="security-chip">Encrypted session</div>
+      </header>
 
-      <!-- Step 2: Enter Credentials -->
-      <div class="link-step" id="step-credentials" role="region" aria-label="Enter your credentials">
-        <div class="step-content">
-          <div class="selected-provider">
-            <span class="provider-icon" id="provider-icon" aria-hidden="true">&#9889;</span>
-            <span class="provider-name" id="provider-name">Provider</span>
-            <button class="provider-change-btn" id="change-provider-btn" aria-label="Change provider">Change</button>
+      <section class="flow-header">
+        <p class="flow-eyebrow" id="flow-eyebrow">Step 1 of 3</p>
+        <h1 class="flow-title" id="flow-title">Choose your provider</h1>
+        <p class="flow-subtitle" id="flow-subtitle">
+          Search from supported portals and continue with read-only, encrypted access.
+        </p>
+
+        <div class="step-progress" aria-label="Connection progress">
+          <div class="progress-pill current" id="dot-1">
+            <span class="progress-index">1</span>
+            <span class="progress-label">Institution</span>
           </div>
-          <form id="credentials-form" autocomplete="off" aria-label="Login credentials">
-            <div class="form-group">
-              <label for="link-username">Username</label>
-              <input type="text" id="link-username" placeholder="Enter username" required aria-required="true" />
-              <span class="field-error" id="username-error" role="alert" aria-live="polite"></span>
+          <div class="progress-pill" id="dot-2">
+            <span class="progress-index">2</span>
+            <span class="progress-label">Credentials</span>
+          </div>
+          <div class="progress-pill" id="dot-3">
+            <span class="progress-index">3</span>
+            <span class="progress-label">Verify</span>
+          </div>
+        </div>
+
+        <div class="assurance-row" aria-label="Security assurances">
+          <span class="assurance-pill">Read-only runtime</span>
+          <span class="assurance-pill">Credentials encrypted before send</span>
+          <span class="assurance-pill">No browser-side storage</span>
+        </div>
+      </section>
+
+      <section class="frame-body">
+        <div class="link-step active" id="step-select" role="region" aria-label="Select your provider">
+          <div class="search-wrap">
+            <label class="sr-only" for="institution-search">Search providers</label>
+            <div class="search-shell">
+              <span class="search-icon" aria-hidden="true">⌕</span>
+              <input
+                type="text"
+                class="institution-search"
+                id="institution-search"
+                placeholder="Search 10,000+ organizations across finance, utilities, insurance, telecom, healthcare, and government"
+                autocomplete="off"
+              />
             </div>
-            <div class="form-group">
-              <label for="link-password">Password</label>
-              <input type="password" id="link-password" placeholder="Enter password" required aria-required="true" />
-              <span class="field-error" id="password-error" role="alert" aria-live="polite"></span>
-            </div>
-            <button type="submit" class="submit-btn" id="connect-btn">Connect</button>
-          </form>
-        </div>
-      </div>
-
-      <!-- Step 3a: MFA -->
-      <div class="link-step" id="step-mfa" role="region" aria-label="Multi-factor authentication">
-        <div class="step-content">
-          <div class="mfa-info">
-            <div class="mfa-label" id="mfa-label">Verification Required</div>
-            <div class="mfa-message" id="mfa-message" aria-live="polite">Enter the code sent to your device.</div>
           </div>
-          <form id="mfa-form" autocomplete="off" aria-labelledby="mfa-label">
-            <input
-              type="text"
-              class="mfa-input"
-              id="mfa-code"
-              placeholder="000000"
-              maxlength="8"
-              autocomplete="one-time-code"
-              inputmode="numeric"
-              required
-              aria-required="true"
-              aria-label="Verification code"
-            />
-            <button type="submit" class="submit-btn" id="mfa-submit-btn">Verify</button>
-          </form>
-        </div>
-      </div>
 
-      <!-- Step 3b: Connecting (progress) -->
-      <div class="link-step" id="step-connecting" role="region" aria-label="Connecting">
-        <div class="connecting-status" aria-live="polite">
-          <div class="spinner" role="status" aria-label="Loading"></div>
-          <div class="connecting-text" id="connecting-text">Connecting...</div>
-          <div class="connecting-sub" id="connecting-sub">Securely logging in to your account</div>
-        </div>
-      </div>
+          <div class="featured-picks" id="featured-picks" aria-label="Featured organizations"></div>
 
-      <!-- Step 4: Success -->
-      <div class="link-step" id="step-success" role="region" aria-label="Connection successful">
-        <div class="success-content" aria-live="assertive">
-          <div class="success-icon" aria-hidden="true">&#10003;</div>
-          <div class="success-title">Connected!</div>
-          <div class="success-message">Your account has been linked successfully.</div>
-          <div class="access-token-display" id="access-token-display"></div>
-          <button class="done-btn" id="done-btn">Done</button>
-        </div>
-      </div>
+          <div class="directory-meta">
+            <div>
+              <div class="directory-count" id="directory-count">Loading organization directory…</div>
+              <div class="directory-caption" id="directory-caption">
+                USA and Canada directory results route into Plaidify's read-only connection runtime.
+              </div>
+            </div>
+            <div class="filter-row">
+              <label class="sr-only" for="country-filter">Filter by country</label>
+              <select class="directory-filter" id="country-filter">
+                <option value="">All countries</option>
+              </select>
+              <label class="sr-only" for="category-filter">Filter by category</label>
+              <select class="directory-filter" id="category-filter">
+                <option value="">All categories</option>
+              </select>
+            </div>
+          </div>
 
-      <!-- Step 5: Error -->
-      <div class="link-step" id="step-error" role="region" aria-label="Connection error">
-        <div class="error-content" aria-live="assertive">
-          <div class="error-icon" aria-hidden="true">&#10007;</div>
-          <div class="error-title">Connection Failed</div>
-          <div class="error-message" id="error-message" role="alert">Something went wrong. Please try again.</div>
-          <button class="retry-btn" id="retry-btn">Try Again</button>
-        </div>
-      </div>
+          <div class="selection-layout">
+            <div class="institution-list" id="institution-list">
+              <div class="institution-empty">Loading organizations...</div>
+            </div>
 
-      <!-- Footer -->
-      <div class="link-footer">
-        <span class="powered-by">Secured by</span>
-        <span>&#9670; Plaidify</span>
-      </div>
-    </div>
+            <aside class="trust-card" aria-label="Connection details">
+              <div class="trust-card__eyebrow">What happens next</div>
+              <h2>One guided, agent-ready connection flow</h2>
+              <ul class="trust-list">
+                <li>Plaidify opens a secure browser session for the selected organization.</li>
+                <li>Your credentials are encrypted in this window before they are submitted.</li>
+                <li>Structured read-only fields are returned as JSON after authentication completes.</li>
+              </ul>
+            </aside>
+          </div>
+        </div>
+
+        <div class="link-step" id="step-credentials" role="region" aria-label="Enter your credentials">
+          <div class="selected-provider-card">
+            <div class="selected-provider__meta">
+              <div class="provider-icon-wrap" id="provider-icon">&#9670;</div>
+              <div>
+                <div class="provider-name" id="provider-name">Provider</div>
+                <div class="provider-domain" id="provider-domain">Region and category</div>
+                <div class="provider-badges" id="provider-badges"></div>
+              </div>
+            </div>
+            <button class="provider-change-btn" id="change-provider-btn" type="button">Change</button>
+          </div>
+
+          <div class="credentials-layout">
+            <form id="credentials-form" autocomplete="off" aria-label="Login credentials">
+              <div class="form-group">
+                <label for="link-username">Username or email</label>
+                <input type="text" id="link-username" placeholder="Enter your username" aria-required="true" />
+                <span class="field-error" id="username-error" role="alert" aria-live="polite"></span>
+              </div>
+
+              <div class="form-group">
+                <label for="link-password">Password</label>
+                <div class="password-shell">
+                  <input type="password" id="link-password" placeholder="Enter your password" aria-required="true" />
+                  <button class="password-toggle" id="password-toggle" type="button" aria-label="Show password">Show</button>
+                </div>
+                <span class="field-error" id="password-error" role="alert" aria-live="polite"></span>
+              </div>
+
+              <p class="credentials-caption" id="credentials-caption">
+                Your provider credentials are encrypted before this request leaves the browser.
+              </p>
+
+              <button type="submit" class="primary-button" id="connect-btn">Continue</button>
+            </form>
+
+            <aside class="consent-card">
+              <div class="consent-label">This connection will</div>
+              <ul class="consent-list" id="consent-list">
+                <li>Open a secure browser session for the selected provider.</li>
+                <li>Authenticate with encrypted credentials.</li>
+                <li>Return structured, read-only account data.</li>
+              </ul>
+            </aside>
+          </div>
+        </div>
+
+        <div class="link-step" id="step-connecting" role="region" aria-label="Connecting">
+          <div class="connecting-panel">
+            <div class="pulse-orb" aria-hidden="true"></div>
+            <h2 class="connecting-title" id="connecting-text">Preparing secure connection</h2>
+            <p class="connecting-subtitle" id="connecting-sub">
+              Creating an encrypted session and opening the provider portal.
+            </p>
+
+            <div class="status-list" aria-live="polite">
+              <div class="status-item" id="status-handshake" data-state="active">
+                <span class="status-dot"></span>
+                <div>
+                  <div class="status-title">Secure handshake</div>
+                  <div class="status-copy">Creating the protected browser session.</div>
+                </div>
+              </div>
+              <div class="status-item" id="status-browser" data-state="idle">
+                <span class="status-dot"></span>
+                <div>
+                  <div class="status-title">Open provider portal</div>
+                  <div class="status-copy">Launching the authenticated web flow.</div>
+                </div>
+              </div>
+              <div class="status-item" id="status-auth" data-state="idle">
+                <span class="status-dot"></span>
+                <div>
+                  <div class="status-title">Verify credentials</div>
+                  <div class="status-copy">Submitting and confirming your sign-in.</div>
+                </div>
+              </div>
+              <div class="status-item" id="status-read" data-state="idle">
+                <span class="status-dot"></span>
+                <div>
+                  <div class="status-title">Read structured data</div>
+                  <div class="status-copy">Collecting the fields defined by this connector.</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="connection-note" id="connection-note">
+              This usually completes in a few seconds. If the site needs additional verification, we will pause here.
+            </div>
+          </div>
+        </div>
+
+        <div class="link-step" id="step-mfa" role="region" aria-label="Verification required">
+          <div class="mfa-panel">
+            <div class="mfa-banner" id="mfa-label">Verification required</div>
+            <h2>Confirm it is you</h2>
+            <p class="mfa-message" id="mfa-message">
+              Enter the verification code sent by your provider to continue the connection.
+            </p>
+
+            <form id="mfa-form" autocomplete="one-time-code">
+              <label class="sr-only" for="mfa-code">Verification code</label>
+              <input
+                type="text"
+                class="mfa-input"
+                id="mfa-code"
+                placeholder="000000"
+                maxlength="8"
+                inputmode="numeric"
+                aria-required="true"
+              />
+              <div class="mfa-help">Codes are only used to resume this connection session.</div>
+              <button type="submit" class="primary-button" id="mfa-submit-btn">Verify and continue</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="link-step" id="step-success" role="region" aria-label="Connection successful">
+          <div class="result-panel success-panel">
+            <div class="result-icon success-icon" aria-hidden="true">&#10003;</div>
+            <div class="result-title">Connection complete</div>
+            <p class="result-message" id="success-message">
+              Your account has been connected successfully.
+            </p>
+
+            <div class="success-provider" id="success-provider">Provider connected</div>
+            <div class="success-highlights" id="success-highlights"></div>
+            <div class="reference-block" id="access-token-display"></div>
+
+            <button class="primary-button success-button" id="done-btn" type="button">Done</button>
+          </div>
+        </div>
+
+        <div class="link-step" id="step-error" role="region" aria-label="Connection failed">
+          <div class="result-panel error-panel">
+            <div class="result-icon error-icon" aria-hidden="true">&#10005;</div>
+            <div class="result-title">We could not complete the connection</div>
+            <p class="result-message" id="error-message">Something went wrong. Please try again.</p>
+
+            <div class="error-actions">
+              <button class="secondary-button" id="retry-btn" type="button">Try again</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="frame-footer">
+        <div class="footer-note">
+          <span class="footer-badge">Secured by Plaidify</span>
+          <span id="footer-context">Credentials stay inside this encrypted connection window.</span>
+        </div>
+      </footer>
+    </section>
   </div>
 
-  <script src="link-page.js"></script>
+  <script src="/ui/link-page.js"></script>
 </body>
 </html>

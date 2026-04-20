@@ -13,6 +13,7 @@ from src.core.browser_pool import get_browser_pool
 from src.database import User, get_db
 from src.dependencies import get_current_user
 from src.logging_config import get_logger
+from src.organization_catalog import get_organization_by_id, get_organization_summary, search_organizations
 
 settings = get_settings()
 logger = get_logger("api.system")
@@ -110,6 +111,46 @@ async def app_status():
     return {"status": "API is running", "version": settings.app_version}
 
 
+@router.get("/organizations/summary")
+async def organization_summary():
+    """Return high-level counts for the generated organization directory."""
+    return get_organization_summary()
+
+
+@router.get("/organizations/search")
+async def organization_search(
+    q: str | None = None,
+    category: str | None = None,
+    country: str | None = None,
+    site: str | None = None,
+    limit: int = 40,
+    offset: int = 0,
+):
+    """Search the generated organization directory used by the hosted Link flow."""
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100.")
+    if offset < 0:
+        raise HTTPException(status_code=422, detail="offset must be greater than or equal to 0.")
+
+    return search_organizations(
+        q=q,
+        category=category,
+        country=country,
+        site=site,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/organizations/{organization_id}")
+async def organization_detail(organization_id: str):
+    """Return a single organization directory entry."""
+    entry = get_organization_by_id(organization_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    return entry
+
+
 # ── Blueprint Discovery ──────────────────────────────────────────────────────
 
 
@@ -131,12 +172,15 @@ async def list_blueprints():
         for f in sorted(connectors_path.glob("*.json")):
             try:
                 bp = load_blueprint(f)
+                tags = bp.tags or []
+                if "internal" in tags or "fixture" in tags:
+                    continue
                 blueprints.append(
                     {
                         "site": f.stem,
                         "name": bp.name,
                         "domain": bp.domain,
-                        "tags": bp.tags,
+                        "tags": tags,
                         "has_mfa": bp.mfa is not None,
                         "schema_version": bp.schema_version,
                     }
@@ -313,6 +357,8 @@ async def get_blueprint_info(site: str):
         raise HTTPException(status_code=404, detail=f"Blueprint not found: {site}")
 
     bp = load_blueprint(blueprint_path)
+    if "internal" in (bp.tags or []) or "fixture" in (bp.tags or []):
+        raise HTTPException(status_code=404, detail=f"Blueprint not found: {site}")
     return {
         "name": bp.name,
         "domain": bp.domain,

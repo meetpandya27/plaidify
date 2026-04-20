@@ -154,7 +154,7 @@ class TestConnect:
             "data": {"balance": 100.50, "account": "A123"},
         }))
         async with Plaidify(server_url=BASE) as pfy:
-            result = await pfy.connect("test_bank", username="user", password="pass")
+            result = await pfy.connect("internal_bank", username="user", password="pass")
         assert isinstance(result, ConnectResult)
         assert result.connected is True
         assert result.job_id == "ajob-123"
@@ -169,7 +169,7 @@ class TestConnect:
             "metadata": {"message": "Still running"},
         }))
         async with Plaidify(server_url=BASE) as pfy:
-            result = await pfy.connect("test_bank", username="user", password="pass")
+            result = await pfy.connect("internal_bank", username="user", password="pass")
         assert result.pending is True
         assert result.job_id == "ajob-pending"
         assert result.session_id == "access-session-1"
@@ -182,7 +182,7 @@ class TestConnect:
         }))
         async with Plaidify(server_url=BASE) as pfy:
             result = await pfy.connect(
-                "test_bank",
+                "internal_bank",
                 username="user",
                 password="pass",
                 extract_fields=["balance"],

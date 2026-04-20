@@ -15,4 +15,10 @@ export default defineConfig([
     sourcemap: true,
     external: ["react", "react-dom"],
   },
+  {
+    entry: { "react-native": "src/react-native.ts" },
+    format: ["cjs", "esm"],
+    dts: true,
+    sourcemap: true,
+  },
 ]);

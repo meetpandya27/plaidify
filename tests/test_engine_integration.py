@@ -1,8 +1,8 @@
 """
 Integration tests for the Playwright browser engine.
 
-These tests start the example test site, then run the engine against it
-to verify the full flow: login → extract data → logout.
+These tests start an internal browser fixture portal, then run the engine
+against it to verify the full flow: login → extract data → logout.
 
 Requires: playwright browsers installed (run: playwright install chromium)
 """
@@ -28,7 +28,7 @@ def _run_test_site():
     """Run the test site in a subprocess."""
     import uvicorn
 
-    from example_site.server import app
+    from tests.fixtures.internal_portal import app
 
     uvicorn.run(app, host="127.0.0.1", port=18080, log_level="error")
 
@@ -61,13 +61,13 @@ def test_site():
 
 
 @pytest.fixture
-def test_bank_blueprint():
-    """Load the test_bank V2 blueprint."""
+def internal_bank_blueprint():
+    """Load the internal_bank V2 blueprint."""
     from pathlib import Path
 
     from src.core.blueprint import load_blueprint
 
-    path = Path("connectors/test_bank.json")
+    path = Path("connectors/internal_bank.json")
     bp = load_blueprint(path)
     # Override URL to use our test port
     for step in bp.auth.steps:
@@ -83,7 +83,7 @@ def test_bank_blueprint():
 
 class TestStepExecutor:
     @pytest.mark.asyncio
-    async def test_login_flow(self, test_site, test_bank_blueprint):
+    async def test_login_flow(self, test_site, internal_bank_blueprint):
         """Test that the step executor can log into the test site."""
         from playwright.async_api import async_playwright
 
@@ -97,7 +97,7 @@ class TestStepExecutor:
             variables = {"username": "test_user", "password": "test_pass"}
             executor = StepExecutor(page, variables)
 
-            await executor.execute_steps(test_bank_blueprint.auth.steps, context="auth")
+            await executor.execute_steps(internal_bank_blueprint.auth.steps, context="auth")
 
             # Should be on the dashboard
             title = await page.title()
@@ -107,7 +107,7 @@ class TestStepExecutor:
             await browser.close()
 
     @pytest.mark.asyncio
-    async def test_login_invalid_creds(self, test_site, test_bank_blueprint):
+    async def test_login_invalid_creds(self, test_site, internal_bank_blueprint):
         """Test that invalid credentials don't reach the dashboard."""
         from playwright.async_api import async_playwright
 
@@ -124,7 +124,7 @@ class TestStepExecutor:
 
             # The "wait for #dashboard" step should timeout since login fails
             with pytest.raises(ConnectionFailedError):
-                await executor.execute_steps(test_bank_blueprint.auth.steps, context="auth")
+                await executor.execute_steps(internal_bank_blueprint.auth.steps, context="auth")
 
             await context.close()
             await browser.close()
@@ -135,7 +135,7 @@ class TestStepExecutor:
 
 class TestDataExtraction:
     @pytest.mark.asyncio
-    async def test_extract_account_data(self, test_site, test_bank_blueprint):
+    async def test_extract_account_data(self, test_site, internal_bank_blueprint):
         """Test that we can extract structured data from the dashboard."""
         from playwright.async_api import async_playwright
 
@@ -150,11 +150,11 @@ class TestDataExtraction:
             # Login first
             variables = {"username": "test_user", "password": "test_pass"}
             executor = StepExecutor(page, variables)
-            await executor.execute_steps(test_bank_blueprint.auth.steps, context="auth")
+            await executor.execute_steps(internal_bank_blueprint.auth.steps, context="auth")
 
             # Extract data
             extractor = DataExtractor(page)
-            data = await extractor.extract(test_bank_blueprint.extract, site="test_bank")
+            data = await extractor.extract(internal_bank_blueprint.extract, site="internal_bank")
 
             # Verify scalar fields
             assert data["current_bill"] == 142.57
@@ -176,7 +176,7 @@ class TestDataExtraction:
             await browser.close()
 
     @pytest.mark.asyncio
-    async def test_extract_specific_fields(self, test_site, test_bank_blueprint):
+    async def test_extract_specific_fields(self, test_site, internal_bank_blueprint):
         """Test extracting only a subset of fields."""
         from playwright.async_api import async_playwright
 
@@ -190,12 +190,12 @@ class TestDataExtraction:
 
             variables = {"username": "test_user", "password": "test_pass"}
             executor = StepExecutor(page, variables)
-            await executor.execute_steps(test_bank_blueprint.auth.steps, context="auth")
+            await executor.execute_steps(internal_bank_blueprint.auth.steps, context="auth")
 
             # Extract only current_bill
-            limited_fields = {k: v for k, v in test_bank_blueprint.extract.items() if k == "current_bill"}
+            limited_fields = {k: v for k, v in internal_bank_blueprint.extract.items() if k == "current_bill"}
             extractor = DataExtractor(page)
-            data = await extractor.extract(limited_fields, site="test_bank")
+            data = await extractor.extract(limited_fields, site="internal_bank")
 
             assert "current_bill" in data
             assert "usage_history" not in data
@@ -270,7 +270,7 @@ class TestEngineIntegration:
         from src.core.engine import connect_to_site
 
         # Create a modified blueprint pointing to test port
-        bp_path = Path("connectors/test_bank.json")
+        bp_path = Path("connectors/internal_bank.json")
         with open(bp_path) as f:
             bp_data = json.load(f)
 
@@ -280,7 +280,7 @@ class TestEngineIntegration:
                 step["url"] = step["url"].replace("8080", "18080")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            modified_bp = Path(tmpdir) / "test_bank.json"
+            modified_bp = Path(tmpdir) / "internal_bank.json"
             modified_bp.write_text(json.dumps(bp_data))
 
             # Temporarily override connectors dir
@@ -291,7 +291,7 @@ class TestEngineIntegration:
                 # Use a fresh settings load to pick up the new dir
                 # The engine uses settings.connectors_dir
                 result = await connect_to_site(
-                    site="test_bank",
+                    site="internal_bank",
                     username="test_user",
                     password="test_pass",
                 )

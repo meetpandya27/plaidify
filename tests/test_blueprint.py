@@ -203,7 +203,7 @@ class TestV1Conversion:
     def test_convert_basic_v1(self):
         v1 = {
             "name": "Demo Site",
-            "login_url": "https://demo.example.com/login",
+            "login_url": "https://fixture.example.com/login",
             "fields": {
                 "username": "#user",
                 "password": "#pass",
@@ -217,7 +217,7 @@ class TestV1Conversion:
         bp = convert_v1_to_v2(v1)
         assert bp.schema_version == "2.0"
         assert bp.name == "Demo Site"
-        assert bp.domain == "demo.example.com"
+        assert bp.domain == "fixture.example.com"
         # goto + fill(user) + fill(pass) + click(submit) + wait(dashboard)
         assert len(bp.auth.steps) == 5
         assert "status" in bp.extract
@@ -274,36 +274,35 @@ class TestLoadBlueprint:
         assert bp.name == "V2 Test"
         assert bp.schema_version == "2.0"
 
-    def test_load_existing_demo_blueprint(self):
-        """Test that the existing demo_site.json loads (V1 auto-convert)."""
-        path = Path("connectors/demo_site.json")
+    def test_load_internal_fixture_blueprint(self):
+        """Test that the existing internal_bank.json loads."""
+        path = Path("connectors/internal_bank.json")
         if path.exists():
             bp = load_blueprint(path)
-            assert bp.name == "Demo Site"
+            assert bp.name == "Internal Browser Fixture"
             assert bp.schema_version == "2.0"
 
-    def test_load_test_bank_blueprint(self):
-        """Test that the test_bank.json V2 blueprint loads."""
-        path = Path("connectors/test_bank.json")
+    def test_load_internal_bank_blueprint(self):
+        """Test that the internal_bank.json V2 blueprint loads."""
+        path = Path("connectors/internal_bank.json")
         if path.exists():
             bp = load_blueprint(path)
-            assert bp.name == "Test Site (Legacy)"
+            assert bp.name == "Internal Browser Fixture"
             assert bp.schema_version == "2.0"
             assert bp.mfa is not None
             assert "current_bill" in bp.extract
             assert "usage_history" in bp.extract
 
-    def test_load_greengrid_blueprint(self):
-        """Test that the greengrid_energy.json V2 blueprint loads."""
-        path = Path("connectors/greengrid_energy.json")
+    def test_load_hydro_one_blueprint(self):
+        """Test that the hydro_one.json V2 blueprint loads."""
+        path = Path("connectors/hydro_one.json")
         if path.exists():
             bp = load_blueprint(path)
-            assert bp.name == "GreenGrid Energy"
+            assert bp.name == "Hydro One"
             assert bp.schema_version == "2.0"
             assert bp.mfa is not None
-            assert "current_bill" in bp.extract
-            assert "usage_history" in bp.extract
-            assert "payments" in bp.extract
+            assert "current_balance" in bp.extract
+            assert "usage_kwh" in bp.extract
 
     def test_invalid_json_raises(self, tmp_path):
         bp_file = tmp_path / "bad.json"

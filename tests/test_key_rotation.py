@@ -57,7 +57,7 @@ def _make_user(db, username="keyrotuser") -> User:
     return user
 
 
-def _make_link(db, user, site="test_bank") -> Link:
+def _make_link(db, user, site="internal_bank") -> Link:
     """Create a link for a user."""
     import uuid
 
@@ -110,7 +110,7 @@ class TestKeyVersionStamped:
     def test_submit_credentials_stamps_key_version(self, client, auth_headers):
         """submit_credentials sets key_version on new AccessTokens."""
         # Create link
-        resp = client.post("/create_link", params={"site": "test_bank"}, headers=auth_headers)
+        resp = client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
         assert resp.status_code == 200
         link_token = resp.json()["link_token"]
 
@@ -284,7 +284,7 @@ class TestReEncryptTokens:
             db.commit()
             db.refresh(user)
 
-            link = _make_link(db, user, site="demo_site")
+            link = _make_link(db, user, site="internal_bank")
 
             # Create token with master-key encryption (no DEK)
             import uuid

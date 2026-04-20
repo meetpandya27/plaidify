@@ -32,6 +32,8 @@ class TestHostedLinkPage:
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         assert "Plaidify" in resp.text
+        assert "/ui/link-page.css" in resp.text
+        assert "/ui/link-page.js" in resp.text
 
     def test_link_page_without_token(self, client):
         resp = client.get("/link")
@@ -53,7 +55,7 @@ class TestLinkSessions:
         assert data["expires_in"] > 0
 
     def test_create_link_session_with_site(self, client, auth_headers):
-        resp = client.post("/link/sessions?site=greengrid_energy", headers=auth_headers)
+        resp = client.post("/link/sessions?site=hydro_one", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["link_token"]
@@ -61,6 +63,117 @@ class TestLinkSessions:
     def test_create_link_session_requires_auth(self, client):
         resp = client.post("/link/sessions")
         assert resp.status_code in (401, 403)
+
+    def test_create_public_link_session(self, client):
+        resp = client.post("/link/sessions/public")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "link_token" in data
+        assert data["expires_in"] > 0
+
+        status_resp = client.get(f"/link/sessions/{data['link_token']}/status")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["status"] == "awaiting_institution"
+
+    def test_create_public_link_session_disabled_in_production(self, client):
+        with patch("src.routers.link_sessions.settings.env", "production"), patch(
+            "src.routers.link_sessions.settings.public_link_sessions_enabled", False
+        ):
+            resp = client.post("/link/sessions/public")
+
+        assert resp.status_code == 403
+        assert "disabled in production" in resp.json()["detail"]
+
+    def test_create_public_link_session_allows_configured_origin(self, client):
+        with patch("src.routers.link_sessions.settings.public_link_allowed_origins", "https://app.example.com"):
+            resp = client.post(
+                "/link/sessions/public",
+                headers={"Origin": "https://app.example.com"},
+            )
+
+        assert resp.status_code == 200
+        assert "link_token" in resp.json()
+
+    def test_create_public_link_session_rejects_unapproved_origin(self, client):
+        with patch("src.routers.link_sessions.settings.public_link_allowed_origins", "https://app.example.com"):
+            resp = client.post(
+                "/link/sessions/public",
+                headers={"Origin": "https://evil.example.com"},
+            )
+
+        assert resp.status_code == 403
+        assert "not allowed" in resp.json()["detail"]
+
+    def test_create_link_bootstrap(self, client, auth_headers):
+        resp = client.post(
+            "/link/bootstrap",
+            json={
+                "site": "hydro_one",
+                "allowed_origin": "https://app.example.com",
+                "scopes": ["read_bill"],
+            },
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["launch_token"]
+        assert data["expires_in"] > 0
+        assert data["site"] == "hydro_one"
+        assert data["allowed_origin"] == "https://app.example.com"
+
+    def test_exchange_link_bootstrap(self, client, auth_headers):
+        bootstrap_resp = client.post(
+            "/link/bootstrap",
+            json={
+                "site": "hydro_one",
+                "allowed_origin": "https://app.example.com",
+            },
+            headers=auth_headers,
+        )
+        launch_token = bootstrap_resp.json()["launch_token"]
+
+        resp = client.post(
+            "/link/sessions/bootstrap",
+            json={"launch_token": launch_token},
+            headers={"Origin": "https://app.example.com"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["link_token"]
+        status_resp = client.get(f"/link/sessions/{data['link_token']}/status")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["status"] == "awaiting_institution"
+        assert status_resp.json()["site"] == "hydro_one"
+
+    def test_exchange_link_bootstrap_rejects_reuse(self, client, auth_headers):
+        bootstrap_resp = client.post("/link/bootstrap", json={}, headers=auth_headers)
+        launch_token = bootstrap_resp.json()["launch_token"]
+
+        first = client.post("/link/sessions/bootstrap", json={"launch_token": launch_token})
+        second = client.post("/link/sessions/bootstrap", json={"launch_token": launch_token})
+
+        assert first.status_code == 200
+        assert second.status_code == 410
+        assert "already been used" in second.json()["detail"]
+
+    def test_exchange_link_bootstrap_rejects_wrong_origin(self, client, auth_headers):
+        bootstrap_resp = client.post(
+            "/link/bootstrap",
+            json={"allowed_origin": "https://app.example.com"},
+            headers=auth_headers,
+        )
+        launch_token = bootstrap_resp.json()["launch_token"]
+
+        resp = client.post(
+            "/link/sessions/bootstrap",
+            json={"launch_token": launch_token},
+            headers={"Origin": "https://evil.example.com"},
+        )
+
+        assert resp.status_code == 403
+        assert "not allowed to redeem" in resp.json()["detail"]
 
     def test_get_session_status(self, client, auth_headers):
         # Create session
@@ -85,7 +198,7 @@ class TestLinkSessions:
         # Post event
         resp = client.post(
             f"/link/sessions/{token}/event",
-            json={"event": "INSTITUTION_SELECTED", "site": "greengrid_energy"},
+            json={"event": "INSTITUTION_SELECTED", "site": "hydro_one"},
             headers=auth_headers,
         )
         assert resp.status_code == 200

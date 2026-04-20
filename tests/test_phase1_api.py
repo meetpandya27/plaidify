@@ -26,7 +26,7 @@ class TestBlueprintEndpoints:
         assert "blueprints" in data
         assert "count" in data
         assert data["count"] >= 0
-        # At least demo_site or test_bank should exist
+        # At least internal_bank or internal_bank should exist
         if data["count"] > 0:
             bp = data["blueprints"][0]
             assert "site" in bp
@@ -85,7 +85,7 @@ class TestConnectEndpoint:
         response = client.post(
             "/connect",
             json={
-                "site": "demo_site",
+                "site": "internal_bank",
                 "username": "user",
                 "password": "pass",
                 "extract_fields": ["profile_status"],

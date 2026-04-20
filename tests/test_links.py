@@ -14,7 +14,7 @@ class TestLinkTokenFlow:
         to return stub data without launching Playwright.
         """
         # Step 1: Create link
-        r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
+        r1 = client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
         assert r1.status_code == 200
         link_token = r1.json()["link_token"]
         assert link_token
@@ -24,7 +24,7 @@ class TestLinkTokenFlow:
             "/submit_credentials",
             params={
                 "link_token": link_token,
-                "username": "demo_user",
+                "username": "test_user",
                 "password": "secret123",
             },
             headers=auth_headers,
@@ -40,7 +40,7 @@ class TestLinkTokenFlow:
         assert data["status"] == "connected"
 
     def test_create_link_no_auth(self, client):
-        response = client.post("/create_link", params={"site": "demo_site"})
+        response = client.post("/create_link", params={"site": "internal_bank"})
         assert response.status_code == 401
 
     def test_submit_credentials_invalid_link(self, client, auth_headers):
@@ -72,14 +72,14 @@ class TestInstructions:
     def test_submit_and_fetch_with_instructions(self, client, auth_headers):
         """Test instructions flow with mocked engine."""
         # Create link + submit creds
-        r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
+        r1 = client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
 
         r2 = client.post(
             "/submit_credentials",
             params={
                 "link_token": link_token,
-                "username": "demo_user",
+                "username": "test_user",
                 "password": "secret123",
             },
             headers=auth_headers,
@@ -118,19 +118,19 @@ class TestLinkManagement:
 
     def test_list_links(self, client, auth_headers):
         # Create two links
-        client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
-        client.post("/create_link", params={"site": "mock_site"}, headers=auth_headers)
+        client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
+        client.post("/create_link", params={"site": "hydro_one"}, headers=auth_headers)
 
         response = client.get("/links", headers=auth_headers)
         assert response.status_code == 200
         links = response.json()
         assert len(links) == 2
         sites = {link["site"] for link in links}
-        assert "demo_site" in sites
-        assert "mock_site" in sites
+        assert "internal_bank" in sites
+        assert "hydro_one" in sites
 
     def test_delete_link(self, client, auth_headers):
-        r = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
+        r = client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
         link_token = r.json()["link_token"]
 
         # Delete
@@ -147,7 +147,7 @@ class TestLinkManagement:
 
     def test_list_tokens(self, client, auth_headers):
         # Create link and submit credentials
-        r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
+        r1 = client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
         client.post(
             "/submit_credentials",
@@ -163,7 +163,7 @@ class TestLinkManagement:
         assert len(tokens) == 1
 
     def test_delete_token(self, client, auth_headers):
-        r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
+        r1 = client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
         r2 = client.post(
             "/submit_credentials",
@@ -194,14 +194,14 @@ class TestUserIsolation:
 
     def test_user_cannot_see_other_links(self, client, auth_headers, second_user_headers):
         # User 1 creates a link
-        client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
+        client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
 
         # User 2 should see no links
         links = client.get("/links", headers=second_user_headers).json()
         assert len(links) == 0
 
     def test_user_cannot_delete_other_link(self, client, auth_headers, second_user_headers):
-        r = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
+        r = client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
         link_token = r.json()["link_token"]
 
         # User 2 tries to delete user 1's link
@@ -210,7 +210,7 @@ class TestUserIsolation:
 
     def test_user_cannot_fetch_other_data(self, client, auth_headers, second_user_headers):
         # User 1 creates full flow
-        r1 = client.post("/create_link", params={"site": "demo_site"}, headers=auth_headers)
+        r1 = client.post("/create_link", params={"site": "internal_bank"}, headers=auth_headers)
         link_token = r1.json()["link_token"]
         r2 = client.post(
             "/submit_credentials",

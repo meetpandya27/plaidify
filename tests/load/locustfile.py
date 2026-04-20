@@ -81,13 +81,13 @@ class PlaidifyUser(HttpUser):
 
     @task(1)
     def connect_mock(self):
-        """Attempt a connection to the mock_site connector."""
+        """Attempt a connection to the hydro_one connector."""
         self.client.post(
             "/connect",
             json={
-                "site": "mock_site",
-                "username": "demo_user",
-                "password": "demo_pass",
+                "site": "hydro_one",
+                "username": "test_user",
+                "password": "test_pass",
             },
             headers=self.auth_headers,
         )

@@ -19,12 +19,14 @@ settings = get_settings()
 # TTLs
 LINK_SESSION_TTL = 600  # 10 minutes (reduced from 30 for production security)
 LINK_SCOPE_TTL = 600  # 10 minutes
+LINK_LAUNCH_BOOTSTRAP_TTL = settings.link_launch_token_expire_seconds
 WEBHOOK_DELIVERY_TTL = 86400  # 24 hours
 WEBHOOK_DELIVERY_MAX = 200  # max deliveries stored per webhook
 
 # Max in-memory entries (evict oldest when exceeded)
 _MAX_MEM_LINK_SESSIONS = 10_000
 _MAX_MEM_LINK_SCOPES = 10_000
+_MAX_MEM_LINK_LAUNCH_BOOTSTRAPS = 10_000
 _MAX_MEM_WEBHOOK_DELIVERIES = 5_000
 
 
@@ -215,6 +217,82 @@ def pop_link_scopes(link_token: str) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Link Launch Bootstrap Store
+# ══════════════════════════════════════════════════════════════════════════════
+
+_mem_link_launch_bootstraps: Dict[str, Dict[str, Any]] = {}
+
+
+def _evict_expired_link_launch_bootstraps() -> None:
+    now = time.time()
+    expired = [
+        key
+        for key, value in _mem_link_launch_bootstraps.items()
+        if now - value.get("created_at", 0) > value.get("expires_in", LINK_LAUNCH_BOOTSTRAP_TTL)
+    ]
+    for key in expired:
+        del _mem_link_launch_bootstraps[key]
+
+    if len(_mem_link_launch_bootstraps) > _MAX_MEM_LINK_LAUNCH_BOOTSTRAPS:
+        sorted_keys = sorted(
+            _mem_link_launch_bootstraps,
+            key=lambda key: _mem_link_launch_bootstraps[key].get("created_at", 0),
+        )
+        for key in sorted_keys[: len(_mem_link_launch_bootstraps) - _MAX_MEM_LINK_LAUNCH_BOOTSTRAPS]:
+            del _mem_link_launch_bootstraps[key]
+
+
+def store_link_launch_bootstrap(launch_id: str, expires_in: int = LINK_LAUNCH_BOOTSTRAP_TTL) -> None:
+    """Store a one-time hosted link launch bootstrap identifier."""
+    r = _redis()
+    if r:
+        r.set(f"plaidify:link_launch_bootstrap:{launch_id}", "issued", ex=max(expires_in, 1))
+        return
+
+    _evict_expired_link_launch_bootstraps()
+    _mem_link_launch_bootstraps[launch_id] = {
+        "status": "issued",
+        "created_at": time.time(),
+        "expires_in": max(expires_in, 1),
+    }
+
+
+def consume_link_launch_bootstrap(launch_id: str) -> bool:
+    """Consume a one-time hosted link launch bootstrap identifier."""
+    r = _redis()
+    if r:
+        key = f"plaidify:link_launch_bootstrap:{launch_id}"
+        script = """
+local value = redis.call('GET', KEYS[1])
+if (not value) or value == 'consumed' then
+  return 0
+end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 1 then ttl = 60 end
+redis.call('SET', KEYS[1], 'consumed', 'EX', ttl)
+return 1
+"""
+        try:
+            return bool(r.eval(script, 1, key))
+        except Exception as exc:
+            logger.warning(f"Failed to consume link launch bootstrap atomically: {exc}")
+            value = r.get(key)
+            if not value or value == "consumed":
+                return False
+            ttl = r.ttl(key)
+            r.set(key, "consumed", ex=max(ttl, 60))
+            return True
+
+    _evict_expired_link_launch_bootstraps()
+    entry = _mem_link_launch_bootstraps.get(launch_id)
+    if not entry or entry.get("status") == "consumed":
+        return False
+
+    entry["status"] = "consumed"
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Webhook Delivery Log
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -336,4 +414,5 @@ def clear_all():
     """Clear all in-memory state. Used in tests."""
     _mem_link_sessions.clear()
     _mem_link_scopes.clear()
+    _mem_link_launch_bootstraps.clear()
     _mem_webhook_deliveries.clear()

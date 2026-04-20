@@ -5,7 +5,7 @@ Quick start:
     from plaidify import Plaidify
 
     pfy = Plaidify(server_url="http://localhost:8000")
-    result = await pfy.connect("greengrid_energy", username="demo_user", password="demo_pass")
+    result = await pfy.connect("hydro_one", username="test_user", password="test_pass")
     print(result.data["current_bill"])
 """
 

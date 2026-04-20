@@ -141,14 +141,14 @@ class TestConnectWithEncryption:
         link_token = session["link_token"]
 
         # Encrypt credentials
-        enc_user = _encrypt_with_pem(pub_key, "demo_user")
-        enc_pass = _encrypt_with_pem(pub_key, "demo_pass123")
+        enc_user = _encrypt_with_pem(pub_key, "test_user")
+        enc_pass = _encrypt_with_pem(pub_key, "test_password123")
 
         # Connect with encrypted credentials
         response = client.post(
             "/connect",
             json={
-                "site": "test_bank",
+                "site": "internal_bank",
                 "encrypted_username": enc_user,
                 "encrypted_password": enc_pass,
                 "link_token": link_token,
@@ -160,8 +160,8 @@ class TestConnectWithEncryption:
         # Verify the mock was called with decrypted credentials
         mock_connect.assert_called_once()
         call_kwargs = mock_connect.call_args
-        assert call_kwargs.kwargs["username"] == "demo_user"
-        assert call_kwargs.kwargs["password"] == "demo_pass123"
+        assert call_kwargs.kwargs["username"] == "test_user"
+        assert call_kwargs.kwargs["password"] == "test_password123"
 
     @patch("src.routers.connection.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
     def test_connect_encrypted_then_key_destroyed(self, mock_connect, client):
@@ -174,14 +174,14 @@ class TestConnectWithEncryption:
         link_token = session["link_token"]
         pub_key = session["public_key"]
 
-        enc_user = _encrypt_with_pem(pub_key, "demo_user")
-        enc_pass = _encrypt_with_pem(pub_key, "demo_pass123")
+        enc_user = _encrypt_with_pem(pub_key, "test_user")
+        enc_pass = _encrypt_with_pem(pub_key, "test_password123")
 
         # Use the key
         client.post(
             "/connect",
             json={
-                "site": "test_bank",
+                "site": "internal_bank",
                 "encrypted_username": enc_user,
                 "encrypted_password": enc_pass,
                 "link_token": link_token,
@@ -197,9 +197,9 @@ class TestConnectWithEncryption:
         response = client.post(
             "/connect",
             json={
-                "site": "test_bank",
-                "username": "demo_user",
-                "password": "demo_pass123",
+                "site": "internal_bank",
+                "username": "test_user",
+                "password": "test_password123",
             },
         )
         assert response.status_code == 200
@@ -210,7 +210,7 @@ class TestConnectWithEncryption:
         response = client.post(
             "/connect",
             json={
-                "site": "test_bank",
+                "site": "internal_bank",
             },
         )
         assert response.status_code == 422
@@ -220,7 +220,7 @@ class TestCreateLinkReturnsPublicKey:
     """Tests for POST /create_link returning a public key."""
 
     def test_create_link_has_public_key(self, client, auth_headers):
-        response = client.post("/create_link?site=test_bank", headers=auth_headers)
+        response = client.post("/create_link?site=internal_bank", headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
         assert "link_token" in data
@@ -234,7 +234,7 @@ class TestCreateLinkReturnsPublicKey:
         _clear_all_keys()
 
         # Step 1: create link (get public key)
-        link_resp = client.post("/create_link?site=test_bank", headers=auth_headers)
+        link_resp = client.post("/create_link?site=internal_bank", headers=auth_headers)
         link_data = link_resp.json()
         link_token = link_data["link_token"]
         pub_key = link_data["public_key"]

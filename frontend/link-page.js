@@ -1,386 +1,898 @@
-/**
- * Plaidify Link Page — self-contained hosted link flow.
- *
- * Reads ?token= from the URL, validates it against the server,
- * then walks the user through: Select Provider → Credentials → MFA (if needed) → Success.
- *
- * Communicates with the parent window via postMessage when embedded in an iframe.
- */
 (function () {
   "use strict";
 
-  // ── State ────────────────────────────────────────────────────────────────
   const params = new URLSearchParams(window.location.search);
   const linkToken = params.get("token");
-  const serverUrl = params.get("server") || window.location.origin;
+  const serverUrl = (params.get("server") || window.location.origin).replace(/\/$/, "");
   const inIframe = window.parent !== window;
 
-  let selectedSite = null;
-  let sessionId = null;
-  let blueprints = [];
+  const state = {
+    currentJobId: null,
+    directoryFilters: {
+      category: "",
+      country: "",
+      query: "",
+    },
+    featuredCount: 0,
+    filtersInitialized: false,
+    featuredOrganizations: [],
+    lastResult: null,
+    organizations: [],
+    polling: false,
+    preselectedSite: null,
+    progressTimers: [],
+    searchRequestId: 0,
+    searchTimer: null,
+    selectedSite: null,
+    sessionId: null,
+    summary: null,
+  };
 
-  // Determine the parent origin for secure postMessage communication.
-  // Accept an explicit ?origin= param, fall back to document.referrer, then "*" for non-iframe.
+  const flowCopy = {
+    select: {
+      eyebrow: "Step 1 of 3",
+      title: "Choose your organization",
+      subtitle: "Search from a large USA and Canada directory and continue with read-only, encrypted access.",
+      footer: "Credentials stay inside this encrypted connection window.",
+    },
+    credentials: {
+      eyebrow: "Step 2 of 3",
+      title: "Enter credentials securely",
+      subtitle: "Plaidify encrypts your credentials in-browser before they are submitted.",
+      footer: "Only the selected provider receives your encrypted sign-in details.",
+    },
+    connecting: {
+      eyebrow: "Connecting",
+      title: "Creating your secure session",
+      subtitle: "We are opening the provider portal and progressing through the authenticated flow.",
+      footer: "If the provider prompts for additional verification, the flow will pause here.",
+    },
+    mfa: {
+      eyebrow: "Step 3 of 3",
+      title: "Finish verification",
+      subtitle: "Enter the confirmation code from your provider to complete the connection.",
+      footer: "Verification codes are only used to resume this session.",
+    },
+    success: {
+      eyebrow: "Connected",
+      title: "Your account is ready",
+      subtitle: "Plaidify completed the provider flow and packaged the resulting data.",
+      footer: "You can safely close this window at any time.",
+    },
+    error: {
+      eyebrow: "Connection stopped",
+      title: "The flow needs another try",
+      subtitle: "No data was shared. Review the message below and retry when you are ready.",
+      footer: "This session can be retried without reopening the modal.",
+    },
+  };
+
   const parentOrigin = (function () {
     const explicit = params.get("origin");
-    if (explicit) return explicit;
+    if (explicit) {
+      return explicit;
+    }
+
     if (document.referrer) {
       try {
-        const url = new URL(document.referrer);
-        return url.origin;
-      } catch (_) { /* ignore */ }
+        return new URL(document.referrer).origin;
+      } catch (_) {
+        return inIframe ? serverUrl : "*";
+      }
     }
+
     return inIframe ? serverUrl : "*";
   })();
 
-  // ── Apply theme overrides from URL params ────────────────────────────────
-  (function applyTheme() {
+  const $ = (selector) => document.querySelector(selector);
+  const steps = {
+    select: $("#step-select"),
+    credentials: $("#step-credentials"),
+    connecting: $("#step-connecting"),
+    mfa: $("#step-mfa"),
+    success: $("#step-success"),
+    error: $("#step-error"),
+  };
+  const progressNodes = [$("#dot-1"), $("#dot-2"), $("#dot-3")];
+  const statusItems = ["status-handshake", "status-browser", "status-auth", "status-read"];
+
+  applyThemeOverrides();
+
+  function applyThemeOverrides() {
     const root = document.documentElement.style;
     const accent = params.get("accent");
-    const bg = params.get("bg");
+    const bgTint = params.get("bg");
     const radius = params.get("radius");
-    const logo = params.get("logo");
-    if (accent) root.setProperty("--accent", accent);
-    if (bg) root.setProperty("--bg", bg);
-    if (radius) root.setProperty("--border-radius", radius);
-    if (logo) {
-      const logoEl = document.querySelector(".plaidify-logo");
-      if (logoEl) logoEl.src = logo;
+
+    if (accent) {
+      root.setProperty("--accent", accent);
     }
-  })();
-
-  // ── DOM refs ─────────────────────────────────────────────────────────────
-  const steps = {
-    select: document.getElementById("step-select"),
-    credentials: document.getElementById("step-credentials"),
-    mfa: document.getElementById("step-mfa"),
-    connecting: document.getElementById("step-connecting"),
-    success: document.getElementById("step-success"),
-    error: document.getElementById("step-error"),
-  };
-
-  const dots = [
-    document.getElementById("dot-1"),
-    document.getElementById("dot-2"),
-    document.getElementById("dot-3"),
-  ];
-
-  // ── Helpers ──────────────────────────────────────────────────────────────
-
-  function showStep(name, dotIndex) {
-    Object.values(steps).forEach((s) => s.classList.remove("active"));
-    steps[name].classList.add("active");
-    dots.forEach((d, i) => {
-      d.classList.remove("current", "completed");
-      if (i < dotIndex) d.classList.add("completed");
-      if (i === dotIndex) d.classList.add("current");
-    });
-    // Update progress indicator ARIA
-    const indicator = document.querySelector(".step-indicator");
-    if (indicator) {
-      indicator.setAttribute("aria-valuenow", String(dotIndex + 1));
-      indicator.setAttribute("aria-label", `Step ${dotIndex + 1} of 3`);
+    if (bgTint) {
+      root.setProperty("--bg-tint", bgTint);
+    }
+    if (radius) {
+      root.setProperty("--radius", radius);
     }
   }
 
-  function postEvent(event, data) {
+  function showStep(stepName, progressState, overrides) {
+    Object.values(steps).forEach((step) => step.classList.remove("active"));
+    if (steps[stepName]) {
+      steps[stepName].classList.add("active");
+    }
+    renderProgress(progressState);
+    setFlowCopy(stepName, overrides || {});
+  }
+
+  function renderProgress(progressState) {
+    progressNodes.forEach((node) => {
+      node.classList.remove("completed", "current");
+    });
+
+    if (progressState === "complete") {
+      progressNodes.forEach((node) => node.classList.add("completed"));
+      return;
+    }
+
+    if (typeof progressState !== "number") {
+      return;
+    }
+
+    progressNodes.forEach((node, index) => {
+      if (index < progressState) {
+        node.classList.add("completed");
+      } else if (index === progressState) {
+        node.classList.add("current");
+      }
+    });
+  }
+
+  function setFlowCopy(stepName, overrides) {
+    const copy = Object.assign({}, flowCopy[stepName] || flowCopy.select, overrides || {});
+
+    $("#flow-eyebrow").textContent = copy.eyebrow;
+    $("#flow-title").textContent = copy.title;
+    $("#flow-subtitle").textContent = copy.subtitle;
+    $("#footer-context").textContent = copy.footer;
+  }
+
+  function iconForOrganization(organization) {
+    if (organization.category === "utility") {
+      return "&#9889;";
+    }
+    if (organization.category === "finance") {
+      return "&#127974;";
+    }
+    if (organization.category === "insurance") {
+      return "&#128737;";
+    }
+    if (organization.category === "healthcare") {
+      return "&#9877;";
+    }
+    if (organization.category === "telecom") {
+      return "&#128241;";
+    }
+    if (organization.category === "government") {
+      return "&#127970;";
+    }
+    return "&#9670;";
+  }
+
+  function buildFeaturedOrganizations(results) {
+    const seenCategories = new Set();
+    return results.filter((organization) => {
+      if (seenCategories.has(organization.category)) {
+        return false;
+      }
+      seenCategories.add(organization.category);
+      return true;
+    }).slice(0, 5);
+  }
+
+  function renderFeaturedPicks() {
+    const container = $("#featured-picks");
+    if (!container) {
+      return;
+    }
+
+    const hasFilters = Boolean(
+      state.directoryFilters.query || state.directoryFilters.country || state.directoryFilters.category
+    );
+    if (hasFilters || !state.featuredOrganizations.length) {
+      container.innerHTML = "";
+      container.style.display = "none";
+      return;
+    }
+
+    container.style.display = "flex";
+    container.innerHTML = state.featuredOrganizations
+      .map((organization) => `
+        <button class="featured-pick" type="button" data-featured-organization-id="${escapeHtml(organization.organization_id)}">
+          <span class="featured-pick__icon">${iconForOrganization(organization)}</span>
+          <span>${escapeHtml(organization.brand)}</span>
+          <span class="featured-pick__meta">${escapeHtml(organization.category_label)}</span>
+        </button>`)
+      .join("");
+
+    container.querySelectorAll(".featured-pick").forEach((button) => {
+      button.addEventListener("click", () => selectInstitution(button.dataset.featuredOrganizationId));
+    });
+  }
+
+  function escapeHtml(value) {
+    const div = document.createElement("div");
+    div.textContent = value == null ? "" : String(value);
+    return div.innerHTML;
+  }
+
+  function hasNativeBridge() {
+    return Boolean(
+      window.ReactNativeWebView?.postMessage ||
+      window.webkit?.messageHandlers?.plaidifyLink?.postMessage ||
+      window.PlaidifyLinkBridge?.postMessage ||
+      window.PlaidifyLinkBridge?.onEvent
+    );
+  }
+
+  function postToNativeBridge(message) {
+    const serialized = JSON.stringify(message);
+
+    try {
+      if (window.ReactNativeWebView?.postMessage) {
+        window.ReactNativeWebView.postMessage(serialized);
+      }
+    } catch (_) {
+      // Ignore bridge delivery errors and continue to other targets.
+    }
+
+    try {
+      if (window.webkit?.messageHandlers?.plaidifyLink?.postMessage) {
+        window.webkit.messageHandlers.plaidifyLink.postMessage(message);
+      }
+    } catch (_) {
+      // Ignore bridge delivery errors and continue to other targets.
+    }
+
+    try {
+      if (typeof window.PlaidifyLinkBridge?.postMessage === "function") {
+        window.PlaidifyLinkBridge.postMessage(serialized);
+      } else if (typeof window.PlaidifyLinkBridge?.onEvent === "function") {
+        window.PlaidifyLinkBridge.onEvent(serialized);
+      }
+    } catch (_) {
+      // Ignore bridge delivery failures.
+    }
+  }
+
+  function postEvent(eventName, payload) {
+    const message = Object.assign({ source: "plaidify-link", event: eventName }, payload || {});
+
     if (inIframe) {
-      window.parent.postMessage({ source: "plaidify-link", event, ...data }, parentOrigin);
+      window.parent.postMessage(message, parentOrigin);
+    }
+
+    if (hasNativeBridge()) {
+      postToNativeBridge(message);
     }
   }
 
   async function apiCall(method, path, body) {
-    const opts = {
-      method,
-      headers: { "Content-Type": "application/json" },
-    };
-    if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(serverUrl + path, opts);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || err.error || "Request failed");
+    const request = { method, headers: {} };
+    if (body !== undefined) {
+      request.headers["Content-Type"] = "application/json";
+      request.body = JSON.stringify(body);
     }
-    return res.json();
+
+    const response = await fetch(`${serverUrl}${path}`, request);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || response.statusText || "Request failed.");
+    }
+    return payload;
   }
 
-  // ── Validate Token ───────────────────────────────────────────────────────
-
-  async function validateToken() {
+  async function bestEffortLinkEvent(eventName, payload) {
     if (!linkToken) {
-      showError("No link token provided. Please use a valid link URL.");
-      return false;
+      return;
     }
     try {
-      const data = await apiCall("GET", `/link/sessions/${encodeURIComponent(linkToken)}/status`);
-      if (data.status === "expired" || data.status === "completed") {
-        showError(`This link has ${data.status}. Please request a new one.`);
-        return false;
-      }
-      return true;
-    } catch {
-      showError("Invalid or expired link token.");
-      return false;
+      await apiCall("POST", `/link/sessions/${encodeURIComponent(linkToken)}/event`, Object.assign({ event: eventName }, payload || {}));
+    } catch (_) {
+      // Ignore because hosted link pages can operate without a bearer token.
     }
   }
 
-  // ── Load Blueprints ──────────────────────────────────────────────────────
-
-  async function loadBlueprints() {
-    try {
-      const data = await apiCall("GET", "/blueprints");
-      blueprints = data.blueprints || [];
-      renderInstitutions(blueprints);
-    } catch {
-      document.getElementById("institution-list").innerHTML =
-        '<div class="institution-empty">Failed to load providers.</div>';
+  function buildSearchPath(overrides) {
+    const filters = Object.assign({}, state.directoryFilters, overrides || {});
+    const params = new URLSearchParams();
+    if (filters.query) {
+      params.set("q", filters.query);
     }
+    if (filters.country) {
+      params.set("country", filters.country);
+    }
+    if (filters.category) {
+      params.set("category", filters.category);
+    }
+    if (filters.site) {
+      params.set("site", filters.site);
+    }
+    params.set("limit", String(filters.limit || 40));
+    return `/organizations/search?${params.toString()}`;
   }
 
-  function _escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
+  function updateDirectoryMeta(payload) {
+    const summary = payload.summary || state.summary;
+    if (summary) {
+      state.summary = summary;
+    }
+
+    const totalCount = summary?.total_count || payload.count || 0;
+    const formattedTotal = new Intl.NumberFormat("en-US").format(totalCount);
+    const formattedVisible = new Intl.NumberFormat("en-US").format(payload.count || 0);
+    $("#directory-count").textContent = `${formattedTotal} organizations available`;
+
+    const parts = [];
+    if (state.directoryFilters.country) {
+      parts.push(state.directoryFilters.country === "CA" ? "Canada" : "United States");
+    }
+    if (state.directoryFilters.category) {
+      const categoryMatch = summary?.categories?.find((item) => item.key === state.directoryFilters.category);
+      parts.push(categoryMatch ? categoryMatch.label : state.directoryFilters.category);
+    }
+
+    const scopeCopy = parts.length ? parts.join(" · ") : "Finance, utilities, insurance, telecom, healthcare, and government";
+    $("#directory-caption").textContent = `${formattedVisible} matching result${payload.count === 1 ? "" : "s"} in ${scopeCopy} across the USA and Canada.`;
   }
 
-  function renderInstitutions(list) {
-    const container = document.getElementById("institution-list");
-    if (!list.length) {
-      container.innerHTML = '<div class="institution-empty">No providers found.</div>';
+  function populateFilters(summary) {
+    if (!summary || state.filtersInitialized) {
       return;
     }
 
-    const icons = { energy: "\u26A1", utility: "\uD83D\uDCA1", bank: "\uD83C\uDFE6", telecom: "\uD83D\uDCF1" };
-    container.innerHTML = list
+    const countrySelect = $("#country-filter");
+    const categorySelect = $("#category-filter");
+
+    summary.countries.forEach((country) => {
+      const option = document.createElement("option");
+      option.value = country.code;
+      option.textContent = `${country.label} (${new Intl.NumberFormat("en-US").format(country.count)})`;
+      countrySelect.appendChild(option);
+    });
+
+    summary.categories.forEach((category) => {
+      const option = document.createElement("option");
+      option.value = category.key;
+      option.textContent = `${category.label} (${new Intl.NumberFormat("en-US").format(category.count)})`;
+      categorySelect.appendChild(option);
+    });
+
+    state.filtersInitialized = true;
+  }
+
+  async function loadOrganizations(overrides) {
+    const requestId = ++state.searchRequestId;
+    const path = buildSearchPath(overrides);
+    const payload = await apiCall("GET", path);
+
+    if (requestId !== state.searchRequestId) {
+      return null;
+    }
+
+    state.organizations = payload.results || [];
+    state.summary = payload.summary || state.summary;
+    if (!state.featuredOrganizations.length && !overrides?.site) {
+      state.featuredOrganizations = buildFeaturedOrganizations(payload.results || []);
+    }
+    populateFilters(state.summary);
+    updateDirectoryMeta(payload);
+    renderFeaturedPicks();
+    renderInstitutions(state.organizations);
+    return payload;
+  }
+
+  function scheduleSearch() {
+    if (state.searchTimer) {
+      window.clearTimeout(state.searchTimer);
+    }
+
+    state.searchTimer = window.setTimeout(async () => {
+      try {
+        await loadOrganizations();
+      } catch (error) {
+        $("#institution-list").innerHTML = `<div class="institution-empty">${escapeHtml(error.message || "Unable to load organizations.")}</div>`;
+      }
+    }, 180);
+  }
+
+  function formatCurrency(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) {
+      return value == null ? "-" : String(value);
+    }
+    return new Intl.NumberFormat("en-US", {
+      currency: "USD",
+      style: "currency",
+      minimumFractionDigits: 2,
+    }).format(amount);
+  }
+
+  function buildHighlightCards(data) {
+    const cards = [];
+
+    if (data.current_bill != null) {
+      cards.push({ label: "Current bill", value: formatCurrency(data.current_bill) });
+    }
+    if (data.usage_kwh) {
+      cards.push({ label: "Usage", value: data.usage_kwh });
+    }
+    if (data.plan_name) {
+      cards.push({ label: "Plan", value: data.plan_name });
+    }
+    if (data.account_status && cards.length < 3) {
+      cards.push({ label: "Status", value: data.account_status });
+    }
+
+    if (!cards.length) {
+      cards.push({ label: "Status", value: "Connection ready" });
+    }
+
+    return cards
+      .slice(0, 3)
       .map(
-        (bp) => `
-      <div class="institution-item" data-site="${_escapeHtml(bp.site)}">
-        <span class="inst-icon">${_escapeHtml(icons[bp.tags?.[0]] || "\uD83D\uDD17")}</span>
-        <span class="inst-name">${_escapeHtml(bp.name)}</span>
-        <span class="inst-domain">${_escapeHtml(bp.domain || "")}</span>
-        <span class="inst-arrow">›</span>
-      </div>`
+        (card) => `
+          <div class="highlight-card">
+            <div class="highlight-label">${escapeHtml(card.label)}</div>
+            <div class="highlight-value">${escapeHtml(card.value)}</div>
+          </div>`
       )
       .join("");
+  }
 
-    container.querySelectorAll(".institution-item").forEach((item) => {
-      item.addEventListener("click", () => selectInstitution(item.dataset.site));
+  function updateSelectedProvider(provider) {
+    $("#provider-icon").innerHTML = iconForOrganization(provider);
+    $("#provider-name").textContent = provider.name;
+    $("#provider-domain").textContent = `${provider.service_area} · ${provider.category_label}`;
+    $("#provider-badges").innerHTML = [
+      provider.country_code,
+      provider.region_code,
+      provider.has_mfa ? "MFA ready" : null,
+      provider.site ? `Connector ${provider.site}` : null,
+    ]
+      .filter(Boolean)
+      .map((badge) => `<span class="provider-badge">${escapeHtml(badge)}</span>`)
+      .join("");
+    $("#credentials-caption").textContent = `Plaidify encrypts your ${provider.name} credentials before submitting them through the live read-only connection flow.`;
+
+    const consentItems = [
+      `Open a secure browser session for ${provider.name}.`,
+      "Encrypt credentials before they leave this window.",
+      "Return the read-only fields defined by the connector runtime.",
+    ];
+
+    if (provider.has_mfa) {
+      consentItems.push("Pause for provider verification if an MFA challenge appears.");
+    }
+
+    $("#consent-list").innerHTML = consentItems
+      .map((item) => `<li>${escapeHtml(item)}</li>`)
+      .join("");
+  }
+
+  function renderInstitutions(list) {
+    const container = $("#institution-list");
+    if (!list.length) {
+      container.innerHTML = '<div class="institution-empty">No organizations matched your search.</div>';
+      return;
+    }
+
+    container.innerHTML = list
+      .map((organization) => {
+        const tags = [organization.category_label, organization.country_code, organization.region_code]
+          .filter(Boolean)
+          .map((tag) => `<span class="inst-tag">${escapeHtml(tag)}</span>`)
+          .join("");
+
+        const support = organization.has_mfa
+          ? "Verification supported when the provider challenges the session"
+          : "Read-only connection flow routed through the selected connector runtime";
+
+        return `
+          <button class="institution-item" type="button" data-organization-id="${escapeHtml(organization.organization_id)}">
+            <span class="inst-icon">${iconForOrganization(organization)}</span>
+            <span class="inst-content">
+              <span class="inst-name">${escapeHtml(organization.name)}</span>
+              <span class="inst-domain">${escapeHtml(organization.service_area)} · ${escapeHtml(organization.category_label)}</span>
+              <span class="inst-tags">${tags}</span>
+              <span class="inst-support">${escapeHtml(support)}</span>
+            </span>
+            <span class="inst-arrow" aria-hidden="true">&rsaquo;</span>
+          </button>`;
+      })
+      .join("");
+
+    container.querySelectorAll(".institution-item").forEach((button) => {
+      button.addEventListener("click", () => selectInstitution(button.dataset.organizationId));
     });
   }
 
-  // ── Institution Search ───────────────────────────────────────────────────
+  async function validateToken() {
+    if (!linkToken) {
+      showError("This link is missing a session token. Request a fresh link and try again.");
+      return false;
+    }
 
-  document.getElementById("institution-search").addEventListener("input", (e) => {
-    const query = e.target.value.toLowerCase();
-    const filtered = blueprints.filter(
-      (bp) =>
-        bp.name.toLowerCase().includes(query) ||
-        (bp.domain || "").toLowerCase().includes(query) ||
-        bp.site.toLowerCase().includes(query)
-    );
-    renderInstitutions(filtered);
-  });
+    try {
+      const payload = await apiCall("GET", `/link/sessions/${encodeURIComponent(linkToken)}/status`);
+      if (payload.status === "expired" || payload.status === "completed") {
+        showError(`This link has ${payload.status}. Request a fresh link to continue.`);
+        return false;
+      }
 
-  // ── Select Institution ───────────────────────────────────────────────────
-
-  function selectInstitution(site) {
-    selectedSite = blueprints.find((bp) => bp.site === site);
-    if (!selectedSite) return;
-
-    const icons = { energy: "⚡", utility: "💡", bank: "🏦", telecom: "📱" };
-    document.getElementById("provider-icon").textContent =
-      icons[selectedSite.tags?.[0]] || "🔗";
-    document.getElementById("provider-name").textContent = selectedSite.name;
-
-    showStep("credentials", 1);
-    postEvent("INSTITUTION_SELECTED", { site: selectedSite.site });
-
-    // Update link session status
-    apiCall("POST", `/link/sessions/${encodeURIComponent(linkToken)}/event`, {
-      event: "INSTITUTION_SELECTED",
-      site: selectedSite.site,
-    }).catch(() => {});
+      state.preselectedSite = payload.site || null;
+      return true;
+    } catch (error) {
+      showError(error.message || "This link is invalid or has expired.");
+      return false;
+    }
   }
 
-  // ── Change Provider ──────────────────────────────────────────────────────
-
-  document.getElementById("change-provider-btn").addEventListener("click", () => {
-    selectedSite = null;
-    showStep("select", 0);
-  });
-
-  // ── Submit Credentials ───────────────────────────────────────────────────
-
-  document.getElementById("credentials-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const username = document.getElementById("link-username").value.trim();
-    const password = document.getElementById("link-password").value;
-
-    // Clear previous field errors
-    document.querySelectorAll(".field-error").forEach((el) => (el.textContent = ""));
-    document.querySelectorAll(".input-error").forEach((el) => el.classList.remove("input-error"));
-
-    let hasError = false;
-    if (!username) {
-      const el = document.getElementById("link-username-error");
-      if (el) el.textContent = "Username is required";
-      document.getElementById("link-username")?.classList.add("input-error");
-      hasError = true;
-    }
-    if (!password) {
-      const el = document.getElementById("link-password-error");
-      if (el) el.textContent = "Password is required";
-      document.getElementById("link-password")?.classList.add("input-error");
-      hasError = true;
-    }
-    if (hasError) return;
-
-    const btn = document.getElementById("connect-btn");
-    btn.disabled = true;
-    btn.textContent = "Connecting...";
-
-    showStep("connecting", 1);
-    postEvent("CREDENTIALS_SUBMITTED", { site: selectedSite.site });
-
+  async function loadInitialOrganizations() {
     try {
-      // Fetch encryption key for the link token
-      let payload = { site: selectedSite.site };
-      const encSession = await apiCall("GET", `/encryption/public_key/${encodeURIComponent(linkToken)}`);
-      if (!encSession || !encSession.public_key) {
-        throw new Error("Encryption unavailable. Cannot send credentials securely.");
+      if (state.preselectedSite) {
+        const payload = await loadOrganizations({ site: state.preselectedSite, limit: 8 });
+        if (payload && payload.results && payload.results.length) {
+          selectInstitution(payload.results[0].organization_id);
+          return;
+        }
       }
-      const encrypted = await encryptCredentials(encSession.public_key, username, password);
-      payload.encrypted_username = encrypted.username;
-      payload.encrypted_password = encrypted.password;
-      payload.link_token = linkToken;
 
-      const result = await apiCall("POST", "/connect", payload);
-
-      if (result.status === "mfa_required") {
-        sessionId = result.session_id;
-        const message = result.metadata?.message || "Enter the verification code.";
-        document.getElementById("mfa-message").textContent = message;
-        showStep("mfa", 2);
-        postEvent("MFA_REQUIRED", { mfa_type: result.mfa_type, session_id: sessionId });
-        document.getElementById("mfa-code").focus();
-      } else if (result.status === "connected") {
-        showSuccess(result);
-      } else {
-        showError(result.error || "Unexpected response from server.");
-      }
-    } catch (err) {
-      showError(err.message || "Failed to connect. Please try again.");
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Connect";
+      await loadOrganizations();
+    } catch (error) {
+      $("#institution-list").innerHTML = `<div class="institution-empty">${escapeHtml(error.message || "Unable to load organizations.")}</div>`;
     }
-  });
+  }
 
-  // ── Submit MFA ───────────────────────────────────────────────────────────
-
-  document.getElementById("mfa-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const code = document.getElementById("mfa-code").value.trim();
-    if (!code || !sessionId) return;
-
-    const btn = document.getElementById("mfa-submit-btn");
-    btn.disabled = true;
-    btn.textContent = "Verifying...";
-
-    postEvent("MFA_SUBMITTED", { session_id: sessionId });
-
-    try {
-      const result = await apiCall(
-        "POST",
-        `/mfa/submit?session_id=${encodeURIComponent(sessionId)}&code=${encodeURIComponent(code)}`
-      );
-
-      if (result.status === "success" || result.status === "connected") {
-        showSuccess(result);
-      } else if (result.status === "error") {
-        document.getElementById("mfa-code").value = "";
-        document.getElementById("mfa-code").focus();
-        document.getElementById("mfa-message").textContent =
-          result.error || "Invalid code. Please try again.";
-      } else {
-        showSuccess(result);
-      }
-    } catch (err) {
-      showError(err.message || "MFA verification failed.");
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Verify";
+  function selectInstitution(organizationId) {
+    const provider = state.organizations.find((item) => item.organization_id === organizationId);
+    if (!provider) {
+      return;
     }
-  });
 
-  // ── Success ──────────────────────────────────────────────────────────────
+    state.selectedSite = provider;
+    updateSelectedProvider(provider);
+    showStep("credentials", 1, {
+      subtitle: `Continue with ${provider.name} using Plaidify's encrypted, read-only connection flow.`,
+    });
+    postEvent("INSTITUTION_SELECTED", {
+      organization_id: provider.organization_id,
+      organization_name: provider.name,
+      site: provider.site,
+    });
+    bestEffortLinkEvent("INSTITUTION_SELECTED", {
+      organization_id: provider.organization_id,
+      organization_name: provider.name,
+      site: provider.site,
+    });
+    $("#link-username").focus();
+  }
+
+  function clearErrors() {
+    document.querySelectorAll(".field-error").forEach((element) => {
+      element.textContent = "";
+    });
+    document.querySelectorAll(".input-error").forEach((element) => {
+      element.classList.remove("input-error");
+    });
+  }
+
+  function markFieldError(inputId, errorId, message) {
+    const input = document.getElementById(inputId);
+    const error = document.getElementById(errorId);
+    if (input) {
+      input.classList.add("input-error");
+    }
+    if (error) {
+      error.textContent = message;
+    }
+  }
+
+  function resetStatusRail() {
+    statusItems.forEach((itemId, index) => {
+      const element = document.getElementById(itemId);
+      if (element) {
+        element.dataset.state = index === 0 ? "active" : "idle";
+      }
+    });
+  }
+
+  function setConnectingState(activeIndex, title, subtitle, note) {
+    statusItems.forEach((itemId, index) => {
+      const element = document.getElementById(itemId);
+      if (!element) {
+        return;
+      }
+
+      if (index < activeIndex) {
+        element.dataset.state = "complete";
+      } else if (index === activeIndex) {
+        element.dataset.state = "active";
+      } else {
+        element.dataset.state = "idle";
+      }
+    });
+
+    if (title) {
+      $("#connecting-text").textContent = title;
+    }
+    if (subtitle) {
+      $("#connecting-sub").textContent = subtitle;
+    }
+    if (note) {
+      $("#connection-note").textContent = note;
+    }
+  }
+
+  function clearProgressTimers() {
+    state.progressTimers.forEach((timer) => window.clearTimeout(timer));
+    state.progressTimers = [];
+  }
+
+  function startConnectingAnimation(providerName) {
+    clearProgressTimers();
+    resetStatusRail();
+    setConnectingState(
+      0,
+      "Preparing secure connection",
+      `Creating an encrypted session for ${providerName}.`,
+      "This usually completes in a few seconds. If the provider asks for verification, we will pause and prompt for it."
+    );
+
+    state.progressTimers.push(
+      window.setTimeout(() => {
+        setConnectingState(1, "Opening provider portal", `Launching ${providerName} in a protected browser context.`);
+      }, 500)
+    );
+
+    state.progressTimers.push(
+      window.setTimeout(() => {
+        setConnectingState(2, "Submitting credentials", `Plaidify is progressing through the ${providerName} sign-in steps.`);
+      }, 1300)
+    );
+
+    state.progressTimers.push(
+      window.setTimeout(() => {
+        setConnectingState(3, "Reading structured data", "The connector is extracting the configured fields from the authenticated experience.");
+      }, 2400)
+    );
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  function normalizeResult(payload) {
+    const inner = payload.result || payload;
+    return {
+      accessToken: inner.access_token || payload.access_token || "",
+      data: inner.data || payload.data || {},
+      jobId: payload.job_id || state.currentJobId || "",
+      metadata: inner.metadata || payload.metadata || {},
+      publicToken: inner.public_token || payload.public_token || "",
+      status: inner.status || payload.status || "connected",
+    };
+  }
+
+  function showMfa(message, mfaType) {
+    setFlowCopy("mfa", {
+      subtitle: message || "Enter the verification code from your provider to continue.",
+    });
+    $("#mfa-message").textContent = message || "Enter the verification code from your provider to continue.";
+    $("#mfa-label").textContent = mfaType ? `${mfaType.replace(/_/g, " ")} required` : "Verification required";
+    clearProgressTimers();
+    showStep("mfa", 2);
+    postEvent("MFA_REQUIRED", { mfa_type: mfaType || "otp", session_id: state.sessionId });
+    bestEffortLinkEvent("MFA_REQUIRED", { mfa_type: mfaType || "otp", session_id: state.sessionId });
+    $("#mfa-code").focus();
+  }
+
+  async function pollAccessJob(jobId, options) {
+    if (!jobId) {
+      throw new Error("The connection is running, but no job id was returned.");
+    }
+
+    state.currentJobId = jobId;
+    state.polling = true;
+    const afterMfaSubmit = Boolean(options && options.afterMfaSubmit);
+
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      const payload = await apiCall("GET", `/access_jobs/${encodeURIComponent(jobId)}`);
+
+      if (payload.status === "mfa_required") {
+        if (afterMfaSubmit && attempt < 3) {
+          await sleep(700);
+          continue;
+        }
+        state.sessionId = payload.session_id || state.sessionId;
+        state.polling = false;
+        showMfa(payload.metadata?.message, payload.mfa_type);
+        return;
+      }
+
+      if (payload.status === "completed" && payload.result) {
+        state.polling = false;
+        showSuccess(normalizeResult(payload));
+        return;
+      }
+
+      if (payload.status === "failed" || payload.status === "cancelled") {
+        state.polling = false;
+        showError(payload.error_message || "The connection could not be completed.");
+        return;
+      }
+
+      if (attempt === 1) {
+        setConnectingState(2, "Verifying credentials", "The provider flow is active and the connector is waiting for the next page state.");
+      }
+      if (attempt >= 3) {
+        setConnectingState(3, "Reading structured data", "The connection is still active and extracting structured fields.");
+      }
+
+      await sleep(1100);
+    }
+
+    state.polling = false;
+    showError("The connection timed out before the provider completed the flow.");
+  }
 
   function showSuccess(result) {
-    const accessToken = result.access_token || result.data?.access_token || "";
-    if (accessToken) {
-      document.getElementById("access-token-display").textContent = accessToken;
-      document.getElementById("access-token-display").style.display = "block";
-    } else {
-      document.getElementById("access-token-display").style.display = "none";
+    clearProgressTimers();
+    state.lastResult = result;
+
+    const data = result.data || {};
+    const fieldCount = Object.keys(data).length;
+    const providerName = state.selectedSite ? state.selectedSite.name : "Your provider";
+
+    $("#success-provider").textContent = providerName;
+    $("#success-message").textContent = fieldCount
+      ? `${fieldCount} structured data field${fieldCount === 1 ? "" : "s"} are ready to use.`
+      : "The secure connection completed successfully.";
+    $("#success-highlights").innerHTML = buildHighlightCards(data);
+
+    const references = [];
+    if (result.publicToken) {
+      references.push({ label: "Public token", value: result.publicToken });
+    }
+    if (result.accessToken) {
+      references.push({ label: "Access token", value: result.accessToken });
+    }
+    if (result.jobId || state.currentJobId) {
+      references.push({ label: "Connection id", value: result.jobId || state.currentJobId });
     }
 
-    showStep("success", 2);
-    postEvent("CONNECTED", { access_token: accessToken, data: result.data });
+    const referenceBlock = $("#access-token-display");
+    if (references.length) {
+      referenceBlock.innerHTML = references
+        .map(
+          (reference) => `
+            <div class="reference-row">
+              <span class="reference-label">${escapeHtml(reference.label)}</span>
+              <span class="reference-value">${escapeHtml(reference.value)}</span>
+            </div>`
+        )
+        .join("");
+      referenceBlock.style.display = "block";
+    } else {
+      referenceBlock.style.display = "none";
+      referenceBlock.innerHTML = "";
+    }
 
-    // Update session status
-    apiCall("POST", `/link/sessions/${encodeURIComponent(linkToken)}/event`, {
-      event: "CONNECTED",
-      access_token: accessToken,
-    }).catch(() => {});
+    showStep("success", "complete");
+    postEvent("CONNECTED", {
+      access_token: result.accessToken,
+      data,
+      organization_id: state.selectedSite ? state.selectedSite.organization_id : null,
+      organization_name: state.selectedSite ? state.selectedSite.name : null,
+      public_token: result.publicToken,
+      site: state.selectedSite ? state.selectedSite.site : null,
+    });
+    bestEffortLinkEvent("CONNECTED", {
+      access_token: result.accessToken,
+      organization_id: state.selectedSite ? state.selectedSite.organization_id : null,
+      organization_name: state.selectedSite ? state.selectedSite.name : null,
+      public_token: result.publicToken,
+      site: state.selectedSite ? state.selectedSite.site : null,
+    });
   }
-
-  // ── Error ────────────────────────────────────────────────────────────────
 
   function showError(message) {
-    document.getElementById("error-message").textContent = message;
-    showStep("error", 0);
+    clearProgressTimers();
+    $("#error-message").textContent = message;
+    showStep("error", state.selectedSite ? 1 : 0);
     postEvent("ERROR", { error: message });
+    bestEffortLinkEvent("ERROR", { error: message, site: state.selectedSite ? state.selectedSite.site : null });
   }
 
-  // ── Close / Done ─────────────────────────────────────────────────────────
-
-  document.getElementById("close-btn").addEventListener("click", () => {
-    postEvent("EXIT", { reason: "user_closed" });
-    if (!inIframe) window.close();
-  });
-
-  document.getElementById("done-btn").addEventListener("click", () => {
-    postEvent("DONE", {});
-    if (!inIframe) window.close();
-  });
-
-  // Keyboard navigation: Escape to close
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      postEvent("EXIT", { reason: "user_pressed_escape" });
-      if (!inIframe) window.close();
+  async function connectAccount(username, password) {
+    if (!state.selectedSite) {
+      throw new Error("Choose a provider before continuing.");
     }
-  });
 
-  document.getElementById("retry-btn").addEventListener("click", () => {
-    selectedSite = null;
-    sessionId = null;
-    document.getElementById("link-username").value = "";
-    document.getElementById("link-password").value = "";
-    document.getElementById("mfa-code").value = "";
+    const encryptionSession = await apiCall("GET", `/encryption/public_key/${encodeURIComponent(linkToken)}`);
+    if (!encryptionSession.public_key) {
+      throw new Error("Unable to establish an encrypted session.");
+    }
+
+    const encrypted = await encryptCredentials(encryptionSession.public_key, username, password);
+
+    const response = await apiCall("POST", "/connect", {
+      encrypted_password: encrypted.password,
+      encrypted_username: encrypted.username,
+      link_token: linkToken,
+      site: state.selectedSite.site,
+    });
+
+    if (response.job_id) {
+      state.currentJobId = response.job_id;
+    }
+
+    if (response.status === "connected") {
+      showSuccess(normalizeResult(response));
+      return;
+    }
+
+    if (response.status === "mfa_required") {
+      state.sessionId = response.session_id;
+      showMfa(response.metadata?.message, response.mfa_type);
+      return;
+    }
+
+    if (response.status === "pending") {
+      await pollAccessJob(response.job_id);
+      return;
+    }
+
+    throw new Error(response.error || response.detail || `Unexpected status: ${response.status}`);
+  }
+
+  function closeWindow() {
+    if (inIframe) {
+      return;
+    }
+    if (hasNativeBridge()) {
+      return;
+    }
+    window.close();
+    window.setTimeout(() => {
+      if (!window.closed) {
+        window.location.href = serverUrl;
+      }
+    }, 120);
+  }
+
+  function resetFlow() {
+    clearProgressTimers();
+    state.currentJobId = null;
+    state.lastResult = null;
+    state.polling = false;
+    state.sessionId = null;
+    $("#link-username").value = "";
+    $("#link-password").value = "";
+    $("#mfa-code").value = "";
+    clearErrors();
+
+    state.selectedSite = null;
     showStep("select", 0);
-    loadBlueprints();
-  });
+    loadInitialOrganizations();
+  }
 
-  // ── RSA Encryption (Web Crypto API) ──────────────────────────────────────
-
-  async function encryptCredentials(pemPublicKey, username, password) {
-    // Parse PEM to ArrayBuffer
-    const pemBody = pemPublicKey
+  async function encryptCredentials(publicKeyPem, username, password) {
+    const publicKeyBody = publicKeyPem
       .replace(/-----BEGIN PUBLIC KEY-----/, "")
       .replace(/-----END PUBLIC KEY-----/, "")
       .replace(/\s/g, "");
-    const binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
 
+    const binaryDer = Uint8Array.from(atob(publicKeyBody), (character) => character.charCodeAt(0));
     const cryptoKey = await crypto.subtle.importKey(
       "spki",
       binaryDer.buffer,
@@ -389,30 +901,175 @@
       ["encrypt"]
     );
 
-    const encUser = await crypto.subtle.encrypt(
+    const encryptedUsername = await crypto.subtle.encrypt(
       { name: "RSA-OAEP" },
       cryptoKey,
       new TextEncoder().encode(username)
     );
-    const encPass = await crypto.subtle.encrypt(
+    const encryptedPassword = await crypto.subtle.encrypt(
       { name: "RSA-OAEP" },
       cryptoKey,
       new TextEncoder().encode(password)
     );
 
     return {
-      username: btoa(String.fromCharCode(...new Uint8Array(encUser))),
-      password: btoa(String.fromCharCode(...new Uint8Array(encPass))),
+      password: btoa(String.fromCharCode(...new Uint8Array(encryptedPassword))),
+      username: btoa(String.fromCharCode(...new Uint8Array(encryptedUsername))),
     };
   }
 
-  // ── Init ─────────────────────────────────────────────────────────────────
+  document.getElementById("institution-search").addEventListener("input", (event) => {
+    state.directoryFilters.query = event.target.value.trim();
+    scheduleSearch();
+  });
+
+  document.getElementById("country-filter").addEventListener("change", (event) => {
+    state.directoryFilters.country = event.target.value;
+    scheduleSearch();
+  });
+
+  document.getElementById("category-filter").addEventListener("change", (event) => {
+    state.directoryFilters.category = event.target.value;
+    scheduleSearch();
+  });
+
+  document.getElementById("password-toggle").addEventListener("click", () => {
+    const passwordInput = document.getElementById("link-password");
+    const toggle = document.getElementById("password-toggle");
+    const isMasked = passwordInput.getAttribute("type") === "password";
+    passwordInput.setAttribute("type", isMasked ? "text" : "password");
+    toggle.textContent = isMasked ? "Hide" : "Show";
+    toggle.setAttribute("aria-label", isMasked ? "Hide password" : "Show password");
+  });
+
+  document.getElementById("change-provider-btn").addEventListener("click", () => {
+    showStep("select", 0);
+    state.preselectedSite = null;
+    loadOrganizations().catch((error) => {
+      $("#institution-list").innerHTML = `<div class="institution-empty">${escapeHtml(error.message || "Unable to load organizations.")}</div>`;
+    });
+    document.getElementById("institution-search").focus();
+  });
+
+  document.getElementById("credentials-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    clearErrors();
+
+    const username = document.getElementById("link-username").value.trim();
+    const password = document.getElementById("link-password").value;
+    let invalid = false;
+
+    if (!username) {
+      markFieldError("link-username", "username-error", "Username or email is required.");
+      invalid = true;
+    }
+    if (!password) {
+      markFieldError("link-password", "password-error", "Password is required.");
+      invalid = true;
+    }
+    if (invalid) {
+      return;
+    }
+
+    const button = document.getElementById("connect-btn");
+    button.disabled = true;
+    button.textContent = "Connecting...";
+
+    showStep("connecting", 1);
+    startConnectingAnimation(state.selectedSite ? state.selectedSite.name : "your provider");
+    postEvent("CREDENTIALS_SUBMITTED", {
+      organization_id: state.selectedSite ? state.selectedSite.organization_id : null,
+      organization_name: state.selectedSite ? state.selectedSite.name : null,
+      site: state.selectedSite ? state.selectedSite.site : null,
+    });
+    bestEffortLinkEvent("CREDENTIALS_SUBMITTED", {
+      organization_id: state.selectedSite ? state.selectedSite.organization_id : null,
+      organization_name: state.selectedSite ? state.selectedSite.name : null,
+      site: state.selectedSite ? state.selectedSite.site : null,
+    });
+
+    try {
+      await connectAccount(username, password);
+    } catch (error) {
+      showError(error.message || "We could not complete the connection.");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Continue";
+    }
+  });
+
+  document.getElementById("mfa-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const code = document.getElementById("mfa-code").value.trim();
+    if (!code || !state.sessionId) {
+      return;
+    }
+
+    const button = document.getElementById("mfa-submit-btn");
+    button.disabled = true;
+    button.textContent = "Verifying...";
+    postEvent("MFA_SUBMITTED", { session_id: state.sessionId });
+    bestEffortLinkEvent("MFA_SUBMITTED", { session_id: state.sessionId });
+
+    try {
+      showStep("connecting", 2, {
+        title: "Resuming connection",
+        subtitle: "Your provider verification code has been submitted.",
+      });
+      setConnectingState(2, "Resuming after verification", "The provider flow is continuing with the verification code you entered.");
+
+      const result = await apiCall(
+        "POST",
+        `/mfa/submit?session_id=${encodeURIComponent(state.sessionId)}&code=${encodeURIComponent(code)}`
+      );
+
+      if (result.status === "error") {
+        showMfa(result.error || "The verification code was not accepted.", "verification");
+        return;
+      }
+
+      if (result.status === "connected") {
+        showSuccess(normalizeResult(result));
+        return;
+      }
+
+      if (state.currentJobId) {
+        await pollAccessJob(state.currentJobId, { afterMfaSubmit: true });
+        return;
+      }
+
+      showError("Verification was accepted, but the connection could not be resumed.");
+    } catch (error) {
+      showError(error.message || "Verification failed.");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Verify and continue";
+    }
+  });
+
+  document.getElementById("retry-btn").addEventListener("click", resetFlow);
+  document.getElementById("done-btn").addEventListener("click", () => {
+    postEvent("DONE", {});
+    closeWindow();
+  });
+  document.getElementById("close-btn").addEventListener("click", () => {
+    postEvent("EXIT", { reason: "user_closed" });
+    closeWindow();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      postEvent("EXIT", { reason: "user_pressed_escape" });
+      closeWindow();
+    }
+  });
 
   async function init() {
     const valid = await validateToken();
-    if (valid) {
-      await loadBlueprints();
+    if (!valid) {
+      return;
     }
+    await loadInitialOrganizations();
   }
 
   init();

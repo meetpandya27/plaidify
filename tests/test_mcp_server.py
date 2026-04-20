@@ -45,13 +45,13 @@ async def test_list_available_sites_returns_formatted_list():
         "count": 2,
         "blueprints": [
             {
-                "site": "greengrid_energy",
+                "site": "hydro_one",
                 "name": "GreenGrid Energy",
                 "domain": "greengrid.example.com",
                 "has_mfa": False,
                 "tags": ["energy"],
             },
-            {"site": "test_bank", "name": "Test Bank", "domain": "testbank.com", "has_mfa": True, "tags": ["bank"]},
+            {"site": "internal_bank", "name": "Test Bank", "domain": "testbank.com", "has_mfa": True, "tags": ["bank"]},
         ],
     }
 
@@ -59,7 +59,7 @@ async def test_list_available_sites_returns_formatted_list():
         result = await list_available_sites()
 
     assert "GreenGrid Energy" in result
-    assert "greengrid_energy" in result
+    assert "hydro_one" in result
     assert "Test Bank" in result
     assert "[MFA]" in result
     assert "Available sites (2)" in result
@@ -89,9 +89,9 @@ async def test_connect_site_success():
     }
 
     with patch("src.mcp_server._api", new_callable=AsyncMock, return_value=mock_data):
-        result = await connect_site("greengrid_energy", "user", "pass")
+        result = await connect_site("hydro_one", "user", "pass")
 
-    assert "Connected to greengrid_energy" in result
+    assert "Connected to hydro_one" in result
     assert "$142.57" in result
     assert "2 fields" in result
 
@@ -107,7 +107,7 @@ async def test_connect_site_mfa_required():
     }
 
     with patch("src.mcp_server._api", new_callable=AsyncMock, return_value=mock_data):
-        result = await connect_site("greengrid_energy", "user", "pass")
+        result = await connect_site("hydro_one", "user", "pass")
 
     assert "MFA required" in result
     assert "sess-123" in result
@@ -139,7 +139,7 @@ async def test_connect_site_rate_limited():
         new_callable=AsyncMock,
         side_effect=httpx.HTTPStatusError("", request=MagicMock(), response=resp),
     ):
-        result = await connect_site("greengrid_energy", "user", "pass")
+        result = await connect_site("hydro_one", "user", "pass")
 
     assert "Rate limited" in result
 
@@ -158,7 +158,7 @@ async def test_connect_utility_account_success():
     }
 
     with patch("src.mcp_server._api", new_callable=AsyncMock, return_value=mock_data):
-        result = await connect_utility_account("greengrid_energy")
+        result = await connect_utility_account("hydro_one")
 
     assert "lnk-abc-123" in result
     assert "Link session created" in result
@@ -180,7 +180,7 @@ async def test_connect_utility_account_unauthenticated_fallback():
         return fallback_data
 
     with patch("src.mcp_server._api", new_callable=AsyncMock, side_effect=side_effect):
-        result = await connect_utility_account("greengrid_energy")
+        result = await connect_utility_account("hydro_one")
 
     assert "enc-xyz" in result
     assert "unauthenticated mode" in result
@@ -195,7 +195,7 @@ async def test_check_connection_status_completed():
 
     mock_data = {
         "status": "completed",
-        "site": "greengrid_energy",
+        "site": "hydro_one",
         "events": ["INSTITUTION_SELECTED", "CREDENTIALS_SUBMITTED", "CONNECTED"],
         "public_token": "pub-token-123",
     }
@@ -212,7 +212,7 @@ async def test_check_connection_status_completed():
 async def test_check_connection_status_awaiting():
     from src.mcp_server import check_connection_status
 
-    mock_data = {"status": "awaiting_credentials", "site": "greengrid_energy", "events": ["INSTITUTION_SELECTED"]}
+    mock_data = {"status": "awaiting_credentials", "site": "hydro_one", "events": ["INSTITUTION_SELECTED"]}
 
     with patch("src.mcp_server._api", new_callable=AsyncMock, return_value=mock_data):
         result = await check_connection_status("lnk-abc-123")
@@ -387,14 +387,14 @@ async def test_list_connections_success():
     from src.mcp_server import list_connections
 
     mock_data = [
-        {"site": "greengrid_energy", "link_token": "lnk-111"},
-        {"site": "test_bank", "link_token": "lnk-222"},
+        {"site": "hydro_one", "link_token": "lnk-111"},
+        {"site": "internal_bank", "link_token": "lnk-222"},
     ]
 
     with patch("src.mcp_server._api", new_callable=AsyncMock, return_value=mock_data):
         result = await list_connections()
 
-    assert "greengrid_energy" in result
+    assert "hydro_one" in result
     assert "lnk-111" in result
     assert "Active connections (2)" in result
 

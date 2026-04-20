@@ -26,7 +26,7 @@ class TestCLIVersion:
         assert "connect" in result.output
         assert "blueprint" in result.output
         assert "serve" in result.output
-        assert "demo" in result.output
+        assert "rotate-key" in result.output
 
 
 class TestBlueprintValidate:

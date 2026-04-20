@@ -6,13 +6,10 @@ client = TestClient(app)
 
 
 def test_connect():
-    """
-    Test connecting to internal_bank.
-
-    The autouse mock_browser_engine fixture mocks connect_to_site
-    to return stub data without launching Playwright.
-    """
-    response = client.post("/connect", json={"site": "internal_bank", "username": "test_user", "password": "secret123"})
+    response = client.post(
+        "/connect",
+        json={"site": "internal_bank", "username": "test_user", "password": "secret123"},
+    )
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "connected"

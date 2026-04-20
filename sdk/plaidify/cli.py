@@ -2,7 +2,6 @@
 Plaidify CLI — command-line interface for Plaidify.
 
 Usage:
-    plaidify demo                         # Launch full demo (servers + browser)
     plaidify serve                        # Start the Plaidify API server
     plaidify connect <site> -u <user> -p <pass>
     plaidify blueprint list               # List available blueprints
@@ -17,11 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import signal
-import subprocess
 import sys
 import time
-import webbrowser
 from pathlib import Path
 from typing import Optional
 
@@ -46,10 +42,10 @@ def _get_client(server_url: str, api_key: Optional[str] = None):
 
 
 def _find_project_root() -> Path:
-    """Walk up from CWD looking for a directory that has src/main.py or pyproject.toml."""
+    """Walk up from CWD looking for a Plaidify project root."""
     cwd = Path.cwd()
     for d in [cwd, *cwd.parents]:
-        if (d / "src" / "main.py").exists() or (d / "run_demo.py").exists():
+        if (d / "src" / "main.py").exists() or (d / "pyproject.toml").exists():
             return d
     return cwd
 
@@ -134,7 +130,7 @@ def connect(ctx: click.Context, site: str, username: str, password: str,
     """Connect to a site and extract data.
 
     Example:
-        plaidify connect greengrid_energy -u demo_user -p demo_pass
+        plaidify connect hydro_one -u your_username -p your_password
     """
     client = _get_client(ctx.obj["server"], ctx.obj["api_key"])
     extract_fields = [f.strip() for f in fields.split(",")] if fields else None
@@ -357,7 +353,7 @@ def blueprint_test(ctx: click.Context, filepath: str, username: str, password: s
     Runs the full connection flow and shows the extracted data.
 
     Example:
-        plaidify blueprint test ./connectors/greengrid_energy.json -u demo_user -p demo_pass
+        plaidify blueprint test ./connectors/your_site.json -u your_username -p your_password
     """
     path = Path(filepath)
     site = path.stem
@@ -485,8 +481,8 @@ def registry_install(ctx: click.Context, site: str, output: Optional[str]):
     """Download a blueprint from the registry and save it locally.
 
     Example:
-        plaidify registry install greengrid_energy
-        plaidify registry install greengrid_energy -o ./connectors/greengrid.json
+        plaidify registry install hydro_one
+        plaidify registry install hydro_one -o ./connectors/hydro_one.json
     """
     client = _get_client(ctx.obj["server"], ctx.obj["api_key"])
 
@@ -602,8 +598,6 @@ def serve(host: str, port: int, do_reload: bool):
     """
     root = _find_project_root()
 
-    _ensure_demo_env()
-
     click.echo()
     click.secho("  ◆ Plaidify Server", bold=True)
     click.echo(f"  {'─' * 45}")
@@ -621,102 +615,6 @@ def serve(host: str, port: int, do_reload: bool):
         cmd.extend(["--reload"])
 
     os.execvp(sys.executable, cmd)
-
-
-# ── plaidify demo ────────────────────────────────────────────────────────────
-
-
-@cli.command()
-@click.option("--no-browser", is_flag=True, help="Don't auto-open the browser.")
-@click.option("--api-port", default=8000, type=int, help="Plaidify API port.")
-@click.option("--site-port", default=8080, type=int, help="Example site port.")
-def demo(no_browser: bool, api_port: int, site_port: int):
-    """Launch the full Plaidify demo.
-
-    Starts both the GreenGrid Energy portal and the Plaidify API,
-    then opens the demo UI in your browser.
-
-    Example:
-        plaidify demo
-    """
-    root = _find_project_root()
-
-    _ensure_demo_env()
-
-    procs = []
-
-    try:
-        click.echo()
-        click.secho("  ◆ Plaidify Demo", bold=True)
-        click.echo(f"  {'─' * 50}")
-
-        # Start example site
-        _echo_info("Starting GreenGrid Energy portal...")
-        example_proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "example_site.server:app",
-             "--host", "0.0.0.0", "--port", str(site_port),
-             "--log-level", "warning"],
-            cwd=str(root),
-            env=os.environ.copy(),
-        )
-        procs.append(example_proc)
-        time.sleep(1)
-
-        # Start Plaidify API
-        _echo_info("Starting Plaidify API...")
-        api_proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "src.main:app",
-             "--host", "0.0.0.0", "--port", str(api_port),
-             "--log-level", "info"],
-            cwd=str(root),
-            env=os.environ.copy(),
-        )
-        procs.append(api_proc)
-        time.sleep(1)
-
-        demo_url = f"http://localhost:{api_port}/ui/demo.html"
-        click.echo(f"  {'─' * 50}")
-        click.echo(f"  Demo UI:        {demo_url}")
-        click.echo(f"  API Docs:       http://localhost:{api_port}/docs")
-        click.echo(f"  Utility Portal: http://localhost:{site_port}")
-        click.echo(f"  {'─' * 50}")
-        click.echo("  Press Ctrl+C to stop\n")
-
-        if not no_browser:
-            webbrowser.open(demo_url)
-
-        # Wait
-        while True:
-            for p in procs:
-                if p.poll() is not None:
-                    raise KeyboardInterrupt
-            time.sleep(0.5)
-
-    except KeyboardInterrupt:
-        click.echo("\n  Shutting down...")
-    finally:
-        for p in procs:
-            try:
-                p.terminate()
-                p.wait(timeout=5)
-            except Exception:
-                p.kill()
-        _echo_success("Done.")
-        click.echo()
-
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
-
-
-def _ensure_demo_env():
-    """Set required environment variables for demo mode if not already set."""
-    os.environ.setdefault("ENCRYPTION_KEY", "demo-key-not-for-production-use!!")
-    os.environ.setdefault("JWT_SECRET_KEY", "demo-jwt-secret-not-for-production")
-    os.environ.setdefault("DATABASE_URL", "sqlite:///./plaidify_demo.db")
-    os.environ.setdefault("DEBUG", "true")
-    os.environ.setdefault("LOG_LEVEL", "INFO")
-    os.environ.setdefault("CORS_ORIGINS", "*")
-    os.environ.setdefault("BROWSER_HEADLESS", "true")
 
 
 # ── plaidify rotate-key ──────────────────────────────────────────────────────

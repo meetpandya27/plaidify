@@ -16,7 +16,7 @@ class TestAgentRegistration:
                 "name": "My Test Agent",
                 "description": "A test agent for integration",
                 "allowed_scopes": ["billing", "usage"],
-                "allowed_sites": ["test_bank"],
+                "allowed_sites": ["internal_bank"],
             },
             headers=auth_headers,
         )
@@ -28,7 +28,7 @@ class TestAgentRegistration:
         assert "api_key" in data  # Raw key returned once
         assert data["api_key"].startswith("pk_agent_")
         assert data["allowed_scopes"] == ["billing", "usage"]
-        assert data["allowed_sites"] == ["test_bank"]
+        assert data["allowed_sites"] == ["internal_bank"]
 
     def test_register_agent_requires_auth(self, client):
         """Agent registration should require authentication."""
@@ -184,7 +184,7 @@ class TestAgentAPIKey:
         api_key = create_resp.json()["api_key"]
 
         # Use the agent's API key to create a link (uses get_current_user_or_api_key)
-        resp = client.post("/create_link?site=test_bank", headers={"X-API-Key": api_key})
+        resp = client.post("/create_link?site=internal_bank", headers={"X-API-Key": api_key})
         assert resp.status_code == 200
         assert "link_token" in resp.json()
 
@@ -204,7 +204,7 @@ class TestAgentAPIKey:
         client.delete(f"/agents/{agent_id}", headers=auth_headers)
 
         # API key should no longer work for authenticated endpoints
-        resp = client.post("/create_link?site=test_bank", headers={"X-API-Key": api_key})
+        resp = client.post("/create_link?site=internal_bank", headers={"X-API-Key": api_key})
         assert resp.status_code == 401
 
     def test_agent_api_key_restricts_allowed_sites(self, client, auth_headers):
@@ -212,14 +212,14 @@ class TestAgentAPIKey:
             "/agents",
             json={
                 "name": "Scoped Agent",
-                "allowed_sites": ["test_bank"],
+                "allowed_sites": ["internal_bank"],
             },
             headers=auth_headers,
         )
         api_key = create_resp.json()["api_key"]
 
-        allowed = client.post("/create_link?site=test_bank", headers={"X-API-Key": api_key})
-        blocked = client.post("/create_link?site=demo_site", headers={"X-API-Key": api_key})
+        allowed = client.post("/create_link?site=internal_bank", headers={"X-API-Key": api_key})
+        blocked = client.post("/create_link?site=hydro_one", headers={"X-API-Key": api_key})
 
         assert allowed.status_code == 200
         assert blocked.status_code == 403
@@ -236,7 +236,7 @@ class TestAgentAPIKey:
         api_key = create_resp.json()["api_key"]
 
         resp = client.post(
-            "/create_link?site=test_bank",
+            "/create_link?site=internal_bank",
             json={"scopes": ["balance", "transactions"]},
             headers={"X-API-Key": api_key},
         )
@@ -258,14 +258,14 @@ class TestAgentAPIKey:
             json={
                 "name": "Narrow Agent",
                 "allowed_scopes": ["balance"],
-                "allowed_sites": ["test_bank"],
+                "allowed_sites": ["internal_bank"],
             },
             headers=auth_headers,
         )
         api_key = create_resp.json()["api_key"]
 
         link_resp = client.post(
-            "/create_link?site=test_bank",
+            "/create_link?site=internal_bank",
             headers={"X-API-Key": api_key},
         )
         assert link_resp.status_code == 200
@@ -276,7 +276,7 @@ class TestAgentAPIKey:
             "/submit_credentials",
             params={
                 "link_token": link_token,
-                "username": "demo_user",
+                "username": "test_user",
                 "password": "secret123",
             },
             headers={"X-API-Key": api_key},

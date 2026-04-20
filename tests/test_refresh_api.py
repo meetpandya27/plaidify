@@ -13,7 +13,7 @@ class TestRefreshScheduleEndpoints:
         # Create a link
         resp = client.post(
             "/link/create",
-            json={"site": "demo_site"},
+            json={"site": "internal_bank"},
             headers=auth_headers,
         )
         if resp.status_code != 200:

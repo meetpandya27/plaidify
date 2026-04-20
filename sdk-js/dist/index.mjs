@@ -179,10 +179,32 @@ var Plaidify = class {
   }
   // ── Link Flow ──────────────────────────────────────────────────────────
   async createLinkSession(site) {
-    return this.post("/link/create", { site });
+    const path = site ? `/link/sessions?site=${encodeURIComponent(site)}` : "/link/sessions";
+    return this.post(path);
   }
-  getLinkUrl(linkToken) {
-    return `${this.baseUrl}/link?token=${encodeURIComponent(linkToken)}`;
+  async createPublicLinkSession() {
+    return this.post("/link/sessions/public");
+  }
+  getLinkUrl(linkToken, options) {
+    const url = new URL(`${this.baseUrl}/link`);
+    url.searchParams.set("token", linkToken);
+    if (options?.origin) {
+      url.searchParams.set("origin", options.origin);
+    }
+    const theme = options?.theme;
+    if (theme?.accentColor) {
+      url.searchParams.set("accent", theme.accentColor);
+    }
+    if (theme?.bgColor) {
+      url.searchParams.set("bg", theme.bgColor);
+    }
+    if (theme?.borderRadius) {
+      url.searchParams.set("radius", theme.borderRadius);
+    }
+    if (theme?.logo) {
+      url.searchParams.set("logo", theme.logo);
+    }
+    return url.toString();
   }
   async registerWebhook(linkToken, url) {
     return this.post("/webhooks", {

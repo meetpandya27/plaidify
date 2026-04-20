@@ -1,9 +1,8 @@
 {
   "schema_version": "2.0",
-  "name": "GreenGrid Energy",
+  "name": "Internal Browser Fixture",
   "domain": "localhost:8080",
-  "tags": ["utility", "energy", "demo"],
-
+  "tags": ["internal", "fixture", "browser"],
   "auth": {
     "type": "form",
     "steps": [
@@ -28,12 +27,11 @@
       },
       {
         "action": "wait",
-        "selector": "#dashboard",
+        "selector": "#dashboard, #otp-input",
         "timeout": 10000
       }
     ]
   },
-
   "mfa": {
     "detection": {
       "selector": "#otp-input",
@@ -44,7 +42,6 @@
     "input_selector": "#otp-input",
     "submit_selector": "#otp-submit"
   },
-
   "extract": {
     "current_bill": {
       "selector": "#current-bill",
@@ -87,10 +84,6 @@
     "customer_email": {
       "selector": "#customer-email",
       "type": "email"
-    },
-    "customer_phone": {
-      "selector": "#customer-phone",
-      "type": "text"
     },
     "usage_history": {
       "selector": ".usage-row",
@@ -140,19 +133,16 @@
       }
     }
   },
-
   "cleanup": [
     {
       "action": "click",
       "selector": "#logout-btn"
     }
   ],
-
   "rate_limit": {
     "max_requests_per_hour": 60,
     "min_interval_seconds": 5
   },
-
   "health_check": {
     "url": "http://localhost:8080/health",
     "expected_status": 200

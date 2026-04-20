@@ -1,24 +1,54 @@
 import * as react from 'react';
 
+type PlaidifyLinkEventName = "OPEN" | "CLOSE" | "INSTITUTION_SELECTED" | "CREDENTIALS_SUBMITTED" | "MFA_REQUIRED" | "MFA_SUBMITTED" | "CONNECTED" | "ERROR" | "EXIT" | "DONE";
+interface PlaidifyLinkMfaDetails {
+    mfa_type?: string;
+    session_id?: string;
+}
+interface PlaidifyLinkExitDetails {
+    reason?: string;
+    error?: string;
+}
+interface PlaidifyLinkSuccessMetadata {
+    data?: Record<string, unknown>;
+    organization_id?: string;
+    organization_name?: string;
+    public_token?: string;
+    site?: string;
+}
+interface PlaidifyLinkEventPayload extends PlaidifyLinkExitDetails, PlaidifyLinkMfaDetails {
+    source?: "plaidify-link";
+    event?: PlaidifyLinkEventName | string;
+    access_token?: string;
+    public_token?: string;
+    organization_id?: string;
+    organization_name?: string;
+    site?: string;
+    data?: Record<string, unknown>;
+}
 interface PlaidifyLinkConfig {
     /** Plaidify server URL. */
     serverUrl: string;
-    /** Link token from POST /link/create. */
+    /** Link token from POST /link/sessions or POST /link/sessions/public. */
     token: string;
     /** Theme overrides for the link UI. */
     theme?: LinkTheme;
     /** Called when link completes successfully. */
-    onSuccess?: (publicToken: string, metadata: Record<string, unknown>) => void;
+    onSuccess?: (accessToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
     /** Called when the user exits the link flow. */
-    onExit?: (error?: string) => void;
+    onExit?: (details: PlaidifyLinkExitDetails) => void;
     /** Called on each link event. */
-    onEvent?: (event: string, data: Record<string, unknown>) => void;
+    onEvent?: (event: PlaidifyLinkEventName | string, data: PlaidifyLinkEventPayload) => void;
+    /** Called when the provider requires additional verification. */
+    onMFA?: (details: PlaidifyLinkMfaDetails) => void;
 }
 interface LinkTheme {
     accentColor?: string;
     bgColor?: string;
     borderRadius?: string;
     logo?: string;
+    fullscreenOnMobile?: boolean;
+    mobileBreakpoint?: number;
 }
 
 interface UsePlaidifyLinkReturn {

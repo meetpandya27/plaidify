@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Plaidify: API Console</title>
+  <title>Plaidify Operations Console</title>
   <style>
     :root {
       --bg: #0c0f14; --bg-card: #151921; --border: #232935;
@@ -34,14 +34,14 @@
   </style>
 </head>
 <body>
-  <h1><span>Plaidify</span> API Console</h1>
-  <p class="subtitle">Interact with the Plaidify API directly. For a richer experience, try the <a href="demo.html">interactive demo</a>.</p>
+  <h1><span>Plaidify</span> Operations Console</h1>
+  <p class="subtitle">Interact with the Plaidify API directly for link creation, credential submission, and data retrieval.</p>
 
   <div class="card">
     <h2>Create Link Token</h2>
     <form id="create-link-form">
       <label for="create-link-site">Site</label>
-      <input type="text" id="create-link-site" name="create-link-site" placeholder="e.g. greengrid_energy" required />
+      <input type="text" id="create-link-site" name="create-link-site" placeholder="e.g. hydro_one" required />
       <button type="submit">Create Link</button>
     </form>
     <p id="create-link-result" class="result"></p>

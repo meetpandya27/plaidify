@@ -56,7 +56,7 @@ describe("listBlueprints", () => {
   it("returns blueprint list", async () => {
     const data = {
       blueprints: [
-        { name: "GreenGrid Energy", site: "greengrid_energy", domain: "greengrid.example.com" },
+        { name: "GreenGrid Energy", site: "hydro_one", domain: "greengrid.example.com" },
       ],
       count: 1,
     };
@@ -71,7 +71,7 @@ describe("getBlueprint", () => {
   it("returns a specific blueprint", async () => {
     const data = { name: "GreenGrid Energy", domain: "greengrid.example.com" };
     globalThis.fetch = mockFetch(data);
-    const result = await client.getBlueprint("greengrid_energy");
+    const result = await client.getBlueprint("hydro_one");
     expect(result.name).toBe("GreenGrid Energy");
   });
 });
@@ -82,7 +82,7 @@ describe("connect", () => {
   it("connects and returns data", async () => {
     const data = { status: "connected", job_id: "ajob-1", data: { current_bill: "$142.57" } };
     globalThis.fetch = mockFetch(data);
-    const result = await client.connect("greengrid_energy", "user", "pass");
+    const result = await client.connect("hydro_one", "user", "pass");
     expect(result.status).toBe("connected");
     expect(result.job_id).toBe("ajob-1");
     expect(result.data?.current_bill).toBe("$142.57");
@@ -91,7 +91,7 @@ describe("connect", () => {
   it("returns MFA required status", async () => {
     const data = { status: "mfa_required", job_id: "ajob-2", session_id: "sess-123", mfa_type: "totp" };
     globalThis.fetch = mockFetch(data);
-    const result = await client.connect("greengrid_energy", "mfa_user", "pass");
+    const result = await client.connect("hydro_one", "fixture_mfa", "pass");
     expect(result.status).toBe("mfa_required");
     expect(result.job_id).toBe("ajob-2");
     expect(result.session_id).toBe("sess-123");
@@ -105,7 +105,7 @@ describe("connect", () => {
       metadata: { message: "Still running" },
     };
     globalThis.fetch = mockFetch(data);
-    const result = await client.connect("greengrid_energy", "user", "pass");
+    const result = await client.connect("hydro_one", "user", "pass");
     expect(result.status).toBe("pending");
     expect(result.job_id).toBe("ajob-3");
     expect(result.metadata?.message).toBe("Still running");
@@ -113,7 +113,7 @@ describe("connect", () => {
 
   it("passes extract_fields option", async () => {
     globalThis.fetch = mockFetch({ status: "connected", data: {} });
-    await client.connect("greengrid_energy", "user", "pass", { extractFields: ["current_bill"] });
+    await client.connect("hydro_one", "user", "pass", { extractFields: ["current_bill"] });
 
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(call[1].body);
@@ -139,7 +139,7 @@ describe("access jobs", () => {
       jobs: [
         {
           job_id: "ajob-1",
-          site: "greengrid_energy",
+          site: "hydro_one",
           job_type: "connect",
           status: "completed",
           result: { status: "connected", data: { current_bill: "$142.57" } },
@@ -156,7 +156,7 @@ describe("access jobs", () => {
   it("gets a specific access job", async () => {
     globalThis.fetch = mockFetch({
       job_id: "ajob-2",
-      site: "greengrid_energy",
+      site: "hydro_one",
       job_type: "connect",
       status: "completed",
       result: { status: "connected", data: { current_bill: "$142.57" } },
@@ -175,7 +175,7 @@ describe("access jobs", () => {
         status: 200,
         json: () => Promise.resolve({
           job_id: "ajob-3",
-          site: "greengrid_energy",
+          site: "hydro_one",
           job_type: "connect",
           status: "running",
         }),
@@ -185,7 +185,7 @@ describe("access jobs", () => {
         status: 200,
         json: () => Promise.resolve({
           job_id: "ajob-3",
-          site: "greengrid_energy",
+          site: "hydro_one",
           job_type: "connect",
           status: "completed",
           result: { status: "connected", data: { current_bill: "$142.57" } },
@@ -230,15 +230,70 @@ describe("me", () => {
 
 describe("link flow", () => {
   it("creates a link session", async () => {
-    const data = { link_token: "lnk-abc", status: "awaiting_institution" };
+    const data = { link_token: "lnk-abc", link_url: "/link?token=lnk-abc", expires_in: 600 };
     globalThis.fetch = mockFetch(data);
-    const result = await client.createLinkSession("greengrid_energy");
+    const result = await client.createLinkSession("hydro_one");
     expect(result.link_token).toBe("lnk-abc");
+  });
+
+  it("creates a public link session", async () => {
+    const data = { link_token: "lnk-public", link_url: "/link?token=lnk-public", expires_in: 600 };
+    globalThis.fetch = mockFetch(data);
+    const result = await client.createPublicLinkSession();
+    expect(result.link_token).toBe("lnk-public");
+  });
+
+  it("creates a hosted link bootstrap token", async () => {
+    const data = {
+      launch_token: "launch-123",
+      expires_in: 300,
+      site: "hydro_one",
+      allowed_origin: "https://app.example.com",
+      scopes: ["read_bill"],
+    };
+    globalThis.fetch = mockFetch(data);
+
+    const result = await client.createHostedLinkBootstrap({
+      site: "hydro_one",
+      allowedOrigin: "https://app.example.com",
+      scopes: ["read_bill"],
+    });
+
+    expect(result.launch_token).toBe("launch-123");
+
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+    expect(body.allowed_origin).toBe("https://app.example.com");
+    expect(body.site).toBe("hydro_one");
+    expect(body.scopes).toEqual(["read_bill"]);
+  });
+
+  it("exchanges a hosted link bootstrap token", async () => {
+    const data = { link_token: "lnk-boot", link_url: "/link?token=lnk-boot", expires_in: 600 };
+    globalThis.fetch = mockFetch(data);
+
+    const result = await client.exchangeHostedLinkBootstrap("launch-123");
+    expect(result.link_token).toBe("lnk-boot");
   });
 
   it("generates link URL", () => {
     const url = client.getLinkUrl("lnk-abc");
     expect(url).toBe("http://localhost:8000/link?token=lnk-abc");
+  });
+
+  it("generates themed link URL", () => {
+    const url = client.getLinkUrl("lnk-abc", {
+      origin: "myapp://callback",
+      theme: {
+        accentColor: "#0b8f73",
+        borderRadius: "30px",
+      },
+    });
+
+    expect(url).toContain("token=lnk-abc");
+    expect(url).toContain("origin=myapp%3A%2F%2Fcallback");
+    expect(url).toContain("accent=%230b8f73");
+    expect(url).toContain("radius=30px");
   });
 
   it("exchanges public token", async () => {

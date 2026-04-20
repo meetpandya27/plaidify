@@ -30,12 +30,12 @@ class TestSystemEndpoints:
 class TestConnectEndpoint:
     """Tests for the POST /connect endpoint."""
 
-    def test_connect_demo_site(self, client):
+    def test_connect_internal_fixture(self, client):
         response = client.post(
             "/connect",
             json={
-                "site": "demo_site",
-                "username": "demo_user",
+                "site": "internal_bank",
+                "username": "test_user",
                 "password": "secret123",
             },
         )
@@ -46,11 +46,11 @@ class TestConnectEndpoint:
         assert data["data"]["profile_status"] == "active"
         assert data["data"]["last_synced"] == "2025-04-17T12:00:00Z"
 
-    def test_connect_mock_site(self, client):
+    def test_connect_public_connector(self, client):
         response = client.post(
             "/connect",
             json={
-                "site": "mock_site",
+                "site": "hydro_one",
                 "username": "mock_user",
                 "password": "mock_password",
             },
@@ -74,7 +74,7 @@ class TestConnectEndpoint:
         assert "error" in response.json()
 
     def test_connect_missing_fields(self, client):
-        response = client.post("/connect", json={"site": "demo_site"})
+        response = client.post("/connect", json={"site": "internal_bank"})
         assert response.status_code == 422  # Pydantic validation error
 
     def test_disconnect(self, client):

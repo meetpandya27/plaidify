@@ -24,7 +24,7 @@ def _create_scoped_link(client, auth_headers, site="test_site", scopes=None):
 def _submit_creds(client, auth_headers, link_token):
     """Submit credentials and return response data."""
     resp = client.post(
-        f"/submit_credentials?link_token={link_token}&username=demo&password=demo",
+        f"/submit_credentials?link_token={link_token}&username=test_user&password=test_pass",
         headers=auth_headers,
     )
     assert resp.status_code == 200

@@ -126,7 +126,7 @@ async def _mock_connect_to_site(site, username=None, password=None, **kwargs):
     """
     from src.exceptions import BlueprintNotFoundError
 
-    known_sites = {"demo_site", "mock_site", "test_bank", "greengrid_energy", "greengrid_energy_v3", "hydro_one"}
+    known_sites = {"internal_bank", "hydro_one"}
     if site not in known_sites:
         raise BlueprintNotFoundError(site=site)
     return _MOCK_CONNECT_RESPONSE

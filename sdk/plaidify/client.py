@@ -6,7 +6,7 @@ Usage (async)::
     from plaidify import Plaidify
 
     async with Plaidify(server_url="http://localhost:8000") as pfy:
-        result = await pfy.connect("greengrid_energy", username="demo", password="demo")
+        result = await pfy.connect("hydro_one", username="your_username", password="your_password")
         print(result.data)
 
 Usage (sync)::
@@ -14,7 +14,7 @@ Usage (sync)::
     from plaidify import PlaidifySync
 
     with PlaidifySync(server_url="http://localhost:8000") as pfy:
-        result = pfy.connect("greengrid_energy", username="demo", password="demo")
+        result = pfy.connect("hydro_one", username="your_username", password="your_password")
         print(result.data)
 """
 
@@ -211,7 +211,7 @@ class Plaidify:
         """Get detailed info about a specific blueprint.
 
         Args:
-            site: Blueprint identifier (e.g. ``"greengrid_energy"``).
+            site: Blueprint identifier (e.g. ``"hydro_one"``).
 
         Returns:
             BlueprintInfo with all metadata including extract fields.
@@ -1453,7 +1453,7 @@ class PlaidifySync:
     Usage::
 
         with PlaidifySync(server_url="http://localhost:8000") as pfy:
-            result = pfy.connect("greengrid_energy", username="demo", password="demo")
+            result = pfy.connect("hydro_one", username="your_username", password="your_password")
     """
 
     def __init__(self, **kwargs: Any) -> None:

@@ -4,9 +4,43 @@ function usePlaidifyLink(config) {
   const [status, setStatus] = useState("idle");
   const iframeRef = useRef(null);
   const overlayRef = useRef(null);
+  const resizeHandlerRef = useRef(null);
   const configRef = useRef(config);
   configRef.current = config;
+  const applyResponsiveLayout = useCallback(() => {
+    if (!overlayRef.current || !iframeRef.current) {
+      return;
+    }
+    const theme = configRef.current.theme;
+    const breakpoint = theme?.mobileBreakpoint ?? 768;
+    const shouldFullscreen = theme?.fullscreenOnMobile !== false && window.innerWidth <= breakpoint;
+    if (shouldFullscreen) {
+      overlayRef.current.style.padding = "0";
+      overlayRef.current.style.alignItems = "stretch";
+      overlayRef.current.style.justifyContent = "stretch";
+      iframeRef.current.style.width = "100vw";
+      iframeRef.current.style.maxWidth = "100vw";
+      iframeRef.current.style.height = "100vh";
+      iframeRef.current.style.maxHeight = "100vh";
+      iframeRef.current.style.borderRadius = "0";
+      iframeRef.current.style.boxShadow = "none";
+      return;
+    }
+    overlayRef.current.style.padding = "20px";
+    overlayRef.current.style.alignItems = "center";
+    overlayRef.current.style.justifyContent = "center";
+    iframeRef.current.style.width = "min(100%, 680px)";
+    iframeRef.current.style.maxWidth = "680px";
+    iframeRef.current.style.height = "min(820px, 92vh)";
+    iframeRef.current.style.maxHeight = "92vh";
+    iframeRef.current.style.borderRadius = theme?.borderRadius || "30px";
+    iframeRef.current.style.boxShadow = "0 30px 90px rgba(15, 23, 42, 0.28)";
+  }, []);
   const cleanup = useCallback(() => {
+    if (resizeHandlerRef.current) {
+      window.removeEventListener("resize", resizeHandlerRef.current);
+      resizeHandlerRef.current = null;
+    }
     if (overlayRef.current) {
       document.body.removeChild(overlayRef.current);
       overlayRef.current = null;
@@ -16,7 +50,7 @@ function usePlaidifyLink(config) {
   const close = useCallback(() => {
     cleanup();
     setStatus("idle");
-    configRef.current.onExit?.();
+    configRef.current.onExit?.({ reason: "user_closed" });
   }, [cleanup]);
   useEffect(() => {
     function handleMessage(event) {
@@ -24,11 +58,16 @@ function usePlaidifyLink(config) {
       if (!data || data.source !== "plaidify-link") return;
       configRef.current.onEvent?.(data.event, data);
       switch (data.event) {
-        case "SUCCESS":
-        case "LINK_COMPLETE":
+        case "CONNECTED":
           setStatus("success");
           cleanup();
-          configRef.current.onSuccess?.(data.public_token, data);
+          configRef.current.onSuccess?.(data.access_token || "", data);
+          break;
+        case "MFA_REQUIRED":
+          configRef.current.onMFA?.({
+            mfa_type: data.mfa_type,
+            session_id: data.session_id
+          });
           break;
         case "EXIT":
         case "CLOSE":
@@ -37,7 +76,7 @@ function usePlaidifyLink(config) {
         case "ERROR":
           setStatus("error");
           cleanup();
-          configRef.current.onExit?.(data.error || "Link error");
+          configRef.current.onExit?.({ reason: "error", error: data.error || "Link error" });
           break;
       }
     }
@@ -54,10 +93,10 @@ function usePlaidifyLink(config) {
     if (cfg.theme?.borderRadius) url += `&radius=${encodeURIComponent(cfg.theme.borderRadius)}`;
     if (cfg.theme?.logo) url += `&logo=${encodeURIComponent(cfg.theme.logo)}`;
     const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:20px;";
     const iframe = document.createElement("iframe");
     iframe.src = url;
-    iframe.style.cssText = `width:420px;max-width:95vw;height:640px;max-height:90vh;border:none;border-radius:${cfg.theme?.borderRadius || "12px"};background:#fff;box-shadow:0 20px 60px rgba(0,0,0,0.3);`;
+    iframe.style.cssText = `width:min(100%,680px);max-width:680px;height:min(820px,92vh);max-height:92vh;border:none;border-radius:${cfg.theme?.borderRadius || "30px"};background:#fff;box-shadow:0 30px 90px rgba(15,23,42,0.28);`;
     iframe.allow = "clipboard-write";
     iframe.onload = () => setStatus("open");
     overlay.addEventListener("click", (e) => {
@@ -67,6 +106,9 @@ function usePlaidifyLink(config) {
     document.body.appendChild(overlay);
     overlayRef.current = overlay;
     iframeRef.current = iframe;
+    resizeHandlerRef.current = applyResponsiveLayout;
+    window.addEventListener("resize", resizeHandlerRef.current);
+    applyResponsiveLayout();
   }, [close]);
   useEffect(() => cleanup, [cleanup]);
   return {

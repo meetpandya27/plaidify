@@ -46,9 +46,9 @@ class TestConnectionError:
 
 class TestAuthenticationError:
     def test_auth_error(self):
-        e = AuthenticationError(site="test_bank")
-        assert "test_bank" in str(e)
-        assert e.site == "test_bank"
+        e = AuthenticationError(site="internal_bank")
+        assert "internal_bank" in str(e)
+        assert e.site == "internal_bank"
         assert e.status_code == 401
 
 

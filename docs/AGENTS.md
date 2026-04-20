@@ -119,7 +119,7 @@ def fetch_site_data(site: str, username: str, password: str) -> dict:
     return response.json()
 
 # Your agent calls this when it needs authenticated web data
-result = fetch_site_data("demo_site", "user", "pass")
+result = fetch_site_data("internal_bank", "user", "pass")
 print(result["data"])
 ```
 
@@ -190,7 +190,7 @@ class PlaidifyTool:
 
 # Usage
 tool = PlaidifyTool(base_url="http://localhost:8000")
-data = tool.connect("demo_site", "user", "pass")
+data = tool.connect("internal_bank", "user", "pass")
 ```
 
 ### 3. LangChain Tool (works today)
@@ -310,7 +310,7 @@ def execute_plaidify_call(args: dict) -> dict:
 # In your agent loop
 response = openai.chat.completions.create(
     model="gpt-4o",
-    messages=[{"role": "user", "content": "Check my bank balance on demo_site"}],
+    messages=[{"role": "user", "content": "Check my bank balance on internal_bank"}],
     tools=tools
 )
 
@@ -424,7 +424,7 @@ def list_blueprints():
             sites.append(f.replace(".json", ""))
     return sites
 
-# Returns: ["demo_site", "mock_site", ...]
+# Returns: ["internal_bank", "hydro_one", ...]
 ```
 
 ### How to Add a New Site

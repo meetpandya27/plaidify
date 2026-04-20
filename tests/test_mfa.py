@@ -43,11 +43,11 @@ class TestMFASessionCreation:
     async def test_create_session(self, mfa_manager):
         session = await mfa_manager.create_session(
             session_id="sess_1",
-            site="test_bank",
+            site="internal_bank",
             mfa_type="otp",
         )
         assert session.session_id == "sess_1"
-        assert session.site == "test_bank"
+        assert session.site == "internal_bank"
         assert session.mfa_type == "otp"
         assert session.code is None
         assert not session.expired
@@ -56,7 +56,7 @@ class TestMFASessionCreation:
     async def test_create_session_with_metadata(self, mfa_manager):
         session = await mfa_manager.create_session(
             session_id="sess_2",
-            site="test_bank",
+            site="internal_bank",
             mfa_type="security_question",
             metadata={"question": "What is your pet's name?"},
         )

@@ -55,14 +55,14 @@ class TestConnectResult:
 class TestBlueprintInfo:
     def test_basic_blueprint(self):
         bp = BlueprintInfo(
-            site="greengrid_energy",
+            site="hydro_one",
             name="GreenGrid Energy",
             domain="greengrid.example.com",
             tags=["utility", "energy"],
             has_mfa=True,
             extract_fields=["current_bill", "usage_history"],
         )
-        assert bp.site == "greengrid_energy"
+        assert bp.site == "hydro_one"
         assert bp.has_mfa is True
         assert len(bp.extract_fields) == 2
 

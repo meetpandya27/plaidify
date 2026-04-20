@@ -71,10 +71,43 @@ interface UserProfile {
 }
 interface LinkSession {
     link_token: string;
-    status: string;
+    link_url?: string;
+    status?: string;
     public_token?: string;
     expiry?: string;
+    expires_in?: number;
     public_key?: string;
+    scopes?: string[] | null;
+}
+interface HostedLinkUrlOptions {
+    origin?: string;
+    theme?: LinkTheme;
+}
+type PlaidifyLinkEventName = "OPEN" | "CLOSE" | "INSTITUTION_SELECTED" | "CREDENTIALS_SUBMITTED" | "MFA_REQUIRED" | "MFA_SUBMITTED" | "CONNECTED" | "ERROR" | "EXIT" | "DONE";
+interface PlaidifyLinkMfaDetails {
+    mfa_type?: string;
+    session_id?: string;
+}
+interface PlaidifyLinkExitDetails {
+    reason?: string;
+    error?: string;
+}
+interface PlaidifyLinkSuccessMetadata {
+    data?: Record<string, unknown>;
+    organization_id?: string;
+    organization_name?: string;
+    public_token?: string;
+    site?: string;
+}
+interface PlaidifyLinkEventPayload extends PlaidifyLinkExitDetails, PlaidifyLinkMfaDetails {
+    source?: "plaidify-link";
+    event?: PlaidifyLinkEventName | string;
+    access_token?: string;
+    public_token?: string;
+    organization_id?: string;
+    organization_name?: string;
+    site?: string;
+    data?: Record<string, unknown>;
 }
 interface LinkEvent {
     event: string;
@@ -170,22 +203,26 @@ interface RefreshScheduleResult {
 interface PlaidifyLinkConfig {
     /** Plaidify server URL. */
     serverUrl: string;
-    /** Link token from POST /link/create. */
+    /** Link token from POST /link/sessions or POST /link/sessions/public. */
     token: string;
     /** Theme overrides for the link UI. */
     theme?: LinkTheme;
     /** Called when link completes successfully. */
-    onSuccess?: (publicToken: string, metadata: Record<string, unknown>) => void;
+    onSuccess?: (accessToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
     /** Called when the user exits the link flow. */
-    onExit?: (error?: string) => void;
+    onExit?: (details: PlaidifyLinkExitDetails) => void;
     /** Called on each link event. */
-    onEvent?: (event: string, data: Record<string, unknown>) => void;
+    onEvent?: (event: PlaidifyLinkEventName | string, data: PlaidifyLinkEventPayload) => void;
+    /** Called when the provider requires additional verification. */
+    onMFA?: (details: PlaidifyLinkMfaDetails) => void;
 }
 interface LinkTheme {
     accentColor?: string;
     bgColor?: string;
     borderRadius?: string;
     logo?: string;
+    fullscreenOnMobile?: boolean;
+    mobileBreakpoint?: number;
 }
 interface PlaidifyErrorResponse {
     detail: string;
@@ -241,8 +278,9 @@ declare class Plaidify {
     register(email: string, password: string): Promise<AuthToken>;
     login(email: string, password: string): Promise<AuthToken>;
     me(): Promise<UserProfile>;
-    createLinkSession(site: string): Promise<LinkSession>;
-    getLinkUrl(linkToken: string): string;
+    createLinkSession(site?: string): Promise<LinkSession>;
+    createPublicLinkSession(): Promise<LinkSession>;
+    getLinkUrl(linkToken: string, options?: HostedLinkUrlOptions): string;
     registerWebhook(linkToken: string, url: string): Promise<WebhookRegistration>;
     exchangePublicToken(publicToken: string): Promise<PublicTokenExchangeResult>;
     listLinks(): Promise<{
@@ -343,4 +381,4 @@ declare class ServerError extends PlaidifyError {
     constructor(message?: string);
 }
 
-export { type AccessJob, type AccessJobListResult, type AgentInfo, type AgentListResult, type ApiKeyInfo, type AuditEntry, type AuditLogResult, type AuditVerifyResult, type AuthToken, AuthenticationError, type BlueprintInfo, type BlueprintListResult, type ConnectResult, type ConsentGrant, type ConsentRequest, type HealthStatus, type LinkEvent, type LinkSession, type LinkTheme, type MFAChallenge, NotFoundError, Plaidify, type PlaidifyConfig, PlaidifyError, type PlaidifyErrorResponse, type PlaidifyLinkConfig, type PublicTokenExchangeResult, RateLimitError, type RefreshScheduleResult, ServerError, type UserProfile, type WebhookDelivery, type WebhookDeliveryResult, type WebhookRegistration };
+export { type AccessJob, type AccessJobListResult, type AgentInfo, type AgentListResult, type ApiKeyInfo, type AuditEntry, type AuditLogResult, type AuditVerifyResult, type AuthToken, AuthenticationError, type BlueprintInfo, type BlueprintListResult, type ConnectResult, type ConsentGrant, type ConsentRequest, type HealthStatus, type HostedLinkUrlOptions, type LinkEvent, type LinkSession, type LinkTheme, type MFAChallenge, NotFoundError, Plaidify, type PlaidifyConfig, PlaidifyError, type PlaidifyErrorResponse, type PlaidifyLinkConfig, type PlaidifyLinkEventName, type PlaidifyLinkEventPayload, type PlaidifyLinkExitDetails, type PlaidifyLinkMfaDetails, type PlaidifyLinkSuccessMetadata, type PublicTokenExchangeResult, RateLimitError, type RefreshScheduleResult, ServerError, type UserProfile, type WebhookDelivery, type WebhookDeliveryResult, type WebhookRegistration };

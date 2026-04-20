@@ -150,7 +150,7 @@ async def connect_site(site: str, username: str, password: str) -> str:
     If MFA is required, you'll receive a session_id to use with submit_mfa().
 
     Args:
-        site: Site identifier from list_available_sites() (e.g. "greengrid_energy").
+        site: Site identifier from list_available_sites() (e.g. "hydro_one").
         username: Login username for the target site.
         password: Login password for the target site.
 
@@ -208,7 +208,7 @@ async def connect_utility_account(site: str) -> str:
     Use check_connection_status() to monitor when the user completes.
 
     Args:
-        site: Site identifier from list_available_sites() (e.g. "greengrid_energy").
+        site: Site identifier from list_available_sites() (e.g. "hydro_one").
 
     Returns:
         Link URL for the user, plus the link_token for tracking status.

@@ -104,7 +104,7 @@ class BlueprintInfo:
     """Metadata about a single site blueprint.
 
     Attributes:
-        site: Blueprint identifier (e.g. ``"greengrid_energy"``).
+        site: Blueprint identifier (e.g. ``"hydro_one"``).
         name: Human-readable site name.
         domain: Target website domain.
         tags: Categorisation tags (``["utility", "energy"]``).

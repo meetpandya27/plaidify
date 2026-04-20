@@ -33,6 +33,9 @@ import type {
   WebhookDeliveryResult,
   PublicTokenExchangeResult,
   RefreshScheduleResult,
+  HostedLinkBootstrapRequest,
+  HostedLinkBootstrapResponse,
+  HostedLinkUrlOptions,
 } from "./types";
 
 import {
@@ -250,12 +253,54 @@ export class Plaidify {
 
   // ── Link Flow ──────────────────────────────────────────────────────────
 
-  async createLinkSession(site: string): Promise<LinkSession> {
-    return this.post<LinkSession>("/link/create", { site });
+  async createLinkSession(site?: string): Promise<LinkSession> {
+    const path = site ? `/link/sessions?site=${encodeURIComponent(site)}` : "/link/sessions";
+    return this.post<LinkSession>(path);
   }
 
-  getLinkUrl(linkToken: string): string {
-    return `${this.baseUrl}/link?token=${encodeURIComponent(linkToken)}`;
+  async createPublicLinkSession(): Promise<LinkSession> {
+    return this.post<LinkSession>("/link/sessions/public");
+  }
+
+  async createHostedLinkBootstrap(
+    options?: HostedLinkBootstrapRequest,
+  ): Promise<HostedLinkBootstrapResponse> {
+    return this.post<HostedLinkBootstrapResponse>("/link/bootstrap", {
+      site: options?.site,
+      allowed_origin: options?.allowedOrigin,
+      scopes: options?.scopes,
+    });
+  }
+
+  async exchangeHostedLinkBootstrap(launchToken: string): Promise<LinkSession> {
+    return this.post<LinkSession>("/link/sessions/bootstrap", {
+      launch_token: launchToken,
+    });
+  }
+
+  getLinkUrl(linkToken: string, options?: HostedLinkUrlOptions): string {
+    const url = new URL(`${this.baseUrl}/link`);
+    url.searchParams.set("token", linkToken);
+
+    if (options?.origin) {
+      url.searchParams.set("origin", options.origin);
+    }
+
+    const theme = options?.theme;
+    if (theme?.accentColor) {
+      url.searchParams.set("accent", theme.accentColor);
+    }
+    if (theme?.bgColor) {
+      url.searchParams.set("bg", theme.bgColor);
+    }
+    if (theme?.borderRadius) {
+      url.searchParams.set("radius", theme.borderRadius);
+    }
+    if (theme?.logo) {
+      url.searchParams.set("logo", theme.logo);
+    }
+
+    return url.toString();
   }
 
   async registerWebhook(linkToken: string, url: string): Promise<WebhookRegistration> {

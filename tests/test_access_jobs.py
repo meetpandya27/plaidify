@@ -76,8 +76,8 @@ class TestAccessJobTracking:
         response = client.post(
             "/connect",
             json={
-                "site": "demo_site",
-                "username": "demo_user",
+                "site": "internal_bank",
+                "username": "test_user",
                 "password": "secret123",
             },
         )
@@ -94,7 +94,7 @@ class TestAccessJobTracking:
 
             job = jobs[0]
             assert payload["job_id"] == job.id
-            assert job.site == "demo_site"
+            assert job.site == "internal_bank"
             assert job.job_type == "connect"
             assert job.status == "completed"
             assert job.user_id is None
@@ -108,7 +108,7 @@ class TestAccessJobTracking:
     def test_fetch_data_creates_user_scoped_access_job(self, client, auth_headers):
         link_response = client.post(
             "/create_link",
-            params={"site": "demo_site"},
+            params={"site": "internal_bank"},
             headers=auth_headers,
         )
         assert link_response.status_code == 200
@@ -118,7 +118,7 @@ class TestAccessJobTracking:
             "/submit_credentials",
             params={
                 "link_token": link_token,
-                "username": "demo_user",
+                "username": "test_user",
                 "password": "secret123",
             },
             headers=auth_headers,
@@ -146,11 +146,11 @@ class TestAccessJobTracking:
 
             job = jobs[0]
             assert payload["job_id"] == job.id
-            assert job.site == "demo_site"
+            assert job.site == "internal_bank"
             assert job.job_type == "fetch_data"
             assert job.status == "completed"
             assert job.user_id == user.id
-            assert job.lock_scope == f"user:{user.id}:site:demo_site"
+            assert job.lock_scope == f"user:{user.id}:site:internal_bank"
             assert job.session_id.startswith("access-")
         finally:
             db.close()
@@ -158,7 +158,7 @@ class TestAccessJobTracking:
     def test_get_access_job_for_authenticated_user(self, client, auth_headers):
         link_response = client.post(
             "/create_link",
-            params={"site": "demo_site"},
+            params={"site": "internal_bank"},
             headers=auth_headers,
         )
         link_token = link_response.json()["link_token"]
@@ -167,7 +167,7 @@ class TestAccessJobTracking:
             "/submit_credentials",
             params={
                 "link_token": link_token,
-                "username": "demo_user",
+                "username": "test_user",
                 "password": "secret123",
             },
             headers=auth_headers,
@@ -188,7 +188,7 @@ class TestAccessJobTracking:
         assert status_response.status_code == 200
         payload = status_response.json()
         assert payload["job_id"] == job_id
-        assert payload["site"] == "demo_site"
+        assert payload["site"] == "internal_bank"
         assert payload["job_type"] == "fetch_data"
         assert payload["status"] == "completed"
         assert payload["metadata"]["result_status"] == "connected"
@@ -198,7 +198,7 @@ class TestAccessJobTracking:
     def test_list_access_jobs_for_authenticated_user(self, client, auth_headers):
         link_response = client.post(
             "/create_link",
-            params={"site": "demo_site"},
+            params={"site": "internal_bank"},
             headers=auth_headers,
         )
         link_token = link_response.json()["link_token"]
@@ -207,7 +207,7 @@ class TestAccessJobTracking:
             "/submit_credentials",
             params={
                 "link_token": link_token,
-                "username": "demo_user",
+                "username": "test_user",
                 "password": "secret123",
             },
             headers=auth_headers,
@@ -229,7 +229,7 @@ class TestAccessJobTracking:
     def test_access_job_requires_matching_user(self, client, auth_headers, second_user_headers):
         link_response = client.post(
             "/create_link",
-            params={"site": "demo_site"},
+            params={"site": "internal_bank"},
             headers=auth_headers,
         )
         link_token = link_response.json()["link_token"]
@@ -238,7 +238,7 @@ class TestAccessJobTracking:
             "/submit_credentials",
             params={
                 "link_token": link_token,
-                "username": "demo_user",
+                "username": "test_user",
                 "password": "secret123",
             },
             headers=auth_headers,
@@ -267,10 +267,10 @@ class TestAccessJobTracking:
             job = AccessJob(
                 id="ajob-anonymous-test",
                 user_id=None,
-                site="demo_site",
+                site="internal_bank",
                 job_type="connect",
                 status="mfa_required",
-                lock_scope="principal:test:site:demo_site",
+                lock_scope="principal:test:site:internal_bank",
                 session_id="mfa-session-123",
                 created_at=datetime.now(timezone.utc),
             )
@@ -290,7 +290,7 @@ class TestAccessJobTracking:
             "src.routers.connection.connect_to_site",
             AsyncMock(
                 side_effect=MFARequiredError(
-                    site="demo_site",
+                    site="internal_bank",
                     mfa_type="totp",
                     session_id="mfa-session-xyz",
                 )
@@ -299,8 +299,8 @@ class TestAccessJobTracking:
             response = client.post(
                 "/connect",
                 json={
-                    "site": "demo_site",
-                    "username": "demo_user",
+                    "site": "internal_bank",
+                    "username": "test_user",
                     "password": "secret123",
                 },
             )
@@ -334,8 +334,8 @@ class TestAccessJobTracking:
             response = client.post(
                 "/connect",
                 json={
-                    "site": "demo_site",
-                    "username": "demo_user",
+                    "site": "internal_bank",
+                    "username": "test_user",
                     "password": "secret123",
                 },
             )
@@ -373,8 +373,8 @@ class TestAccessJobTracking:
             response = client.post(
                 "/connect",
                 json={
-                    "site": "demo_site",
-                    "username": "demo_user",
+                    "site": "internal_bank",
+                    "username": "test_user",
                     "password": "secret123",
                 },
             )
@@ -403,15 +403,15 @@ class TestAccessJobLocking:
         task = asyncio.create_task(
             run_access_job(
                 db1,
-                site="demo_site",
+                site="internal_bank",
                 job_type="connect",
                 executor=slow_executor,
                 executor_kwargs={
-                    "site": "demo_site",
-                    "username": "demo_user",
+                    "site": "internal_bank",
+                    "username": "test_user",
                     "password": "secret123",
                 },
-                principal_hint="demo_user",
+                principal_hint="test_user",
             )
         )
 
@@ -421,15 +421,15 @@ class TestAccessJobLocking:
             with pytest.raises(ConcurrentAccessError):
                 await run_access_job(
                     db2,
-                    site="demo_site",
+                    site="internal_bank",
                     job_type="connect",
                     executor=slow_executor,
                     executor_kwargs={
-                        "site": "demo_site",
-                        "username": "demo_user",
+                        "site": "internal_bank",
+                        "username": "test_user",
                         "password": "secret123",
                     },
-                    principal_hint="demo_user",
+                    principal_hint="test_user",
                 )
 
             release.set()
@@ -467,15 +467,15 @@ class TestDetachedAccessJobExecution:
         try:
             job, task = await start_access_job(
                 db,
-                site="demo_site",
+                site="internal_bank",
                 job_type="connect",
                 executor=slow_connect,
                 executor_kwargs={
-                    "site": "demo_site",
-                    "username": "demo_user",
+                    "site": "internal_bank",
+                    "username": "test_user",
                     "password": "secret123",
                 },
-                principal_hint="demo_user",
+                principal_hint="test_user",
             )
 
             assert job.status == "pending"
@@ -517,7 +517,7 @@ class TestDetachedAccessJobExecution:
         with patch("src.routers.links.connect_to_site", AsyncMock(return_value=policy_result)):
             link_response = client.post(
                 "/create_link",
-                params={"site": "demo_site"},
+                params={"site": "internal_bank"},
                 headers=auth_headers,
             )
             link_token = link_response.json()["link_token"]
@@ -526,7 +526,7 @@ class TestDetachedAccessJobExecution:
                 "/submit_credentials",
                 params={
                     "link_token": link_token,
-                    "username": "demo_user",
+                    "username": "test_user",
                     "password": "secret123",
                 },
                 headers=auth_headers,
@@ -589,10 +589,10 @@ class TestDetachedAccessJobExecution:
             with pytest.raises(ReadOnlyPolicyViolationError):
                 await run_access_job(
                     db,
-                    site="demo_site",
+                    site="internal_bank",
                     job_type="fetch_data",
                     executor=blocked_executor,
-                    executor_kwargs={"site": "demo_site"},
+                    executor_kwargs={"site": "internal_bank"},
                     metadata={"agent_id": "agent-test"},
                 )
 
@@ -635,16 +635,16 @@ class TestRedisBackedAccessJobExecution:
             ):
                 job, observer = await start_access_job(
                     db,
-                    site="demo_site",
+                    site="internal_bank",
                     job_type="connect",
                     executor=connect_to_site,
                     executor_name="connect_to_site",
                     executor_kwargs={
-                        "site": "demo_site",
-                        "username": "demo_user",
+                        "site": "internal_bank",
+                        "username": "test_user",
                         "password": "secret123",
                     },
-                    principal_hint="demo_user",
+                    principal_hint="test_user",
                 )
 
                 assert fake_redis.get(access_jobs_module._dispatch_payload_key(job.id)) is not None
@@ -677,16 +677,16 @@ class TestRedisBackedAccessJobExecution:
             ):
                 job, observer = await start_access_job(
                     db,
-                    site="demo_site",
+                    site="internal_bank",
                     job_type="connect",
                     executor=connect_to_site,
                     executor_name="connect_to_site",
                     executor_kwargs={
-                        "site": "demo_site",
-                        "username": "demo_user",
+                        "site": "internal_bank",
+                        "username": "test_user",
                         "password": "secret123",
                     },
-                    principal_hint="demo_user",
+                    principal_hint="test_user",
                 )
 
                 processed = await process_dispatched_access_job(
@@ -741,16 +741,16 @@ class TestRedisBackedAccessJobExecution:
             ):
                 job, observer = await start_access_job(
                     db,
-                    site="demo_site",
+                    site="internal_bank",
                     job_type="connect",
                     executor=connect_to_site,
                     executor_name="connect_to_site",
                     executor_kwargs={
-                        "site": "demo_site",
-                        "username": "demo_user",
+                        "site": "internal_bank",
+                        "username": "test_user",
                         "password": "secret123",
                     },
-                    principal_hint="demo_user",
+                    principal_hint="test_user",
                 )
 
                 worker_task = asyncio.create_task(
@@ -793,15 +793,15 @@ class TestRedisBackedAccessJobExecution:
         try:
             job, _task = await start_access_job(
                 db,
-                site="demo_site",
+                site="internal_bank",
                 job_type="connect",
                 executor=long_running_connect,
                 executor_kwargs={
-                    "site": "demo_site",
-                    "username": "demo_user",
+                    "site": "internal_bank",
+                    "username": "test_user",
                     "password": "secret123",
                 },
-                principal_hint="demo_user",
+                principal_hint="test_user",
             )
 
             await asyncio.sleep(0)
@@ -844,15 +844,15 @@ class TestRedisBackedAccessJobExecution:
         try:
             job, task = await start_access_job(
                 db,
-                site="demo_site",
+                site="internal_bank",
                 job_type="connect",
                 executor=waiting_mfa_connect,
                 executor_kwargs={
-                    "site": "demo_site",
-                    "username": "demo_user",
+                    "site": "internal_bank",
+                    "username": "test_user",
                     "password": "secret123",
                 },
-                principal_hint="demo_user",
+                principal_hint="test_user",
             )
 
             session_payload = await wait_for_mfa_session(job.session_id, timeout=0.5)

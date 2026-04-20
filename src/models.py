@@ -187,3 +187,38 @@ class BlueprintInfoResponse(BaseModel):
     has_mfa: bool
     extract_fields: list[str]
     schema_version: str
+
+
+# ── Hosted Link Bootstrap Models ────────────────────────────────────────────
+
+
+class HostedLinkBootstrapRequest(BaseModel):
+    """Request body for POST /link/bootstrap."""
+
+    site: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    allowed_origin: Optional[str] = Field(default=None, max_length=512)
+    scopes: Optional[list[str]] = Field(default=None, max_length=100)
+
+    @field_validator("allowed_origin")
+    @classmethod
+    def normalize_allowed_origin(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip().rstrip("/")
+        return normalized or None
+
+
+class HostedLinkBootstrapResponse(BaseModel):
+    """Response from POST /link/bootstrap."""
+
+    launch_token: str
+    expires_in: int
+    site: Optional[str] = None
+    allowed_origin: Optional[str] = None
+    scopes: Optional[list[str]] = None
+
+
+class HostedLinkBootstrapExchangeRequest(BaseModel):
+    """Request body for POST /link/sessions/bootstrap."""
+
+    launch_token: str = Field(..., min_length=1, max_length=4096)

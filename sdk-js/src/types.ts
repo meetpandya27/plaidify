@@ -88,10 +88,73 @@ export interface UserProfile {
 
 export interface LinkSession {
   link_token: string;
-  status: string;
+  link_url?: string;
+  status?: string;
   public_token?: string;
   expiry?: string;
+  expires_in?: number;
   public_key?: string;
+  scopes?: string[] | null;
+}
+
+export interface HostedLinkUrlOptions {
+  origin?: string;
+  theme?: LinkTheme;
+}
+
+export interface HostedLinkBootstrapRequest {
+  site?: string;
+  allowedOrigin?: string;
+  scopes?: string[];
+}
+
+export interface HostedLinkBootstrapResponse {
+  launch_token: string;
+  expires_in: number;
+  site?: string;
+  allowed_origin?: string;
+  scopes?: string[] | null;
+}
+
+export type PlaidifyLinkEventName =
+  | "OPEN"
+  | "CLOSE"
+  | "INSTITUTION_SELECTED"
+  | "CREDENTIALS_SUBMITTED"
+  | "MFA_REQUIRED"
+  | "MFA_SUBMITTED"
+  | "CONNECTED"
+  | "ERROR"
+  | "EXIT"
+  | "DONE";
+
+export interface PlaidifyLinkMfaDetails {
+  mfa_type?: string;
+  session_id?: string;
+}
+
+export interface PlaidifyLinkExitDetails {
+  reason?: string;
+  error?: string;
+}
+
+export interface PlaidifyLinkSuccessMetadata {
+  data?: Record<string, unknown>;
+  organization_id?: string;
+  organization_name?: string;
+  public_token?: string;
+  site?: string;
+}
+
+export interface PlaidifyLinkEventPayload extends PlaidifyLinkExitDetails, PlaidifyLinkMfaDetails {
+  source?: "plaidify-link";
+  event?: PlaidifyLinkEventName | string;
+  access_token?: string;
+  public_token?: string;
+  organization_id?: string;
+  organization_name?: string;
+  site?: string;
+  data?: Record<string, unknown>;
 }
 
 export interface LinkEvent {
@@ -218,16 +281,18 @@ export interface RefreshScheduleResult {
 export interface PlaidifyLinkConfig {
   /** Plaidify server URL. */
   serverUrl: string;
-  /** Link token from POST /link/create. */
+  /** Link token from POST /link/sessions or POST /link/sessions/public. */
   token: string;
   /** Theme overrides for the link UI. */
   theme?: LinkTheme;
   /** Called when link completes successfully. */
-  onSuccess?: (publicToken: string, metadata: Record<string, unknown>) => void;
+  onSuccess?: (accessToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
   /** Called when the user exits the link flow. */
-  onExit?: (error?: string) => void;
+  onExit?: (details: PlaidifyLinkExitDetails) => void;
   /** Called on each link event. */
-  onEvent?: (event: string, data: Record<string, unknown>) => void;
+  onEvent?: (event: PlaidifyLinkEventName | string, data: PlaidifyLinkEventPayload) => void;
+  /** Called when the provider requires additional verification. */
+  onMFA?: (details: PlaidifyLinkMfaDetails) => void;
 }
 
 export interface LinkTheme {
@@ -235,6 +300,8 @@ export interface LinkTheme {
   bgColor?: string;
   borderRadius?: string;
   logo?: string;
+  fullscreenOnMobile?: boolean;
+  mobileBreakpoint?: number;
 }
 
 // ── Error ────────────────────────────────────────────────────────────────────

@@ -76,6 +76,18 @@ class Settings(BaseSettings):
         default="http://localhost:3000,http://localhost:8000,http://localhost:8080",
         description="Comma-separated list of allowed CORS origins. Must be explicit in production.",
     )
+    public_link_sessions_enabled: bool = Field(
+        default=False,
+        description="Allow anonymous POST /link/sessions/public creation in production. Ignored in development unless explicitly checked.",
+    )
+    public_link_allowed_origins: str = Field(
+        default="",
+        description="Comma-separated list of origins allowed to call POST /link/sessions/public. When set, requests from other origins are rejected.",
+    )
+    link_launch_token_expire_seconds: int = Field(
+        default=300,
+        description="Seconds before a signed hosted-link bootstrap token expires.",
+    )
     enforce_https: bool = Field(
         default=False,
         description="Redirect HTTP to HTTPS and add HSTS header. Auto-enabled in production.",

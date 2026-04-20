@@ -9,21 +9,29 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from src import session_store
+from src.auth_utils import create_link_launch_token, decode_link_launch_token
 from src.config import get_settings
 from src.crypto import generate_keypair
 from src.database import Link, PublicToken, User, get_db
 from src.dependencies import (
     constrain_requested_scopes,
     ensure_site_allowed_for_request,
+    get_auth_context,
     get_current_user_or_api_key,
 )
 from src.logging_config import get_logger
+from src.models import (
+    HostedLinkBootstrapExchangeRequest,
+    HostedLinkBootstrapRequest,
+    HostedLinkBootstrapResponse,
+)
 
 settings = get_settings()
 logger = get_logger("api.link_sessions")
@@ -44,9 +52,99 @@ _sse_subscribers: Dict[str, list] = {}
 _sse_lock = asyncio.Lock()
 
 
+def _extract_request_origin(request: Request) -> Optional[str]:
+    """Return the caller origin from Origin or Referer headers."""
+    origin = request.headers.get("origin")
+    if origin:
+        return origin.rstrip("/")
+
+    referer = request.headers.get("referer")
+    if not referer:
+        return None
+
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(referer)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        return None
+
+    return None
+
+
+def _configured_public_link_allowed_origins() -> set[str]:
+    return {
+        origin.strip().rstrip("/")
+        for origin in settings.public_link_allowed_origins.split(",")
+        if origin.strip()
+    }
+
+
+def _enforce_public_link_session_policy(request: Request) -> None:
+    """Enforce production safeguards around anonymous public link sessions."""
+    if settings.env == "production" and not settings.public_link_sessions_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Anonymous public link sessions are disabled in production.",
+        )
+
+    allowed_origins = _configured_public_link_allowed_origins()
+    if not allowed_origins:
+        return
+
+    request_origin = _extract_request_origin(request)
+    if not request_origin or request_origin not in allowed_origins:
+        raise HTTPException(
+            status_code=403,
+            detail="This origin is not allowed to create anonymous public link sessions.",
+        )
+
+
 def _get_link_session(token: str) -> Optional[Dict[str, Any]]:
     """Return a link session if it exists and hasn't expired."""
     return session_store.get_link_session(token)
+
+
+def _create_ephemeral_link_session(
+    *,
+    site: Optional[str],
+    user_id: Optional[int],
+    db: Optional[Session],
+    scopes: Optional[list[str]],
+) -> Dict[str, Any]:
+    """Create a hosted link session and its ephemeral encryption material."""
+    link_token = str(uuid.uuid4())
+
+    if site and user_id is not None and db is not None:
+        new_link = Link(link_token=link_token, site=site, user_id=user_id)
+        db.add(new_link)
+        db.commit()
+
+    public_key_pem = generate_keypair(link_token)
+
+    if scopes is not None:
+        session_store.set_link_scopes(link_token, json.dumps(scopes))
+
+    session_store.create_link_session(
+        link_token,
+        {
+            "status": "awaiting_institution",
+            "site": site,
+            "user_id": user_id,
+            "events": [],
+            "access_token": None,
+        },
+    )
+
+    return {
+        "link_token": link_token,
+        "link_url": f"/link?token={link_token}",
+        "public_key": public_key_pem,
+        "expires_in": _LINK_SESSION_TTL,
+        "scopes": scopes,
+    }
 
 
 # ── Hosted Link Page ──────────────────────────────────────────────────────────
@@ -82,44 +180,124 @@ async def create_link_session(
     if site:
         ensure_site_allowed_for_request(request, site)
 
-    link_token = str(uuid.uuid4())
-
-    # Store in DB if site is provided
-    if site:
-        new_link = Link(link_token=link_token, site=site, user_id=user.id)
-        db.add(new_link)
-        db.commit()
-
-    # Generate ephemeral keypair
-    public_key_pem = generate_keypair(link_token)
-
     effective_scopes = constrain_requested_scopes(request, None)
-    if effective_scopes is not None:
-        session_store.set_link_scopes(link_token, json.dumps(effective_scopes))
-
-    # Create ephemeral session state
-    session_store.create_link_session(
-        link_token,
-        {
-            "status": "awaiting_institution",
-            "site": site,
-            "user_id": user.id,
-            "events": [],
-            "access_token": None,
-        },
+    payload = _create_ephemeral_link_session(
+        site=site,
+        user_id=user.id,
+        db=db,
+        scopes=effective_scopes,
     )
 
     logger.info(
         "Link session created",
-        extra={"extra_data": {"link_token": link_token}},
+        extra={"extra_data": {"link_token": payload["link_token"]}},
     )
-    return {
-        "link_token": link_token,
-        "link_url": f"/link?token={link_token}",
-        "public_key": public_key_pem,
-        "expires_in": _LINK_SESSION_TTL,
-        "scopes": effective_scopes,
-    }
+    return payload
+
+
+@router.post("/link/sessions/public")
+async def create_public_link_session(request: Request):
+    """Create a temporary anonymous link session for hosted modal discovery flows."""
+    _enforce_public_link_session_policy(request)
+    payload = _create_ephemeral_link_session(site=None, user_id=None, db=None, scopes=None)
+
+    logger.info(
+        "Public link session created",
+        extra={"extra_data": {"link_token": payload["link_token"]}},
+    )
+    return payload
+
+
+@router.post("/link/bootstrap", response_model=HostedLinkBootstrapResponse)
+async def create_link_bootstrap(
+    body: HostedLinkBootstrapRequest,
+    request: Request,
+    user: User = Depends(get_current_user_or_api_key),
+):
+    """Create a signed one-time hosted-link bootstrap token for production clients."""
+    if body.site:
+        ensure_site_allowed_for_request(request, body.site)
+
+    effective_scopes = constrain_requested_scopes(request, body.scopes)
+    launch_id = str(uuid.uuid4())
+    expires_in = settings.link_launch_token_expire_seconds
+
+    launch_token = create_link_launch_token(
+        launch_id=launch_id,
+        user_id=user.id,
+        site=body.site,
+        allowed_origin=body.allowed_origin,
+        scopes=effective_scopes,
+        expires_seconds=expires_in,
+    )
+    session_store.store_link_launch_bootstrap(launch_id, expires_in)
+
+    auth_context = get_auth_context(request)
+    logger.info(
+        "Hosted link bootstrap created",
+        extra={
+            "extra_data": {
+                "launch_id": launch_id,
+                "user_id": user.id,
+                "auth_method": auth_context.auth_method if auth_context else "unknown",
+                "site": body.site,
+            }
+        },
+    )
+
+    return HostedLinkBootstrapResponse(
+        launch_token=launch_token,
+        expires_in=expires_in,
+        site=body.site,
+        allowed_origin=body.allowed_origin,
+        scopes=effective_scopes,
+    )
+
+
+@router.post("/link/sessions/bootstrap")
+async def exchange_link_bootstrap(
+    body: HostedLinkBootstrapExchangeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Redeem a signed one-time hosted-link bootstrap token into a live link session."""
+    try:
+        payload = decode_link_launch_token(body.launch_token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Link bootstrap token has expired.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Invalid link bootstrap token.")
+
+    allowed_origin = payload.get("allowed_origin")
+    request_origin = _extract_request_origin(request)
+    if allowed_origin and request_origin != allowed_origin:
+        raise HTTPException(
+            status_code=403,
+            detail="This origin is not allowed to redeem the hosted-link bootstrap token.",
+        )
+
+    launch_id = payload.get("jti")
+    if not launch_id or not session_store.consume_link_launch_bootstrap(launch_id):
+        raise HTTPException(
+            status_code=410,
+            detail="Link bootstrap token has expired or has already been used.",
+        )
+
+    user_id_raw = payload.get("sub")
+    try:
+        user_id = int(user_id_raw) if user_id_raw is not None else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid link bootstrap token subject.")
+
+    site = payload.get("site")
+    scopes = payload.get("scopes")
+    session_payload = _create_ephemeral_link_session(site=site, user_id=user_id, db=db, scopes=scopes)
+
+    logger.info(
+        "Hosted link bootstrap redeemed",
+        extra={"extra_data": {"launch_id": launch_id, "site": site, "user_id": user_id}},
+    )
+    return session_payload
 
 
 @router.get("/link/sessions/{link_token}/status")
