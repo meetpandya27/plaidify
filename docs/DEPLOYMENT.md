@@ -111,13 +111,29 @@ What the production stack changes compared to the default compose file:
 | Variable         | Default        | Description                                           |
 |------------------|----------------|-------------------------------------------------------|
 | `APP_NAME`       | `Plaidify`     | Application name                                      |
-| `APP_VERSION`    | `0.3.0a1`      | Reported version                                      |
+| `APP_VERSION`    | `0.3.0b1`      | Reported version                                      |
 | `ENV`            | `development`  | `development`, `staging`, or `production`              |
 | `DEBUG`          | `false`        | Enable debug mode                                     |
 | `LOG_LEVEL`      | `INFO`         | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`       |
 | `LOG_FORMAT`     | `json`         | `json` (structured) or `text`                         |
-| `CORS_ORIGINS`   | `localhost:*`  | Comma-separated allowed origins. Be explicit in prod. |
+| `CORS_ORIGINS`   | `http://localhost:3000,http://localhost:8000,http://localhost:8080` | Comma-separated allowed origins. Be explicit in prod. |
 | `ENFORCE_HTTPS`  | `false`        | Redirect HTTP→HTTPS + HSTS. Auto-enabled in prod.     |
+
+### Hosted Link
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PUBLIC_LINK_SESSIONS_ENABLED` | `false` | Allow anonymous `POST /link/sessions/public` in production when intentionally enabled |
+| `PUBLIC_LINK_ALLOWED_ORIGINS` | `""` | Comma-separated origins allowed to mint anonymous public link sessions |
+| `LINK_LAUNCH_TOKEN_EXPIRE_SECONDS` | `300` | Lifetime for signed hosted-link bootstrap tokens |
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SENTRY_DSN` | `None` | Sentry DSN for application error reporting |
+| `OTEL_ENDPOINT` | `None` | OTLP endpoint for distributed tracing |
+| `HEALTH_CHECK_TOKEN` | `None` | Optional token injected by some deployments for infra-specific health integrations |
 
 ### Rate Limiting
 
@@ -139,6 +155,9 @@ What the production stack changes compared to the default compose file:
 | `BROWSER_ACTION_TIMEOUT`    | `10000` | Action timeout (click, fill) (ms)                |
 | `BROWSER_BLOCK_RESOURCES`   | `true`  | Block images/fonts/analytics for speed           |
 | `BROWSER_STEALTH`           | `true`  | Enable anti-detection measures                   |
+| `STRICT_READ_ONLY_MODE`     | `true`  | Enforce constrained post-auth browser behavior   |
+| `BROWSER_ALLOW_READ_DOWNLOADS` | `true` | Allow read-oriented file downloads during extraction |
+| `BROWSER_DOWNLOAD_ROOT`     | `/tmp/plaidify-downloads` | Root directory for temporary browser downloads |
 
 ### LLM Extraction
 
@@ -203,6 +222,8 @@ The production compose stack does not require storing database or Redis password
 - [ ] Set strong `ENCRYPTION_KEY` and `JWT_SECRET_KEY` (never reuse dev values)
 - [ ] Set `ENV=production` and `ENFORCE_HTTPS=true`
 - [ ] Configure `CORS_ORIGINS` to your exact frontend domain(s)
+- [ ] Prefer `POST /link/bootstrap` plus `POST /link/sessions/bootstrap` for hosted-link launches
+- [ ] Leave `PUBLIC_LINK_SESSIONS_ENABLED=false` unless you intentionally support anonymous hosted-link bootstrapping
 - [ ] Place behind a reverse proxy (nginx, Caddy, ALB) that terminates TLS
 - [ ] Restrict database and Redis access to the application network only
 - [ ] Set `DEBUG=false`
@@ -228,12 +249,10 @@ The included `gunicorn.conf.py` configures:
 - **Timeouts**: 120s request, 30s graceful shutdown
 - **Preload**: Enabled for shared memory and faster restarts
 
-Detached `/connect` jobs currently run in-process. During shutdown Plaidify now
-cancels and marks in-flight background access jobs instead of leaving them
-stuck in `running`, but those jobs do not survive a process restart. For
-production deploys, prefer draining traffic before restart. If you need
-detached jobs to survive restarts, move execution behind a dedicated worker or
-executor service.
+In local and default compose setups, detached `/connect` jobs run in-process.
+During shutdown Plaidify cancels and marks in-flight background access jobs
+instead of leaving them stuck in `running`, but those jobs do not survive a
+process restart.
 
 The production compose stack already uses `init: true`, a longer stop grace
 period, and nginx health-gated startup to reduce hard-stop failures during
@@ -276,11 +295,10 @@ docker compose up -d
 
 ### Monitoring
 
-- **Prometheus metrics** are exposed at `GET /metrics`
-- **Health check** at `GET /health` returns:
-  - `200` — all systems healthy
-  - `503` — one or more checks failed (database, browser pool, or Redis)
-- **Structured logs** in JSON format (default) for log aggregation (ELK, Datadog, etc.)
+- **Prometheus metrics** are exposed at `GET /metrics` when the optional instrumentator dependency is installed
+- **Public health check** at `GET /health` verifies database reachability and returns `200` or `503`
+- **Detailed health check** at `GET /health/detailed` requires authenticated access and reports database, browser pool, and Redis status with `healthy` or `degraded`
+- **Structured logs** use JSON format by default for log aggregation (ELK, Datadog, etc.)
 
 ### Scaling
 
