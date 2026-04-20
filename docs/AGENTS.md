@@ -1,526 +1,153 @@
 # Plaidify for AI Agents
 
-> **Give your AI agent secure, auditable access to any website behind a login form.**
+Plaidify gives AI agents constrained, auditable access to websites behind login flows. The agent decides when to fetch data; Plaidify owns browser execution, MFA state, credential handling, and the resulting access controls.
 
-This guide covers how to integrate Plaidify with AI agents, agentic frameworks, and MCP-compatible clients. Whether you're building with LangChain, CrewAI, AutoGen, OpenAI function calling, or the Model Context Protocol — Plaidify is designed to be the data layer your agents are missing.
+## What Agents Get
 
----
+- Structured JSON instead of raw HTML scraping
+- Hosted-link handoff when a human needs to authenticate directly
+- Detached access jobs with polling and persisted results
+- MFA continuation without exposing browser state to the agent
+- Scoped consent grants, API keys, and agent identities
+- MCP tools for assistants that speak the Model Context Protocol
 
-## Table of Contents
+## Recommended Boundary
 
-- [Why Agents Need Plaidify](#why-agents-need-plaidify)
-- [Architecture for Agents](#architecture-for-agents)
-- [Integration Patterns](#integration-patterns)
-  - [Direct REST API](#1-direct-rest-api-works-today)
-  - [Python Tool Wrapper](#2-python-tool-wrapper-works-today)
-  - [LangChain Tool](#3-langchain-tool-works-today)
-  - [CrewAI Tool](#4-crewai-tool-works-today)
-  - [OpenAI Function Calling](#5-openai-function-calling-works-today)
-  - [MCP Server](#6-mcp-server-coming-phase-3)
-- [Security & Consent Model](#security--consent-model)
-- [Blueprint System for Agents](#blueprint-system-for-agents)
-- [FAQ](#faq)
+1. The agent identifies the target site or data request.
+2. Plaidify performs the login and extraction workflow.
+3. If a user interaction is required, Plaidify hands off through hosted link or MFA continuation.
+4. The agent receives structured data, access-job status, or approved artifacts.
 
----
+That keeps privileged browser execution inside Plaidify and leaves planning, summarization, and user interaction orchestration in the agent.
 
-## Why Agents Need Plaidify
+For the longer-term executor isolation model, see [ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md).
 
-Every AI agent eventually needs to access real-world data that's locked behind authentication. Today, this is the hardest problem in agentic AI:
+## Integration Options
 
-| Problem | Without Plaidify | With Plaidify |
-|---------|-----------------|---------------|
-| "What's my bank balance?" | Agent can't access bank portals | Agent calls Plaidify API → gets structured JSON |
-| "How much is my electricity bill?" | Agent has no utility portal access | Blueprint for utility site → structured bill data |
-| "Download my insurance EOB" | Agent can't authenticate to insurer | Blueprint handles login → returns document data |
-| "What grades did I get this semester?" | Agent can't scrape university portals | Blueprint for university → structured transcript |
+| Option | Best for | Primary entry points |
+| --- | --- | --- |
+| REST API | Server-side agents in any language | `/blueprints`, `/connect`, `/access_jobs`, `/mfa/submit`, `/fetch_data` |
+| Python SDK | Python agents and background workers | `Plaidify.connect()`, `get_access_job()`, `submit_mfa()` |
+| TypeScript SDK | Browser or mobile shells around agent flows | `createHostedLinkBootstrap()`, `exchangeHostedLinkBootstrap()`, `getLinkUrl()` |
+| MCP server | MCP-capable assistants and tool hosts | `python -m src.mcp_server` |
 
-**The value proposition is simple:** Plaidify turns the authenticated web into a structured API that your agent can call.
+## Direct Connect with the Python SDK
 
-### What Makes This Agent-Ready
-
-- **Structured JSON responses** — no HTML parsing in your agent
-- **Credential encryption** — AES-256-GCM with per-user Data Encryption Keys (envelope encryption), client-side RSA-2048 in-transit
-- **User isolation** — each user's data is scoped and separate
-- **Error hierarchy** — agents get typed errors (`mfa_required`, `captcha_required`, `site_unavailable`) they can reason about
-- **Stateless API** — no session management needed in your agent
-- **Self-hosted** — credentials never leave your infrastructure
-
----
-
-## Architecture for Agents
-
-```
-┌───────────────────────┐
-│   User / Chat UI      │
-│   "What's my balance?" │
-└──────────┬────────────┘
-           │
-           ▼
-┌───────────────────────┐
-│   AI Agent            │
-│   (LangChain / CrewAI │
-│    / AutoGen / GPT)   │
-│                       │
-│   Tool: PlaidifyTool  │───── Decides to call Plaidify
-└──────────┬────────────┘
-           │  POST /connect
-           ▼
-┌───────────────────────┐
-│   Plaidify Server     │
-│                       │
-│   1. Load blueprint   │
-│   2. Launch browser   │
-│   3. Authenticate     │
-│   4. Extract data     │
-│   5. Return JSON      │
-└──────────┬────────────┘
-           │
-           ▼
-┌───────────────────────┐
-│   Target Website      │
-│   (bank, utility,     │
-│    portal, etc.)      │
-└───────────────────────┘
-```
-
-### Preferred Runtime Boundary
-
-For agent-driven website access, the agent should not directly own the browser runtime. The preferred pattern is:
-
-1. The agent asks Plaidify for a scoped read or write operation.
-2. Plaidify creates an access job with consent and policy context.
-3. An isolated Plaidify executor performs the website login and extraction or action.
-4. The agent receives structured output, job status, or approved artifacts.
-
-This keeps planning in the agent and privileged browser execution inside Plaidify.
-
-See [docs/ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md) for the full execution-isolation design.
-
----
-
-## Integration Patterns
-
-### 1. Direct REST API (works today)
-
-The simplest integration. Your agent makes HTTP calls to Plaidify.
+The Python SDK is the easiest way to wire Plaidify into an agent loop without hand-rolling HTTP calls.
 
 ```python
-import requests
+import asyncio
 
-PLAIDIFY_URL = "http://localhost:8000"
+from plaidify import Plaidify
 
-def fetch_site_data(site: str, username: str, password: str) -> dict:
-    """Agent tool: connect to a site and extract data."""
-    response = requests.post(
-        f"{PLAIDIFY_URL}/connect",
-        json={"site": site, "username": username, "password": password}
-    )
-    response.raise_for_status()
-    return response.json()
 
-# Your agent calls this when it needs authenticated web data
-result = fetch_site_data("internal_bank", "user", "pass")
-print(result["data"])
-```
+async def prompt_for_code(challenge):
+    return input(f"Enter {challenge.mfa_type} code for {challenge.site}: ")
 
-### 2. Python Tool Wrapper (works today)
 
-A reusable tool class your agent framework can discover:
+async def main():
+    async with Plaidify(server_url="http://localhost:8000", api_key="pk_your_key") as client:
+        blueprints = await client.list_blueprints()
+        print([bp.site for bp in blueprints.blueprints])
 
-```python
-import requests
-from dataclasses import dataclass
-
-@dataclass
-class PlaidifyTool:
-    """Give your AI agent access to authenticated web data."""
-    
-    base_url: str = "http://localhost:8000"
-    jwt_token: str | None = None  # Set after register/login
-    
-    @property
-    def _headers(self) -> dict:
-        if self.jwt_token:
-            return {"Authorization": f"Bearer {self.jwt_token}"}
-        return {}
-    
-    def connect(self, site: str, username: str, password: str) -> dict:
-        """One-step: log into a site and extract data."""
-        resp = requests.post(
-            f"{self.base_url}/connect",
-            json={"site": site, "username": username, "password": password}
+        result = await client.connect(
+            "hydro_one",
+            username="your_username",
+            password="your_password",
+            mfa_handler=prompt_for_code,
         )
-        resp.raise_for_status()
-        return resp.json()
-    
-    def create_link(self, site: str) -> str:
-        """Create a reusable link token for a site."""
-        resp = requests.post(
-            f"{self.base_url}/create_link?site={site}",
-            headers=self._headers
-        )
-        resp.raise_for_status()
-        return resp.json()["link_token"]
-    
-    def submit_credentials(self, link_token: str, username: str, password: str) -> str:
-        """Submit credentials for a link (encrypted at rest)."""
-        resp = requests.post(
-            f"{self.base_url}/submit_credentials",
-            params={"link_token": link_token, "username": username, "password": password},
-            headers=self._headers
-        )
-        resp.raise_for_status()
-        return resp.json()["access_token"]
-    
-    def fetch_data(self, access_token: str) -> dict:
-        """Fetch extracted data using an access token."""
-        resp = requests.get(
-            f"{self.base_url}/fetch_data?access_token={access_token}",
-            headers=self._headers
-        )
-        resp.raise_for_status()
-        return resp.json()
-    
-    def list_available_sites(self) -> list[str]:
-        """List all available blueprints/connectors."""
-        # Reads the connectors directory
-        import os
-        connectors_dir = os.path.join(os.path.dirname(__file__), "..", "connectors")
-        return [f.replace(".json", "") for f in os.listdir(connectors_dir) if f.endswith(".json")]
 
-# Usage
-tool = PlaidifyTool(base_url="http://localhost:8000")
-data = tool.connect("internal_bank", "user", "pass")
+        if result.connected:
+            print(result.data)
+            return
+
+        if result.job_id:
+            job = await client.get_access_job(result.job_id)
+            print(job.status, job.result)
+
+
+asyncio.run(main())
 ```
 
-### 3. LangChain Tool (works today)
+If you omit `mfa_handler`, treat `mfa_required` or `pending` as expected intermediate states and continue through `submit_mfa()` or `get_access_job()`.
 
-```python
-from langchain.tools import tool
-import requests
+## Hosted Link for Human-in-the-Loop Flows
 
-PLAIDIFY_URL = "http://localhost:8000"
+When an agent needs the user to authenticate in their own browser or mobile shell, use the hosted-link bootstrap flow instead of pushing raw credentials through the agent.
 
-@tool
-def plaidify_connect(site: str, username: str, password: str) -> str:
-    """Connect to a website and extract authenticated data.
-    
-    Use this tool when you need to access data that requires logging into a website,
-    such as bank portals, utility companies, insurance sites, or any login-protected page.
-    
-    Args:
-        site: The blueprint name (e.g., 'chase_bank', 'electric_company')
-        username: The user's login username for that site
-        password: The user's login password for that site
-    
-    Returns:
-        JSON string with extracted data from the authenticated session
-    """
-    response = requests.post(
-        f"{PLAIDIFY_URL}/connect",
-        json={"site": site, "username": username, "password": password}
-    )
-    return response.json()
+```typescript
+import { Plaidify } from "@plaidify/client";
 
-@tool  
-def plaidify_health() -> str:
-    """Check if the Plaidify server is running and healthy."""
-    response = requests.get(f"{PLAIDIFY_URL}/health")
-    return response.json()
+const serverClient = new Plaidify({
+  serverUrl: "https://api.example.com",
+  apiKey: "pk_your_key",
+});
 
-# Use in a LangChain agent
-from langchain.agents import create_tool_calling_agent
-from langchain_openai import ChatOpenAI
+const bootstrap = await serverClient.createHostedLinkBootstrap({
+  site: "hydro_one",
+  allowedOrigin: "https://app.example.com",
+  scopes: ["read_bill"],
+});
 
-llm = ChatOpenAI(model="gpt-4o")
-tools = [plaidify_connect, plaidify_health]
-agent = create_tool_calling_agent(llm, tools, prompt=your_prompt)
+const publicClient = new Plaidify({ serverUrl: "https://api.example.com" });
+const session = await publicClient.exchangeHostedLinkBootstrap(bootstrap.launch_token);
+const hostedUrl = publicClient.getLinkUrl(session.link_token, {
+  origin: "https://app.example.com",
+});
 ```
 
-### 4. CrewAI Tool (works today)
+This pattern is the preferred production entrypoint for browser, iframe, and native-webview clients.
 
-```python
-from crewai.tools import tool
-import requests
+## MCP Server
 
-PLAIDIFY_URL = "http://localhost:8000"
+Plaidify already ships an MCP server in `src/mcp_server.py`.
 
-@tool("Plaidify Web Data Extractor")
-def plaidify_extract(site: str, username: str, password: str) -> dict:
-    """Connect to an authenticated website and extract structured data.
-    Useful for accessing bank accounts, utility portals, insurance sites,
-    and any website that requires login credentials."""
-    response = requests.post(
-        f"{PLAIDIFY_URL}/connect",
-        json={"site": site, "username": username, "password": password}
-    )
-    return response.json()
+Run it over stdio:
 
-# Use in a CrewAI agent
-from crewai import Agent
-
-financial_agent = Agent(
-    role="Financial Data Analyst",
-    goal="Access and analyze the user's financial data from banking portals",
-    tools=[plaidify_extract],
-    backstory="You help users understand their finances by accessing their bank portals securely."
-)
+```bash
+PLAIDIFY_SERVER_URL=http://localhost:8000 \
+PLAIDIFY_API_KEY=pk_your_key \
+python -m src.mcp_server
 ```
 
-### 5. OpenAI Function Calling (works today)
+Run it as an SSE server:
 
-```python
-import openai
-import requests
-import json
-
-PLAIDIFY_URL = "http://localhost:8000"
-
-# Define the function schema
-tools = [{
-    "type": "function",
-    "function": {
-        "name": "plaidify_connect",
-        "description": "Connect to an authenticated website and extract data. Use when the user asks about data locked behind a login form (bank balance, utility bill, etc.)",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "site": {
-                    "type": "string",
-                    "description": "The blueprint name for the target site (e.g., 'chase_bank')"
-                },
-                "username": {
-                    "type": "string", 
-                    "description": "The user's login username"
-                },
-                "password": {
-                    "type": "string",
-                    "description": "The user's login password"  
-                }
-            },
-            "required": ["site", "username", "password"]
-        }
-    }
-}]
-
-def execute_plaidify_call(args: dict) -> dict:
-    resp = requests.post(f"{PLAIDIFY_URL}/connect", json=args)
-    return resp.json()
-
-# In your agent loop
-response = openai.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "Check my bank balance on internal_bank"}],
-    tools=tools
-)
-
-# Handle tool calls
-for tool_call in response.choices[0].message.tool_calls:
-    if tool_call.function.name == "plaidify_connect":
-        args = json.loads(tool_call.function.arguments)
-        result = execute_plaidify_call(args)
+```bash
+PLAIDIFY_SERVER_URL=http://localhost:8000 \
+PLAIDIFY_API_KEY=pk_your_key \
+python -m src.mcp_server --transport sse --port 3001
 ```
 
-### 6. MCP Server (coming Phase 3)
+The shipped MCP tools cover the current Plaidify flow surface, including:
 
-> **This is the big one.** We're building Plaidify as an MCP (Model Context Protocol) server so any compatible AI client — Claude, ChatGPT, and others — can use it as a tool natively.
+- `list_available_sites`
+- `connect_site`
+- `connect_utility_account`
+- `check_connection_status`
+- `exchange_public_token`
+- `fetch_data`
+- `submit_mfa`
+- `request_consent`
 
-```yaml
-# ~/.config/claude/mcp_servers.yaml (planned)
-plaidify:
-  command: plaidify
-  args: ["serve", "--mcp"]
-  env:
-    PLAIDIFY_URL: "http://localhost:8000"
-```
+## Consent, Scoping, and Safety
 
-Once configured, your AI assistant can:
-- `"What's my bank balance?"` → Plaidify logs in, extracts balance
-- `"How much is my electric bill?"` → Plaidify reads utility portal
-- `"Download my latest insurance statement"` → Plaidify fetches document
+- Use JWTs or API keys for authenticated agent access; API keys can be scoped, expired, and revoked.
+- Consent grants can narrow the fields returned by `fetch_data` and related read paths.
+- Prefer hosted-link handoff when a human should own the login step.
+- Keep `STRICT_READ_ONLY_MODE=true` unless you have a deliberate reason to broaden browser behavior.
+- In production, leave anonymous hosted-link sessions disabled unless you explicitly need them and have origin restrictions in place.
 
-**With built-in consent:** The agent always asks the user before accessing a new site, and all actions are logged.
+## Operational Notes for Agent Workloads
 
-> **Want to help build the MCP server?** This is one of our highest-impact open issues. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+- Poll `GET /access_jobs/{job_id}` for long-running or detached jobs.
+- Treat `mfa_required` and `pending` as normal control-flow states, not hard failures.
+- Use Redis-backed worker execution in production so detached jobs can survive web-process restarts.
+- Keep the agent focused on planning and result handling; avoid granting arbitrary browser access when a bounded Plaidify flow will do.
 
----
+## Related Docs
 
-## Security & Consent Model
-
-### How Credentials Are Protected
-
-```
-User provides credentials
-        │
-        ▼
-┌─────────────────────┐
-│  Pydantic validates  │  ← Input validation, min lengths
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│  Fernet encrypts     │  ← AES-128-CBC, key from env var
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│  SQLAlchemy stores   │  ← Only ciphertext in DB
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│  Decrypt on use only │  ← Plaintext never persisted
-└─────────────────────┘
-```
-
-**What we guarantee today:**
-- Credentials are encrypted at rest (Fernet/AES-128-CBC)
-- Encryption key is never hardcoded (required env var)
-- Credentials are never logged or printed
-- Users can only access their own links and tokens (tested)
-- JWT tokens have configurable expiry
-
-**What's coming:**
-- **Consent model** — agents must request permission per-site, per-action
-- **Scoped permissions** — read vs. write, per-site granularity
-- **Audit trails** — every agent action logged with timestamp and context
-- **Credential vaulting** — HashiCorp Vault integration
-- **Rate limiting** — per-user, per-agent throttling
-
-### Agent-Executor Separation
-
-For future AI agents, Plaidify should enforce a hard boundary between the agent and the privileged website runtime.
-
-The agent should not receive:
-
-- Raw website credentials
-- Long-lived cookies or browser storage
-- Arbitrary browser access outside Plaidify policy
-
-The agent should receive:
-
-- Structured extracted data
-- Job progress and final status
-- Explicitly approved artifacts such as PDFs or screenshots
-- Narrow action results tied to consent and scope
-
----
-
-## Blueprint System for Agents
-
-### How Agents Discover Available Sites
-
-Your agent can discover which sites have blueprints:
-
-```python
-import os
-
-def list_blueprints():
-    """List all available site blueprints."""
-    connectors_dir = "connectors/"
-    sites = []
-    for f in os.listdir(connectors_dir):
-        if f.endswith(".json"):
-            sites.append(f.replace(".json", ""))
-    return sites
-
-# Returns: ["internal_bank", "hydro_one", ...]
-```
-
-### How to Add a New Site
-
-1. Figure out the CSS selectors for the login form
-2. Write a JSON blueprint:
-
-```json
-{
-  "name": "Electric Company",
-  "login_url": "https://electricco.com/login",
-  "fields": {
-    "username": "#account-email",
-    "password": "#account-password", 
-    "submit": "button[type='submit']"
-  },
-  "post_login": [
-    { "wait": ".dashboard-content" },
-    {
-      "extract": {
-        "current_bill": ".bill-amount",
-        "due_date": ".due-date",
-        "kwh_used": ".usage-amount"
-      }
-    }
-  ]
-}
-```
-
-3. Save to `connectors/electric_company.json`
-4. Your agent can now call: `plaidify_connect("electric_company", user, pass)`
-
-### Error Handling for Agents
-
-Plaidify returns typed errors that agents can reason about:
-
-```python
-# Errors your agent might receive:
-{
-    "error": "mfa_required",
-    "detail": "Multi-factor authentication required",
-    "session_id": "abc123"  # Agent can prompt user for OTP
-}
-
-{
-    "error": "captcha_required", 
-    "detail": "CAPTCHA challenge detected"  # Agent should escalate to user
-}
-
-{
-    "error": "site_unavailable",
-    "detail": "Target site returned 503"  # Agent should retry later
-}
-
-{
-    "error": "credentials_invalid",
-    "detail": "Login failed — check username/password"  # Agent should ask user
-}
-```
-
-Your agent can use these typed errors to make intelligent decisions about retries, escalation, or alternative approaches.
-
----
-
-## FAQ
-
-### Is this production-ready?
-
-The API, auth, encryption, and database layers are production-quality with 53 tests and 80% coverage. The browser engine (Playwright) is **not yet implemented** — it currently returns simulated data. We're building it in Phase 1.
-
-### Can my agent actually log into real websites today?
-
-Not yet. The engine returns simulated responses. Once Phase 1 (Playwright integration) ships, yes.
-
-### How is this different from just running Playwright myself?
-
-Plaidify adds the abstraction layer: blueprint-driven login flows, credential encryption, user isolation, structured data extraction, error typing, and a REST API. You don't write browser automation code — you write a JSON config.
-
-### Is it safe to pass user credentials through this?
-
-Credentials are Fernet-encrypted at rest and never logged. The server is designed to be self-hosted on your infrastructure. In Phase 3, we're adding consent models and audit trails specifically for AI agent use cases.
-
-### Can I use this with Claude / ChatGPT / other AI assistants?
-
-Today, through the REST API (your agent calls it as a tool). In Phase 3, we're building an MCP server so compatible clients can use Plaidify natively.
-
-### How do I contribute a blueprint?
-
-Write a JSON file describing the login flow for a site and submit a PR. This is the #1 way to contribute. See [CONTRIBUTING.md](../CONTRIBUTING.md).
-
----
-
-<p align="center">
-  <strong>Ready to give your agent access to the authenticated web?</strong>
-  <br /><br />
-  <a href="../README.md#-30-second-quickstart">⚡ Quickstart</a> &nbsp;·&nbsp;
-  <a href="https://github.com/meetpandya27/plaidify/issues">💬 Questions</a> &nbsp;·&nbsp;
-  <a href="../CONTRIBUTING.md">🤝 Contribute</a>
-</p>
+- [README.md](../README.md) for the product overview
+- [README.md](README.md) for the technical architecture guide
+- [MOBILE_LINK_INTEGRATION.md](MOBILE_LINK_INTEGRATION.md) for native hosted-link embeds
+- [ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md) for executor isolation design
+- [RUNBOOK.md](RUNBOOK.md) for operational response procedures

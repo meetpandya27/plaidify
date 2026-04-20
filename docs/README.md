@@ -1,306 +1,126 @@
 # Plaidify — Technical Documentation
 
-> For the project overview and quick start, see the [main README](../README.md).  
-> For AI agent integration, see **[AGENTS.md](AGENTS.md)**.
+> For the product overview and quick start, see the [main README](../README.md).
+> For agent-facing integration patterns, see [AGENTS.md](AGENTS.md).
 
----
+## System Overview
 
-## Architecture
+Plaidify is a FastAPI control plane for authenticated web access. The live HTTP bootstrap lives in `src/app.py`; `src/main.py` re-exports the ASGI app for compatibility with existing tooling. Routers in `src/routers/` own the public API surface, while execution, shared state, SDKs, and hosted-link assets live in dedicated modules.
 
-Plaidify is a FastAPI application with a modular architecture designed to support multiple connection strategies and deployment patterns.
-
-```
-Request → Rate Limiter → CORS → Security Headers → FastAPI Router → JWT Auth → Endpoint Handler
-                                                                                        │
-                                                          ┌─────────────────────────────┼───────────────────────────┐
-                                                          ▼                             ▼                           ▼
-                                                    Direct Connect              Link Token Flow               Auth Endpoints
-                                                    (POST /connect)             (multi-step)                  (register/login/refresh)
-                                                          │                             │
-                                                    RSA Decrypt (optional)        RSA Decrypt (optional)
-                                                          │                             │
-                                                          ▼                             ▼
-                                                    Connection Engine ◄──────────────────┘
-                                                          │
-                                                ┌─────────┼─────────┐
-                                                ▼                   ▼
-                                          Python Connector    JSON Blueprint
-                                          (BaseConnector)     (connectors/*.json)
-                                                │                   │
-                                                ▼                   ▼
-                                          Custom Logic        Playwright Engine
-
-Credential storage: RSA-2048 in transit ─► AES-256-GCM per-user DEK at rest ─► Master key rotation
+```text
+Client, backend, mobile shell, or agent
+  -> JWT or API key auth context
+  -> direct connect or hosted link session
+  -> access-job orchestration and MFA state
+  -> connector or blueprint execution
+  -> structured result, public token, or audit event
 ```
 
-### Module Responsibilities
+## Request Surfaces
 
-| Module | Purpose |
-|--------|---------|
-| `src/main.py` | FastAPI app, all endpoint definitions, auth utilities, exception handler |
-| `src/config.py` | Pydantic Settings class — loads all config from env vars |
-| `src/database.py` | SQLAlchemy models (User, Link, AccessToken, RefreshToken), AES-256-GCM + envelope encryption (per-user DEKs), key rotation, DB session management |
-| `src/models.py` | Pydantic request/response schemas for API validation |
-| `src/exceptions.py` | Custom exception hierarchy (PlaidifyError → BlueprintNotFoundError, etc.) |
-| `src/logging_config.py` | Structured logging setup (JSON for prod, colored text for dev) |
-| `src/crypto.py` | Ephemeral RSA-2048 keypair management for client-side credential encryption |
-| `src/core/engine.py` | Connection engine — loads connectors, executes blueprint logic |
-| `src/core/connector_base.py` | Abstract base class for Python connectors |
+| Surface | Primary code | What it covers |
+| --- | --- | --- |
+| System and health | `src/routers/system.py`, `src/app.py` | Root endpoints, health and status, optional `/metrics`, static `/ui` mount |
+| Auth and identities | `src/routers/auth.py`, `src/routers/refresh.py`, `src/routers/api_keys.py`, `src/routers/agents.py` | JWT login and refresh, API keys, agent identities |
+| Direct connect and polling | `src/routers/connection.py`, `src/routers/access_jobs.py` | `POST /connect`, detached execution, `GET /access_jobs`, MFA continuation |
+| Hosted link | `src/routers/link_sessions.py`, `src/routers/links.py`, `frontend/` | `/link`, hosted session creation, signed bootstrap launch tokens, SSE event delivery |
+| Consent and audit | `src/routers/consent.py`, `src/routers/audit.py` | Scoped data grants and tamper-evident audit logging |
+| Registry and webhooks | `src/routers/registry.py`, `src/routers/webhooks.py` | Blueprint discovery and publication, link lifecycle delivery |
 
----
+## Core Runtime Modules
 
-## Configuration
+| Module | Responsibility |
+| --- | --- |
+| `src/app.py` | App lifecycle, middleware, exception handling, metrics, static mounts, router registration |
+| `src/main.py` | Compatibility entrypoint that exports `app` and `settings` |
+| `src/access_jobs.py` | Access-job orchestration, lifecycle tracking, result serialization |
+| `src/access_job_worker.py` | Redis-backed detached worker execution for production deployments |
+| `src/session_store.py` | Shared session state for hosted link and MFA flows |
+| `src/core/engine.py` and `src/core/browser_pool.py` | Connector execution, browser runtime, extraction pipeline |
+| `src/database.py` | SQLAlchemy models, encryption helpers, DB session management |
+| `src/models.py` | Pydantic request and response models |
+| `src/mcp_server.py` | MCP server that exposes Plaidify tools over stdio or SSE |
+| `frontend/` | Hosted link and embedded UI assets served by the API |
 
-All configuration is via environment variables, managed by Pydantic Settings. The app **will not start** if required variables are missing.
+## Primary Flows
 
-### Required
+### Direct Connect and Access Jobs
 
-| Variable | Description | How to Generate |
-|----------|-------------|-----------------|
-| `ENCRYPTION_KEY` | Base64url-encoded 256-bit key for AES-256-GCM credential encryption | `python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"` |
-| `JWT_SECRET_KEY` | Secret for signing JWT tokens | `openssl rand -hex 32` |
+1. A client calls `POST /connect` directly or uses an SDK `connect()` helper.
+2. Plaidify executes the site workflow immediately or dispatches a detached access job.
+3. The response can complete fast with `connected`, pause with `mfa_required`, or return `pending` with a `job_id`.
+4. Clients resume MFA with `POST /mfa/submit` and poll `GET /access_jobs/{job_id}` until a persisted result is available.
 
-### Optional
+Completed access jobs store `result_json`, so callers can recover final extracted data without re-running the site flow.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:///plaidify.db` | SQLAlchemy connection string |
-| `APP_NAME` | `Plaidify` | Application name |
-| `APP_VERSION` | `0.3.0a1` | Version string |
-| `DEBUG` | `false` | Enable debug mode |
-| `LOG_LEVEL` | `INFO` | DEBUG, INFO, WARNING, ERROR, CRITICAL |
-| `LOG_FORMAT` | `json` | `json` (production) or `text` (development) |
-| `CORS_ORIGINS` | `http://localhost:3000,...` | Comma-separated allowed origins (no wildcard in production) |
-| `CONNECTORS_DIR` | `connectors` | Path to blueprint directory |
-| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token expiry |
-| `JWT_REFRESH_TOKEN_EXPIRE_MINUTES` | `10080` (1 week) | Refresh token expiry |
-| `ENCRYPTION_KEY_VERSION` | `1` | Current encryption key version (increment on rotation) |
-| `ENCRYPTION_KEY_PREVIOUS` | (none) | Previous master key for fallback during rotation |
-| `RATE_LIMIT_ENABLED` | `true` | Enable rate limiting |
-| `RATE_LIMIT_AUTH` | `5/minute` | Rate limit for auth endpoints |
-| `RATE_LIMIT_CONNECT` | `10/minute` | Rate limit for /connect |
-| `ENFORCE_HTTPS` | `false` | Redirect HTTP→HTTPS + HSTS (auto-enabled in production) |
+### Hosted Link and Bootstrap Launches
 
----
+1. Authenticated backends create a signed one-time launch token with `POST /link/bootstrap`.
+2. A public client redeems that token through `POST /link/sessions/bootstrap`.
+3. The hosted `/link` page runs inside a browser, iframe, or native webview and emits lifecycle events to parent shells.
+4. On completion, clients can consume a short-lived `public_token` or continue through standard access-token flows.
 
-## Database
+Plaidify also supports authenticated `POST /link/sessions` and controlled anonymous `POST /link/sessions/public` creation. Public session creation should stay origin-restricted in production.
 
-### ORM Models
+### Agent and MCP Access
 
-**User** — A registered Plaidify account.
-| Column | Type | Notes |
-|--------|------|-------|
-| id | Integer | Primary key, auto-increment |
-| username | String | Unique, nullable (OAuth2 users may not have one) |
-| email | String | Unique, nullable |
-| hashed_password | Text | bcrypt hash, nullable |
-| oauth_provider | String | e.g., 'google', 'github' |
-| oauth_sub | String | Provider's user ID |
-| is_active | Boolean | Default true |
-| created_at | DateTime | UTC timestamp |
-| encrypted_dek | Text | Per-user Data Encryption Key wrapped by master key (AES-256-GCM) |
+Agents can integrate at four levels:
 
-**Link** — A user's intent to connect to a site.
-| Column | Type | Notes |
-|--------|------|-------|
-| link_token | String | Primary key (UUID) |
-| site | String | Blueprint name |
-| user_id | Integer | FK → users.id |
-| created_at | DateTime | UTC timestamp |
+- Raw REST calls to the Plaidify API.
+- The Python SDK in `sdk/plaidify`.
+- The TypeScript SDK in `sdk-js/` for hosted-link browser and mobile flows.
+- The MCP server in `src/mcp_server.py`, available over stdio or SSE.
 
-**AccessToken** — Stored encrypted credentials for a linked site.
-| Column | Type | Notes |
-|--------|------|-------|
-| token | String | Primary key (UUID) |
-| link_token | String | FK → links.link_token |
-| username_encrypted | Text | AES-256-GCM encrypted via user DEK |
-| password_encrypted | Text | AES-256-GCM encrypted via user DEK |
-| instructions | Text | Optional processing instructions |
-| user_id | Integer | FK → users.id |
-| key_version | Integer | Encryption key version (for rotation tracking) |
-| created_at | DateTime | UTC timestamp |
+The recommended boundary is to keep browser execution and credential handling inside Plaidify while agents operate on structured results, consent grants, and job status.
 
-**RefreshToken** — Refresh token for JWT token rotation.
-| Column | Type | Notes |
-|--------|------|-------|
-| id | Integer | Primary key, auto-increment |
-| token | String | Unique, cryptographically random |
-| user_id | Integer | FK → users.id |
-| expires_at | DateTime | Token expiry (default 7 days) |
-| revoked | Boolean | Set to true on use (rotation) |
-| created_at | DateTime | UTC timestamp |
+## Persistence and State
 
-### Migrations
+The data model is broader than the original link-only flow. Important persisted records include:
 
-We use Alembic for database migrations. Never use `Base.metadata.create_all()` in production.
+| Model | Purpose |
+| --- | --- |
+| `User` | End-user identity, wrapped DEK, account status |
+| `Link` | Intent to connect a specific site on behalf of a user |
+| `AccessToken` | Encrypted credentials, optional extraction scopes, ongoing access token state |
+| `PublicToken` | One-time exchange token for hosted-link completion |
+| `RefreshToken` | JWT refresh token rotation state |
+| `ConsentRequest` and `ConsentGrant` | Scoped, time-limited access for agent or delegated use cases |
+| `ApiKey` and `Agent` | Programmatic identities with scope and site restrictions |
+| `AccessJob` | Detached execution tracking, MFA state, result persistence |
+| `AuditLog` | Hash-chained audit trail entries |
+| `Webhook` | Link-session event delivery registration |
+| `ScheduledRefreshJob` | Persisted background refresh scheduling |
+
+## Configuration and Production Invariants
+
+- `ENCRYPTION_KEY` and `JWT_SECRET_KEY` are required; the app will not start without them.
+- Production startup fails fast if `DEBUG=true`, if Redis is missing or unreachable, or if wildcard CORS is configured.
+- `PUBLIC_LINK_SESSIONS_ENABLED` and `PUBLIC_LINK_ALLOWED_ORIGINS` govern anonymous hosted-link sessions.
+- `ACCESS_JOB_EXECUTION_MODE=redis-worker` is the intended production mode for detached job durability across web-process restarts.
+- `STRICT_READ_ONLY_MODE` keeps post-auth browser execution in a constrained read-oriented mode.
+
+For the full environment-variable reference and deployment checklist, see [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## Local Development
 
 ```bash
-# Create a new migration after changing models
-alembic revision --autogenerate -m "Description of change"
-
-# Apply migrations
+cp .env.example .env
 alembic upgrade head
-
-# Rollback one step
-alembic downgrade -1
+uvicorn src.main:app --reload
 ```
 
----
-
-## Authentication
-
-### Flow
-
-1. User registers via `POST /auth/register` → receives JWT access token + refresh token
-2. User logs in via `POST /auth/token` → receives JWT access token + refresh token
-3. JWT is included as `Authorization: Bearer <token>` on protected endpoints
-4. Access tokens expire after 15 minutes; refresh via `POST /auth/refresh`
-5. Refresh tokens are single-use (rotation) and expire after 7 days
-6. All link/token/data endpoints enforce user ownership (isolation)
-
-### Token Structure
-
-```json
-{
-  "sub": "123",        // User ID as string
-  "exp": 1710500000   // Expiry timestamp
-}
-```
-
----
-
-## Exception Handling
-
-All custom exceptions inherit from `PlaidifyError` and are caught by a global FastAPI exception handler that returns structured JSON:
-
-```json
-{
-  "error": "No blueprint found for site: nonexistent_site"
-}
-```
-
-### Exception Hierarchy
-
-```
-PlaidifyError (500)
-├── BlueprintNotFoundError (404)
-├── BlueprintValidationError (422)
-├── ConnectionFailedError (502)
-├── AuthenticationError (401)
-├── MFARequiredError (403)
-├── SiteUnavailableError (503)
-├── RateLimitedError (429)
-├── CaptchaRequiredError (403)
-├── DataExtractionError (500)
-├── InvalidTokenError (401)
-├── UserNotFoundError (401)
-└── LinkNotFoundError (404)
-```
-
----
-
-## Blueprint System
-
-### JSON Blueprints
-
-Files in `/connectors/*.json` are loaded by the engine when a matching site is requested.
-
-Current schema (v1):
-```json
-{
-  "name": "Human-readable name",
-  "login_url": "https://...",
-  "fields": {
-    "username": "#css-selector",
-    "password": "#css-selector",
-    "submit": "#css-selector"
-  },
-  "post_login": [
-    { "wait": "#selector" },
-    { "extract": { "key": "#selector" } }
-  ]
-}
-```
-
-### Python Connectors
-
-Files matching `/connectors/*_connector.py` are auto-discovered. Any class inheriting from `BaseConnector` is loaded.
-
-```python
-from src.core.connector_base import BaseConnector
-
-class MyConnector(BaseConnector):
-    def connect(self, username: str, password: str) -> dict:
-        return {"status": "connected", "data": {...}}
-```
-
-### Resolution Order
-
-1. Check for a Python connector matching `{site}_connector.py`
-2. Fall back to JSON blueprint matching `{site}.json`
-3. Raise `BlueprintNotFoundError` if neither found
-
----
-
-## Testing
+Common validation commands:
 
 ```bash
-# Run all tests
-pytest tests/ -v
-
-# With coverage
-pytest tests/ --cov=src --cov-report=term-missing
-
-# Single test file
-pytest tests/test_auth.py -v
+pytest tests/ -q
+cd sdk-js && npm run typecheck && npm test
 ```
 
-### Test Structure
+## Related Docs
 
-| File | Tests | Coverage |
-|------|-------|----------|
-| `tests/conftest.py` | Fixtures: client, auth_headers, test DB setup/teardown | — |
-| `tests/test_system.py` | Root, health, status, connect, disconnect | System endpoints |
-| `tests/test_auth.py` | Register, login, profile, OAuth2, edge cases | Auth flow |
-| `tests/test_links.py` | Link flow, instructions, CRUD, user isolation | Core business logic |
-| `tests/test_core.py` | Encryption, exceptions, config | Utilities |
-| `tests/test_main.py` | Legacy basic tests | Backward compat |
-| `tests/test_example.py` | Mock site connection | Blueprint loading |
-
----
-
-## Docker
-
-### Development
-
-```bash
-docker compose up --build
-# Mounts local code, auto-reloads on changes
-```
-
-### Production
-
-```bash
-docker build -t plaidify:latest .
-docker run -d \
-  -p 8000:8000 \
-  -e ENCRYPTION_KEY="your-key" \
-  -e JWT_SECRET_KEY="your-secret" \
-  -e DATABASE_URL="postgresql://..." \
-  -e LOG_FORMAT="json" \
-  plaidify:latest
-```
-
-The Dockerfile uses a multi-stage build (builder + runtime), runs as a non-root user, and includes a health check.
-
----
-
-## CI Pipeline
-
-GitHub Actions runs on every push/PR to `main`:
-
-1. **Lint** — ruff check + format validation
-2. **Test** — pytest on Python 3.9, 3.10, 3.11, 3.12 with coverage threshold (70%)
-3. **Security** — pip-audit for dependency vulnerabilities
-4. **Docker** — Build image and check size
+- [DEPLOYMENT.md](DEPLOYMENT.md) for production deployment and operations
+- [AGENTS.md](AGENTS.md) for agent-facing integration patterns
+- [MOBILE_LINK_INTEGRATION.md](MOBILE_LINK_INTEGRATION.md) for native hosted-link embedding
+- [ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md) for executor isolation design
+- [RUNBOOK.md](RUNBOOK.md) for operational procedures
+- [PRODUCT_PLAN.md](PRODUCT_PLAN.md) for roadmap context
