@@ -16,10 +16,11 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from src import session_store
+from src.access_jobs import serialize_access_job_runtime
 from src.auth_utils import create_link_launch_token, decode_link_launch_token
 from src.config import get_settings
 from src.crypto import generate_keypair
-from src.database import Link, PublicToken, User, get_db
+from src.database import AccessJob, Link, PublicToken, User, get_db
 from src.dependencies import (
     constrain_requested_scopes,
     ensure_site_allowed_for_request,
@@ -107,12 +108,20 @@ def _get_link_session(token: str) -> Optional[Dict[str, Any]]:
     return session_store.get_link_session(token)
 
 
+def _normalize_origin(origin: Optional[str]) -> Optional[str]:
+    if origin is None:
+        return None
+    normalized = origin.strip().rstrip("/")
+    return normalized or None
+
+
 def _create_ephemeral_link_session(
     *,
     site: Optional[str],
     user_id: Optional[int],
     db: Optional[Session],
     scopes: Optional[list[str]],
+    allowed_origin: Optional[str],
 ) -> Dict[str, Any]:
     """Create a hosted link session and its ephemeral encryption material."""
     link_token = str(uuid.uuid4())
@@ -131,10 +140,19 @@ def _create_ephemeral_link_session(
         link_token,
         {
             "status": "awaiting_institution",
+            "allowed_origin": _normalize_origin(allowed_origin),
+            "current_job_id": None,
+            "error_message": None,
             "site": site,
             "user_id": user_id,
             "events": [],
             "access_token": None,
+            "message": None,
+            "metadata": None,
+            "mfa_type": None,
+            "public_token": None,
+            "result": None,
+            "session_id": None,
         },
     )
 
@@ -145,6 +163,198 @@ def _create_ephemeral_link_session(
         "expires_in": _LINK_SESSION_TTL,
         "scopes": scopes,
     }
+
+
+def _build_link_session_event(event_name: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "event": event_name,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": data or {},
+    }
+
+
+def _ensure_public_token(db: Session, *, link_token: str, access_token: str, user_id: int) -> str:
+    existing = (
+        db.query(PublicToken)
+        .filter_by(link_token=link_token, access_token=access_token, user_id=user_id)
+        .order_by(PublicToken.created_at.desc())
+        .first()
+    )
+    if existing:
+        return existing.token
+
+    public_token_value = f"public-{uuid.uuid4()}"
+    db.add(
+        PublicToken(
+            token=public_token_value,
+            link_token=link_token,
+            access_token=access_token,
+            user_id=user_id,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=_PUBLIC_TOKEN_TTL_MINUTES),
+        )
+    )
+    db.commit()
+    return public_token_value
+
+
+async def _publish_link_session_event(link_token: str, event_data: Dict[str, Any]) -> None:
+    if not session_store.publish_link_event(link_token, event_data):
+        async with _sse_lock:
+            for queue in _sse_subscribers.get(link_token, []):
+                await queue.put(event_data)
+
+
+async def _push_link_session_event(
+    link_token: str,
+    event_name: str,
+    *,
+    data: Optional[Dict[str, Any]] = None,
+    updates: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    event_data = _build_link_session_event(event_name, data=data)
+    session_store.append_link_session_event(link_token, event_data)
+    if updates:
+        session_store.update_link_session(link_token, updates)
+
+    await _publish_link_session_event(link_token, event_data)
+
+    webhook_event_map = {
+        "CONNECTED": "LINK_COMPLETE",
+        "ERROR": "LINK_ERROR",
+        "MFA_REQUIRED": "MFA_REQUIRED",
+    }
+    if event_name in webhook_event_map:
+        from src.routers.webhooks import fire_webhooks_for_session
+
+        await fire_webhooks_for_session(link_token, webhook_event_map[event_name], data)
+
+    return event_data
+
+
+async def reconcile_link_session(
+    db: Session,
+    *,
+    link_token: str,
+    job_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    session = _get_link_session(link_token)
+    if not session or session.get("status") == "expired":
+        return session
+
+    current_job_id = job_id or session.get("current_job_id")
+    if not current_job_id:
+        return session
+
+    job = db.query(AccessJob).filter(AccessJob.id == current_job_id).first()
+    if not job:
+        return session
+
+    payload = await serialize_access_job_runtime(job)
+    previous_status = session.get("status")
+    updates: Dict[str, Any] = {
+        "current_job_id": current_job_id,
+        "session_id": payload.get("session_id"),
+        "site": payload.get("site") or session.get("site"),
+    }
+
+    metadata = payload.get("metadata")
+    if metadata is not None:
+        updates["metadata"] = metadata
+
+    if payload.get("mfa_type"):
+        updates["mfa_type"] = payload["mfa_type"]
+
+    runtime_status = payload.get("status")
+    if runtime_status in {"pending", "running"}:
+        updates["status"] = "connecting"
+        session_store.update_link_session(link_token, updates)
+        return _get_link_session(link_token)
+
+    if runtime_status == "mfa_required":
+        message = metadata.get("message") if isinstance(metadata, dict) else None
+        updates.update(
+            {
+                "message": message,
+                "status": "mfa_required",
+            }
+        )
+        if previous_status != "mfa_required":
+            await _push_link_session_event(
+                link_token,
+                "MFA_REQUIRED",
+                data={
+                    "mfa_type": payload.get("mfa_type"),
+                    "session_id": payload.get("session_id"),
+                    "site": updates.get("site"),
+                },
+                updates=updates,
+            )
+        else:
+            session_store.update_link_session(link_token, updates)
+        return _get_link_session(link_token)
+
+    if runtime_status == "completed":
+        updates.update(
+            {
+                "error_message": None,
+                "message": None,
+                "result": payload.get("result"),
+                "status": "completed",
+            }
+        )
+
+        access_token = session.get("access_token")
+        user_id = session.get("user_id")
+        public_token = session.get("public_token")
+        if not public_token and access_token and user_id is not None:
+            public_token = _ensure_public_token(
+                db,
+                link_token=link_token,
+                access_token=access_token,
+                user_id=user_id,
+            )
+        if public_token:
+            updates["public_token"] = public_token
+
+        if previous_status != "completed":
+            await _push_link_session_event(
+                link_token,
+                "CONNECTED",
+                data={
+                    "job_id": current_job_id,
+                    "public_token": public_token,
+                    "site": updates.get("site"),
+                },
+                updates=updates,
+            )
+        else:
+            session_store.update_link_session(link_token, updates)
+        return _get_link_session(link_token)
+
+    if runtime_status in {"blocked", "cancelled", "failed"}:
+        updates.update(
+            {
+                "error_message": payload.get("error_message") or "The connection could not be completed.",
+                "status": "error",
+            }
+        )
+        if previous_status != "error":
+            await _push_link_session_event(
+                link_token,
+                "ERROR",
+                data={
+                    "error": updates["error_message"],
+                    "job_id": current_job_id,
+                    "site": updates.get("site"),
+                },
+                updates=updates,
+            )
+        else:
+            session_store.update_link_session(link_token, updates)
+        return _get_link_session(link_token)
+
+    session_store.update_link_session(link_token, updates)
+    return _get_link_session(link_token)
 
 
 # ── Hosted Link Page ──────────────────────────────────────────────────────────
@@ -186,6 +396,7 @@ async def create_link_session(
         user_id=user.id,
         db=db,
         scopes=effective_scopes,
+        allowed_origin=_extract_request_origin(request),
     )
 
     logger.info(
@@ -199,7 +410,13 @@ async def create_link_session(
 async def create_public_link_session(request: Request):
     """Create a temporary anonymous link session for hosted modal discovery flows."""
     _enforce_public_link_session_policy(request)
-    payload = _create_ephemeral_link_session(site=None, user_id=None, db=None, scopes=None)
+    payload = _create_ephemeral_link_session(
+        site=None,
+        user_id=None,
+        db=None,
+        scopes=None,
+        allowed_origin=_extract_request_origin(request),
+    )
 
     logger.info(
         "Public link session created",
@@ -291,7 +508,13 @@ async def exchange_link_bootstrap(
 
     site = payload.get("site")
     scopes = payload.get("scopes")
-    session_payload = _create_ephemeral_link_session(site=site, user_id=user_id, db=db, scopes=scopes)
+    session_payload = _create_ephemeral_link_session(
+        site=site,
+        user_id=user_id,
+        db=db,
+        scopes=scopes,
+        allowed_origin=allowed_origin,
+    )
 
     logger.info(
         "Hosted link bootstrap redeemed",
@@ -303,15 +526,29 @@ async def exchange_link_bootstrap(
 @router.get("/link/sessions/{link_token}/status")
 async def get_link_session_status(link_token: str):
     """Get the current status of a link session."""
-    session = _get_link_session(link_token)
+    db = next(get_db())
+    try:
+        session = await reconcile_link_session(db, link_token=link_token)
+    finally:
+        db.close()
+
     if not session:
         raise HTTPException(status_code=404, detail="Link session not found.")
+
     result = {
         "link_token": link_token,
+        "job_id": session.get("current_job_id"),
+        "metadata": session.get("metadata"),
+        "mfa_type": session.get("mfa_type"),
+        "session_id": session.get("session_id"),
         "status": session["status"],
         "site": session.get("site"),
         "events": [e["event"] for e in session["events"]],
     }
+    if session.get("error_message"):
+        result["error_message"] = session["error_message"]
+    if session.get("message"):
+        result["message"] = session["message"]
     if session["status"] == "completed" and session.get("public_token"):
         result["public_token"] = session["public_token"]
     return result
@@ -321,30 +558,17 @@ async def get_link_session_status(link_token: str):
 async def post_link_session_event(
     link_token: str,
     request: Request,
-    user: User = Depends(get_current_user_or_api_key),
 ):
     """Record an event for a link session (called by the link page)."""
     session = _get_link_session(link_token)
     if not session:
         raise HTTPException(status_code=404, detail="Link session not found.")
-    if session.get("user_id") != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized for this session.")
     if session["status"] == "expired":
         raise HTTPException(status_code=410, detail="Link session has expired.")
 
     body = await request.json()
     event_name = body.get("event", "UNKNOWN")
-    event_data = {
-        "event": event_name,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "data": {k: v for k, v in body.items() if k != "event"},
-    }
-
-    public_token_value = None
-    # Append event to session store
-    session_store.append_link_session_event(link_token, event_data)
-
-    # Build updates based on event type
+    data = {k: v for k, v in body.items() if k not in {"event", "access_token"}}
     updates = {}
     if event_name == "INSTITUTION_SELECTED":
         updates["status"] = "awaiting_credentials"
@@ -355,54 +579,20 @@ async def post_link_session_event(
         updates["status"] = "mfa_required"
     elif event_name == "MFA_SUBMITTED":
         updates["status"] = "verifying_mfa"
-    elif event_name == "CONNECTED":
-        updates["status"] = "completed"
-        updates["access_token"] = body.get("access_token")
-        # Generate a one-time public_token for the 3-token exchange flow
-        access_token = body.get("access_token")
-        user_id = session.get("user_id")
-        if access_token and user_id:
-            public_token_value = f"public-{uuid.uuid4()}"
-            db = next(get_db())
-            try:
-                pt = PublicToken(
-                    token=public_token_value,
-                    link_token=link_token,
-                    access_token=access_token,
-                    user_id=user_id,
-                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=_PUBLIC_TOKEN_TTL_MINUTES),
-                )
-                db.add(pt)
-                db.commit()
-            finally:
-                db.close()
-            updates["public_token"] = public_token_value
     elif event_name == "ERROR":
         updates["status"] = "error"
+        updates["error_message"] = body.get("error")
 
-    if updates:
-        session_store.update_link_session(link_token, updates)
+    if event_name == "CONNECTED":
+        return {"status": "ignored"}
 
-    if not session_store.publish_link_event(link_token, event_data):
-        async with _sse_lock:
-            for queue in _sse_subscribers.get(link_token, []):
-                await queue.put(event_data)
-
-    # Fire webhooks for terminal events
-    webhook_event_map = {
-        "CONNECTED": "LINK_COMPLETE",
-        "ERROR": "LINK_ERROR",
-        "MFA_REQUIRED": "MFA_REQUIRED",
-    }
-    if event_name in webhook_event_map:
-        from src.routers.webhooks import fire_webhooks_for_session
-
-        await fire_webhooks_for_session(link_token, webhook_event_map[event_name], event_data.get("data"))
-
-    response = {"status": "ok"}
-    if public_token_value:
-        response["public_token"] = public_token_value
-    return response
+    await _push_link_session_event(
+        link_token,
+        event_name,
+        data=data,
+        updates=updates or None,
+    )
+    return {"status": "ok"}
 
 
 # ── SSE Event Stream ──────────────────────────────────────────────────────────

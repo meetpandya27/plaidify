@@ -139,7 +139,7 @@ export interface PlaidifyLinkExitDetails {
 }
 
 export interface PlaidifyLinkSuccessMetadata {
-  data?: Record<string, unknown>;
+  job_id?: string;
   organization_id?: string;
   organization_name?: string;
   public_token?: string;
@@ -149,12 +149,11 @@ export interface PlaidifyLinkSuccessMetadata {
 export interface PlaidifyLinkEventPayload extends PlaidifyLinkExitDetails, PlaidifyLinkMfaDetails {
   source?: "plaidify-link";
   event?: PlaidifyLinkEventName | string;
-  access_token?: string;
+  job_id?: string;
   public_token?: string;
   organization_id?: string;
   organization_name?: string;
   site?: string;
-  data?: Record<string, unknown>;
 }
 
 export interface LinkEvent {
@@ -285,8 +284,8 @@ export interface PlaidifyLinkConfig {
   token: string;
   /** Theme overrides for the link UI. */
   theme?: LinkTheme;
-  /** Called when link completes successfully. */
-  onSuccess?: (accessToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
+  /** Called when link completes successfully with a public token, when one exists. */
+  onSuccess?: (publicToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
   /** Called when the user exits the link flow. */
   onExit?: (details: PlaidifyLinkExitDetails) => void;
   /** Called on each link event. */

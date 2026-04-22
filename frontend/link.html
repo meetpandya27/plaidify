@@ -28,7 +28,7 @@
         <p class="flow-eyebrow" id="flow-eyebrow">Step 1 of 3</p>
         <h1 class="flow-title" id="flow-title">Choose your provider</h1>
         <p class="flow-subtitle" id="flow-subtitle">
-          Search from supported portals and continue with read-only, encrypted access.
+          Choose a trusted provider and continue through a secure, read-only connection.
         </p>
 
         <div class="step-progress" aria-label="Connection progress">
@@ -73,9 +73,9 @@
 
           <div class="directory-meta">
             <div>
-              <div class="directory-count" id="directory-count">Loading organization directory…</div>
+              <div class="directory-count" id="directory-count">Finding trusted providers</div>
               <div class="directory-caption" id="directory-caption">
-                USA and Canada directory results route into Plaidify's read-only connection runtime.
+                Secure connection options across the United States and Canada.
               </div>
             </div>
             <div class="filter-row">
@@ -92,16 +92,22 @@
 
           <div class="selection-layout">
             <div class="institution-list" id="institution-list">
-              <div class="institution-empty">Loading organizations...</div>
+              <div class="institution-state institution-state--loading" aria-live="polite">
+                <span class="institution-spinner" aria-hidden="true"></span>
+                <div>
+                  <div class="institution-state__title">Finding the best matches</div>
+                  <div class="institution-state__copy">Curating secure options for this connection.</div>
+                </div>
+              </div>
             </div>
 
             <aside class="trust-card" aria-label="Connection details">
-              <div class="trust-card__eyebrow">What happens next</div>
-              <h2>One guided, agent-ready connection flow</h2>
+              <div class="trust-card__eyebrow">What to expect</div>
+              <h2>A guided connection with bank-grade guardrails</h2>
               <ul class="trust-list">
-                <li>Plaidify opens a secure browser session for the selected organization.</li>
-                <li>Your credentials are encrypted in this window before they are submitted.</li>
-                <li>Structured read-only fields are returned as JSON after authentication completes.</li>
+                <li>Plaidify opens a secure session with the provider you choose.</li>
+                <li>Your sign-in details are encrypted in this window before submission.</li>
+                <li>Your app receives a secure completion handoff after verification finishes.</li>
               </ul>
             </aside>
           </div>
@@ -149,7 +155,7 @@
               <ul class="consent-list" id="consent-list">
                 <li>Open a secure browser session for the selected provider.</li>
                 <li>Authenticate with encrypted credentials.</li>
-                <li>Return structured, read-only account data.</li>
+                <li>Return a secure completion back to your app.</li>
               </ul>
             </aside>
           </div>
@@ -188,14 +194,14 @@
               <div class="status-item" id="status-read" data-state="idle">
                 <span class="status-dot"></span>
                 <div>
-                  <div class="status-title">Read structured data</div>
-                  <div class="status-copy">Collecting the fields defined by this connector.</div>
+                  <div class="status-title">Prepare secure handoff</div>
+                  <div class="status-copy">Packaging a completion token for your app.</div>
                 </div>
               </div>
             </div>
 
             <div class="connection-note" id="connection-note">
-              This usually completes in a few seconds. If the site needs additional verification, we will pause here.
+              Most connections finish in a few seconds. If extra verification is needed, we will stay right here.
             </div>
           </div>
         </div>

@@ -4,6 +4,7 @@ Pydantic request/response models for the Plaidify API.
 
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -205,7 +206,23 @@ class HostedLinkBootstrapRequest(BaseModel):
         if value is None:
             return value
         normalized = value.strip().rstrip("/")
-        return normalized or None
+        if not normalized:
+            return None
+
+        parsed = urlparse(normalized)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.path not in {"", "/"}
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError("allowed_origin must be an http(s) origin without a path, query, or fragment.")
+
+        return f"{parsed.scheme}://{parsed.netloc}"
 
 
 class HostedLinkBootstrapResponse(BaseModel):

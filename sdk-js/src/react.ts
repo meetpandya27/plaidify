@@ -9,7 +9,7 @@
  *   const { open, ready } = usePlaidifyLink({
  *     serverUrl: "http://localhost:8000",
  *     token: linkToken,
- *     onSuccess: (accessToken) => console.log("Got token:", accessToken),
+ *     onSuccess: (publicToken) => console.log("Got public token:", publicToken),
  *   });
  *
  *   return <button onClick={open} disabled={!ready}>Connect Account</button>;
@@ -31,6 +31,31 @@ export interface UsePlaidifyLinkReturn {
   status: "idle" | "loading" | "open" | "success" | "error";
   /** Close the link modal programmatically. */
   close: () => void;
+}
+
+function sanitizePlaidifyLinkPayload(data: unknown): PlaidifyLinkEventPayload | null {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const payload = data as PlaidifyLinkEventPayload;
+  if (payload.source !== "plaidify-link") {
+    return null;
+  }
+
+  return {
+    source: "plaidify-link",
+    event: payload.event,
+    error: payload.error,
+    job_id: payload.job_id,
+    mfa_type: payload.mfa_type,
+    organization_id: payload.organization_id,
+    organization_name: payload.organization_name,
+    public_token: payload.public_token,
+    reason: payload.reason,
+    session_id: payload.session_id,
+    site: payload.site,
+  };
 }
 
 export function usePlaidifyLink(config: PlaidifyLinkConfig): UsePlaidifyLinkReturn {
@@ -97,17 +122,17 @@ export function usePlaidifyLink(config: PlaidifyLinkConfig): UsePlaidifyLinkRetu
   // Listen for postMessage events from the iframe
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
-      const data = event.data;
+      const data = sanitizePlaidifyLinkPayload(event.data);
       if (!data || data.source !== "plaidify-link") return;
       if (event.origin !== serverOriginRef.current) return;
 
-      configRef.current.onEvent?.(data.event, data);
+      configRef.current.onEvent?.(data.event || "UNKNOWN", data);
 
       switch (data.event) {
         case "CONNECTED":
           setStatus("success");
           cleanup();
-          configRef.current.onSuccess?.(data.access_token || "", data as PlaidifyLinkEventPayload);
+          configRef.current.onSuccess?.(data.public_token || "", data as PlaidifyLinkEventPayload);
           break;
         case "MFA_REQUIRED":
           configRef.current.onMFA?.({

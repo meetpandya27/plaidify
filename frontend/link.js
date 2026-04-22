@@ -234,8 +234,8 @@
 
     switch (eventName) {
       case "CONNECTED":
-        this._config.onSuccess(message.access_token || "", {
-          data: message.data,
+        this._config.onSuccess(message.public_token || "", {
+          job_id: message.job_id || "",
           organization_id: message.organization_id || "",
           organization_name: message.organization_name || "",
           public_token: message.public_token || "",

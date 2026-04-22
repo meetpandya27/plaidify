@@ -25,13 +25,37 @@ __export(react_exports, {
 });
 module.exports = __toCommonJS(react_exports);
 var import_react = require("react");
+function sanitizePlaidifyLinkPayload(data) {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+  const payload = data;
+  if (payload.source !== "plaidify-link") {
+    return null;
+  }
+  return {
+    source: "plaidify-link",
+    event: payload.event,
+    error: payload.error,
+    job_id: payload.job_id,
+    mfa_type: payload.mfa_type,
+    organization_id: payload.organization_id,
+    organization_name: payload.organization_name,
+    public_token: payload.public_token,
+    reason: payload.reason,
+    session_id: payload.session_id,
+    site: payload.site
+  };
+}
 function usePlaidifyLink(config) {
   const [status, setStatus] = (0, import_react.useState)("idle");
   const iframeRef = (0, import_react.useRef)(null);
   const overlayRef = (0, import_react.useRef)(null);
   const resizeHandlerRef = (0, import_react.useRef)(null);
+  const serverOriginRef = (0, import_react.useRef)(new URL(config.serverUrl.replace(/\/+$/, ""), window.location.href).origin);
   const configRef = (0, import_react.useRef)(config);
   configRef.current = config;
+  serverOriginRef.current = new URL(config.serverUrl.replace(/\/+$/, ""), window.location.href).origin;
   const applyResponsiveLayout = (0, import_react.useCallback)(() => {
     if (!overlayRef.current || !iframeRef.current) {
       return;
@@ -79,14 +103,15 @@ function usePlaidifyLink(config) {
   }, [cleanup]);
   (0, import_react.useEffect)(() => {
     function handleMessage(event) {
-      const data = event.data;
+      const data = sanitizePlaidifyLinkPayload(event.data);
       if (!data || data.source !== "plaidify-link") return;
-      configRef.current.onEvent?.(data.event, data);
+      if (event.origin !== serverOriginRef.current) return;
+      configRef.current.onEvent?.(data.event || "UNKNOWN", data);
       switch (data.event) {
         case "CONNECTED":
           setStatus("success");
           cleanup();
-          configRef.current.onSuccess?.(data.access_token || "", data);
+          configRef.current.onSuccess?.(data.public_token || "", data);
           break;
         case "MFA_REQUIRED":
           configRef.current.onMFA?.({

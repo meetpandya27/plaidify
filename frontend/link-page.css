@@ -419,6 +419,23 @@ body {
   outline: none;
 }
 
+.close-button:focus-visible,
+.directory-filter:focus-visible,
+.featured-pick:focus-visible,
+.institution-item:focus-visible,
+.password-toggle:focus-visible,
+.primary-button:focus-visible,
+.provider-change-btn:focus-visible,
+.secondary-button:focus-visible,
+.success-button:focus-visible,
+.institution-search:focus-visible,
+.form-group input:focus-visible,
+.mfa-input:focus-visible {
+  box-shadow: 0 0 0 4px rgba(8, 127, 107, 0.16);
+  outline: 2px solid rgba(8, 127, 107, 0.42);
+  outline-offset: 2px;
+}
+
 .selection-layout {
   display: grid;
   gap: 16px;
@@ -579,14 +596,60 @@ body {
   padding-top: 4px;
 }
 
-.institution-empty {
-  background: rgba(255, 255, 255, 0.7);
-  border: 1px dashed var(--line);
-  border-radius: 18px;
+.institution-state {
+  align-items: center;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 248, 252, 0.96));
+  border: 1px solid rgba(216, 224, 235, 0.92);
+  border-radius: 20px;
   color: var(--ink-soft);
-  font-size: 13px;
-  padding: 26px 18px;
-  text-align: center;
+  display: flex;
+  gap: 14px;
+  padding: 20px 18px;
+}
+
+.institution-state--loading {
+  min-height: 88px;
+}
+
+.institution-state__title {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+.institution-state__copy {
+  font-size: 12px;
+}
+
+.institution-spinner,
+.institution-state__icon {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.institution-spinner {
+  animation: institution-spin 0.9s linear infinite;
+  border: 3px solid rgba(11, 143, 115, 0.12);
+  border-top-color: rgba(11, 143, 115, 0.74);
+}
+
+.institution-state__icon {
+  background: rgba(11, 143, 115, 0.08);
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+@keyframes institution-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .trust-card,
@@ -619,6 +682,12 @@ body {
   font-size: 20px;
   letter-spacing: -0.04em;
   margin-bottom: 10px;
+}
+
+.trust-card p {
+  color: var(--ink-soft);
+  font-size: 13px;
+  margin-bottom: 12px;
 }
 
 .trust-list,

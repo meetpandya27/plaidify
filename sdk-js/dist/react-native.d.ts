@@ -14,7 +14,7 @@ interface PlaidifyLinkExitDetails {
     error?: string;
 }
 interface PlaidifyLinkSuccessMetadata {
-    data?: Record<string, unknown>;
+    job_id?: string;
     organization_id?: string;
     organization_name?: string;
     public_token?: string;
@@ -23,12 +23,11 @@ interface PlaidifyLinkSuccessMetadata {
 interface PlaidifyLinkEventPayload extends PlaidifyLinkExitDetails, PlaidifyLinkMfaDetails {
     source?: "plaidify-link";
     event?: PlaidifyLinkEventName | string;
-    access_token?: string;
+    job_id?: string;
     public_token?: string;
     organization_id?: string;
     organization_name?: string;
     site?: string;
-    data?: Record<string, unknown>;
 }
 interface LinkTheme {
     accentColor?: string;
@@ -47,7 +46,7 @@ interface PlaidifyReactNativeLinkConfig {
 }
 interface PlaidifyReactNativeCallbacks {
     onEvent?: (event: string, payload: PlaidifyLinkEventPayload) => void;
-    onSuccess?: (accessToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
+    onSuccess?: (publicToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
     onExit?: (details: PlaidifyLinkExitDetails) => void;
     onMFA?: (details: PlaidifyLinkMfaDetails) => void;
 }

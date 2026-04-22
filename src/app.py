@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from src import session_store
 from src.access_jobs import shutdown_access_jobs
 from src.config import get_settings
 from src.core.browser_pool import shutdown_browser_pool
@@ -327,8 +328,21 @@ async def security_headers_middleware(request: Request, call_next):
     """Add standard security headers to every response."""
     response = await call_next(request)
 
+    frame_ancestors = "'self'"
+    is_hosted_link_html = request.url.path in {"/link", "/ui/link.html"}
+    if is_hosted_link_html:
+        link_token = request.query_params.get("token")
+        if link_token:
+            session = session_store.get_link_session(link_token)
+            if session and session.get("allowed_origin"):
+                frame_ancestors = f"'self' {session['allowed_origin']}"
+
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    if is_hosted_link_html and frame_ancestors != "'self'":
+        if "X-Frame-Options" in response.headers:
+            del response.headers["X-Frame-Options"]
+    else:
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
@@ -337,7 +351,7 @@ async def security_headers_middleware(request: Request, call_next):
         "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
-        "frame-ancestors 'self'"
+        f"frame-ancestors {frame_ancestors}"
     )
 
     if settings.enforce_https or settings.env == "production":
@@ -366,7 +380,7 @@ if settings.enforce_https or settings.env == "production":
 
 
 try:
-    app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=False), name="frontend")
 except Exception:
     logger.warning("Frontend directory not found, /ui will not be served")
 

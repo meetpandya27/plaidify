@@ -58,7 +58,7 @@ Completed access jobs store `result_json`, so callers can recover final extracte
 1. Authenticated backends create a signed one-time launch token with `POST /link/bootstrap`.
 2. A public client redeems that token through `POST /link/sessions/bootstrap`.
 3. The hosted `/link` page runs inside a browser, iframe, or native webview and emits lifecycle events to parent shells.
-4. On completion, clients can consume a short-lived `public_token` or continue through standard access-token flows.
+4. On completion, hosted clients receive a short-lived `public_token`; durable access tokens stay server-side and should be obtained through server-side exchange when needed.
 
 Plaidify also supports authenticated `POST /link/sessions` and controlled anonymous `POST /link/sessions/public` creation. Public session creation should stay origin-restricted in production.
 
@@ -69,6 +69,7 @@ Agents can integrate at four levels:
 - Raw REST calls to the Plaidify API.
 - The Python SDK in `sdk/plaidify`.
 - The TypeScript SDK in `sdk-js/` for hosted-link browser and mobile flows.
+- The Swift hosted-link package in `sdk-swift/` for `WKWebView`-based native iOS flows.
 - The MCP server in `src/mcp_server.py`, available over stdio or SSE.
 
 The recommended boundary is to keep browser execution and credential handling inside Plaidify while agents operate on structured results, consent grants, and job status.
@@ -113,7 +114,15 @@ Common validation commands:
 
 ```bash
 pytest tests/ -q
+PYTHONPATH=$PWD pytest tests/test_hosted_link_e2e.py -q -m playwright
 cd sdk-js && npm run typecheck && npm test
+cd sdk-swift && swift test
+```
+
+Before the hosted-link browser slice runs for the first time:
+
+```bash
+python -m playwright install chromium
 ```
 
 ## Related Docs

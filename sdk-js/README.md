@@ -44,6 +44,8 @@ const hostedUrl = publicClient.getLinkUrl(session.link_token, {
 
 `@plaidify/client/react-native` provides hosted link helpers for webview-based mobile shells. Use the same production bootstrap flow and redeem the launch token before rendering the hosted page.
 
+Hosted link success callbacks return the browser-safe `public_token` as the first argument. Exchange it on your backend when you need a durable access token.
+
 ## Notes
 
 - Prefer `createHostedLinkBootstrap()` plus `exchangeHostedLinkBootstrap()` in production.

@@ -15,7 +15,9 @@
 
 ### Pre-deployment Checklist
 
-- [ ] All tests pass: `python -m pytest tests/ -q`
+- [ ] Python test suite passes: `python -m pytest tests/ -q`
+- [ ] Hosted-link browser contract passes: `PYTHONPATH=$PWD python -m pytest tests/test_hosted_link_e2e.py -q -m playwright`
+- [ ] Chromium is installed for the hosted-link browser slice: `python -m playwright install chromium`
 - [ ] Alembic migrations up to date: `alembic upgrade head`
 - [ ] Environment variables configured (see `.env.example`)
 - [ ] `ENV=production` is set
@@ -27,16 +29,20 @@
 ### Rolling Deployment
 
 ```bash
-# 1. Run database migrations BEFORE deploying new code
+# 1. Verify the release gates that are not covered by the default pytest run
+python -m pytest tests/ -q
+PYTHONPATH=$PWD python -m pytest tests/test_hosted_link_e2e.py -q -m playwright
+
+# 2. Run database migrations BEFORE deploying new code
 alembic upgrade head
 
-# 2. Deploy new containers (zero-downtime with load balancer)
+# 3. Deploy new containers (zero-downtime with load balancer)
 docker-compose up -d --build --no-deps plaidify
 
-# 3. Verify health
+# 4. Verify health
 curl -s http://localhost:8000/health | jq .
 
-# 4. Monitor logs for errors
+# 5. Monitor logs for errors
 docker-compose logs -f plaidify --tail=100
 ```
 

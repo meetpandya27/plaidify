@@ -17,14 +17,14 @@ Plaidify is a production-oriented authenticated web access service. It gives you
 - Detached access jobs with polling, persisted results, and MFA continuation
 - Scoped access control, audit-aware workflows, and read-only execution
 - Credential encryption in transit and at rest
-- Python and TypeScript SDKs for server and client integrations
+- Python, TypeScript, and Swift SDK surfaces for server, web, and native integrations
 
 ## How It Works
 
 1. Create a hosted-link session or call `POST /connect` directly.
 2. Plaidify executes the connector or blueprint flow and captures any MFA state.
 3. Clients continue MFA through the hosted link or `POST /mfa/submit`.
-4. Final results are returned immediately for fast completions or retrieved later through `GET /access_jobs`.
+4. Hosted clients receive a short-lived `public_token`, while durable results are retrieved later through server-side exchange or `GET /access_jobs`.
 
 ## Architecture At A Glance
 
@@ -72,6 +72,7 @@ uvicorn src.main:app --reload
 
 - [sdk/README.md](sdk/README.md) for the Python SDK
 - [sdk-js/README.md](sdk-js/README.md) for the TypeScript and browser SDK
+- `sdk-swift/` for the native iOS hosted-link package
 
 ## Key Docs
 
@@ -86,7 +87,15 @@ uvicorn src.main:app --reload
 
 ```bash
 python -m pytest tests/test_agent_integration.py -q
+PYTHONPATH=$PWD python -m pytest tests/test_hosted_link_e2e.py -q -m playwright
 cd sdk-js && npm run typecheck && npm test
+cd sdk-swift && swift test
+```
+
+Install the browser once before running the hosted-link E2E slice:
+
+```bash
+python -m playwright install chromium
 ```
 
 ## License

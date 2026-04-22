@@ -35,6 +35,9 @@ infra/*.override.bicepparam
 # Node modules
 node_modules/
 
+# Swift build artifacts
+sdk-swift/.build/
+
 # Database files (local dev)
 *.db
 

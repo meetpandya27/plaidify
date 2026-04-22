@@ -9,7 +9,9 @@ Plaidify's hosted Link flow can be embedded in mobile applications by loading th
 3. The client receives the `link_token` and builds the hosted link URL.
 4. The app loads the URL in a native webview.
 5. The hosted page emits JSON events back to the app shell on every important state transition.
-6. On `CONNECTED`, the app exchanges the returned `public_token` if needed and dismisses the sheet.
+6. On `CONNECTED`, the app receives a `public_token`, dismisses the sheet, and exchanges that token server-side when it needs a durable access token.
+
+The hosted page does not return extracted account payloads to the browser or webview shell. The browser-safe completion contract is `public_token` plus connection metadata only.
 
 ## Bridge Targets
 
@@ -42,8 +44,8 @@ Common payload fields:
 - `organization_name`
 - `session_id`
 - `mfa_type`
-- `access_token`
 - `public_token`
+- `job_id`
 - `error`
 
 ## UX Guidance
@@ -51,7 +53,10 @@ Common payload fields:
 - Use full-screen presentation on phones.
 - Keep the native status bar visible, but let the webview own the rest of the screen.
 - Dismiss the native sheet when you receive `DONE`, `EXIT`, or `CONNECTED`.
+- Treat `public_token` as the only browser-safe completion token.
 - Treat `ERROR` as a terminal event and show a native retry affordance.
+
+The repository includes a Playwright E2E slice in `tests/test_hosted_link_e2e.py` that validates the hosted web journey plus the React Native and WKWebView bridge payload contract.
 
 ## Security Notes
 
@@ -78,7 +83,7 @@ export function PlaidifyMobileSheet() {
 
   useEffect(() => {
     async function boot() {
-      const session = await client.createPublicLinkSession();
+      const session = await client.exchangeHostedLinkBootstrap(launchTokenFromBackend);
       setToken(session.link_token);
     }
     boot();
@@ -93,8 +98,8 @@ export function PlaidifyMobileSheet() {
         serverUrl="https://api.example.com"
         token={token}
         theme={{ fullscreenOnMobile: true, accentColor: "#0b8f73" }}
-        onSuccess={(accessToken, metadata) => {
-          console.log(accessToken, metadata.public_token, metadata.organization_name);
+        onSuccess={(publicToken, metadata) => {
+          console.log(publicToken, metadata.organization_name, metadata.job_id);
         }}
       />
     </View>
@@ -102,11 +107,36 @@ export function PlaidifyMobileSheet() {
 }
 ```
 
-Redeem the bootstrap token from your backend, then render the resulting hosted session in your native shell.
+Redeem the bootstrap token from your backend, then render the resulting hosted session in your native shell. Exchange the returned `public_token` on your backend when you need a durable Plaidify access token.
 
 ## Native iOS Skeleton
 
-Register a `plaidifyLink` `WKScriptMessageHandler`, load the hosted URL in `WKWebView`, and parse `message.body` as the structured event payload.
+Use the first-party Swift package in `sdk-swift/` to build the hosted URL, parse bridge messages, and decide when to dismiss the native sheet.
+
+```swift
+import WebKit
+import PlaidifyLinkKit
+
+let configuration = PlaidifyHostedLinkConfiguration(
+  serverURL: URL(string: "https://api.example.com")!,
+  token: linkToken,
+  origin: "myapp://callback",
+  theme: PlaidifyLinkTheme(accentColor: "#0b8f73")
+)
+
+let bridge = PlaidifyLinkScriptMessageHandler { event in
+  if event.shouldDismissSheet {
+    print("Dismiss sheet with public token:", event.publicToken ?? "")
+  }
+}
+
+let webView = PlaidifyLinkWebViewFactory.makeWebView(
+  hostedLink: configuration,
+  messageHandler: bridge
+)
+```
+
+Bridge events from `window.webkit.messageHandlers.plaidifyLink` are parsed into `PlaidifyLinkEvent`, including `publicToken`, `jobID`, `organizationName`, and `shouldDismissSheet`.
 
 ## Native Android Skeleton
 

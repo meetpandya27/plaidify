@@ -65,6 +65,21 @@ What the production stack changes compared to the default compose file:
 - Detached `/connect` jobs run in a separate `access-executor` service backed by Redis dispatch
 - nginx is enabled and terminates TLS in front of Plaidify
 
+## Release Validation
+
+Run these checks before shipping a release candidate:
+
+```bash
+python -m pytest tests/ -q
+PYTHONPATH=$PWD python -m pytest tests/test_hosted_link_e2e.py -q -m playwright
+```
+
+Install Chromium once before the hosted-link browser slice runs for the first time:
+
+```bash
+python -m playwright install chromium
+```
+
 ---
 
 ## Environment Variables Reference

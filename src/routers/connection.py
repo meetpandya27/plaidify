@@ -4,25 +4,81 @@ Connection endpoints: connect, disconnect, encryption sessions, MFA.
 
 import asyncio
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from src import session_store
 from src.access_jobs import start_access_job, wait_for_mfa_session
 from src.config import get_settings
 from src.core.engine import connect_to_site, submit_mfa_code
 from src.core.mfa_manager import get_mfa_manager
 from src.crypto import generate_keypair, get_public_key
-from src.database import get_db
+from src.database import AccessToken, Link, User, encrypt_credential_for_user, get_current_key_version, get_db
 from src.dependencies import limiter, resolve_credentials
 from src.exceptions import MFARequiredError
 from src.models import ConnectRequest, ConnectResponse
+from src.routers.link_sessions import _push_link_session_event, reconcile_link_session
 
 settings = get_settings()
 _CONNECT_COMPLETION_WAIT_SECONDS = 1.5
 _CONNECT_MFA_DISCOVERY_WAIT_SECONDS = 0.75
 
 router = APIRouter(tags=["connection"])
+
+
+def _ensure_hosted_link_access_token(
+    db: Session,
+    *,
+    link_token: str,
+    site: str,
+    username: str,
+    password: str,
+) -> tuple[Optional[dict], Optional[str], Optional[int]]:
+    session = session_store.get_link_session(link_token)
+    if not session:
+        return None, None, None
+
+    user_id = session.get("user_id")
+    if user_id is None:
+        return session, None, None
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return None, None, None
+
+    link = db.query(Link).filter_by(link_token=link_token).first()
+    if link is None:
+        link = Link(link_token=link_token, site=site, user_id=user_id)
+        db.add(link)
+    elif link.site != site:
+        link.site = site
+
+    token = (
+        db.query(AccessToken)
+        .filter_by(link_token=link_token, user_id=user_id)
+        .order_by(AccessToken.updated_at.desc())
+        .first()
+    )
+    if token is None:
+        token = AccessToken(
+            token=str(uuid.uuid4()),
+            link_token=link_token,
+            username_encrypted=encrypt_credential_for_user(user, username),
+            password_encrypted=encrypt_credential_for_user(user, password),
+            scopes=session_store.pop_link_scopes(link_token),
+            user_id=user_id,
+            key_version=get_current_key_version(),
+        )
+        db.add(token)
+    else:
+        token.username_encrypted = encrypt_credential_for_user(user, username)
+        token.password_encrypted = encrypt_credential_for_user(user, password)
+        token.key_version = get_current_key_version()
+
+    db.commit()
+    return session, token.token, user_id
 
 
 @router.get("/encryption/public_key/{link_token}")
@@ -70,6 +126,18 @@ async def connect(
     The client then calls POST /mfa/submit with the code.
     """
     username, password = resolve_credentials(body)
+    hosted_session = None
+    hosted_access_token = None
+    hosted_user_id = None
+    if body.link_token:
+        hosted_session, hosted_access_token, hosted_user_id = _ensure_hosted_link_access_token(
+            db,
+            link_token=body.link_token,
+            site=body.site,
+            username=username,
+            password=password,
+        )
+
     try:
         job, task = await start_access_job(
             db,
@@ -84,8 +152,30 @@ async def connect(
                 "extract_fields": body.extract_fields,
             },
             principal_hint=username,
-            metadata={"extract_fields": body.extract_fields or []},
+            metadata={
+                "extract_fields": body.extract_fields or [],
+                "link_token": body.link_token,
+            },
+            user_id=hosted_user_id,
         )
+
+        if body.link_token and hosted_session is not None:
+            session_store.update_link_session(
+                body.link_token,
+                {
+                    "access_token": hosted_access_token,
+                    "current_job_id": job.id,
+                    "error_message": None,
+                    "message": None,
+                    "metadata": None,
+                    "mfa_type": None,
+                    "public_token": None,
+                    "result": None,
+                    "session_id": job.session_id,
+                    "site": body.site,
+                    "status": "connecting",
+                },
+            )
 
         try:
             completed_job, response_data = await asyncio.wait_for(
@@ -93,6 +183,8 @@ async def connect(
                 timeout=_CONNECT_COMPLETION_WAIT_SECONDS,
             )
             response_data["job_id"] = completed_job.id
+            if body.link_token and hosted_session is not None:
+                await reconcile_link_session(db, link_token=body.link_token, job_id=completed_job.id)
             return response_data
         except asyncio.TimeoutError:
             mfa_session = await wait_for_mfa_session(
@@ -100,6 +192,26 @@ async def connect(
                 timeout=_CONNECT_MFA_DISCOVERY_WAIT_SECONDS,
             )
             if mfa_session:
+                if body.link_token and hosted_session is not None:
+                    await _push_link_session_event(
+                        body.link_token,
+                        "MFA_REQUIRED",
+                        data={
+                            "mfa_type": mfa_session["mfa_type"],
+                            "session_id": mfa_session["session_id"],
+                            "site": body.site,
+                        },
+                        updates={
+                            "access_token": hosted_access_token,
+                            "current_job_id": job.id,
+                            "message": (mfa_session.get("metadata") or {}).get("message"),
+                            "metadata": mfa_session.get("metadata") or {},
+                            "mfa_type": mfa_session["mfa_type"],
+                            "session_id": mfa_session["session_id"],
+                            "site": body.site,
+                            "status": "mfa_required",
+                        },
+                    )
                 return ConnectResponse(
                     status="mfa_required",
                     job_id=job.id,
@@ -111,6 +223,8 @@ async def connect(
             if task.done():
                 completed_job, response_data = await task
                 response_data["job_id"] = completed_job.id
+                if body.link_token and hosted_session is not None:
+                    await reconcile_link_session(db, link_token=body.link_token, job_id=completed_job.id)
                 return response_data
 
             return ConnectResponse(
@@ -124,6 +238,26 @@ async def connect(
                 },
             )
     except MFARequiredError as e:
+        if body.link_token and hosted_session is not None:
+            await _push_link_session_event(
+                body.link_token,
+                "MFA_REQUIRED",
+                data={
+                    "mfa_type": e.mfa_type,
+                    "session_id": e.session_id,
+                    "site": body.site,
+                },
+                updates={
+                    "access_token": hosted_access_token,
+                    "current_job_id": getattr(e, "job_id", None),
+                    "message": e.message,
+                    "metadata": {"message": e.message},
+                    "mfa_type": e.mfa_type,
+                    "session_id": e.session_id,
+                    "site": body.site,
+                    "status": "mfa_required",
+                },
+            )
         return ConnectResponse(
             status="mfa_required",
             job_id=getattr(e, "job_id", None),

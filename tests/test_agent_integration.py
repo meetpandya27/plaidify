@@ -40,6 +40,34 @@ class TestHostedLinkPage:
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
 
+    def test_link_page_allows_bootstrap_origin_in_frame_ancestors(self, client, auth_headers):
+        bootstrap_resp = client.post(
+            "/link/bootstrap",
+            json={"allowed_origin": "https://app.example.com"},
+            headers=auth_headers,
+        )
+        launch_token = bootstrap_resp.json()["launch_token"]
+
+        exchange_resp = client.post(
+            "/link/sessions/bootstrap",
+            json={"launch_token": launch_token},
+            headers={"Origin": "https://app.example.com"},
+        )
+        link_token = exchange_resp.json()["link_token"]
+
+        resp = client.get(f"/link?token={link_token}")
+        assert resp.status_code == 200
+        assert "frame-ancestors 'self' https://app.example.com" in resp.headers["content-security-policy"]
+        assert "x-frame-options" not in {k.lower() for k in resp.headers.keys()}
+
+    def test_ui_root_does_not_serve_console(self, client):
+        resp = client.get("/ui/")
+        assert resp.status_code == 404
+
+    def test_ui_index_is_not_served(self, client):
+        resp = client.get("/ui/index.html")
+        assert resp.status_code == 404
+
 
 # ── Link Sessions ─────────────────────────────────────────────────────────────
 
@@ -122,6 +150,18 @@ class TestLinkSessions:
         assert data["site"] == "hydro_one"
         assert data["allowed_origin"] == "https://app.example.com"
 
+    def test_create_link_bootstrap_rejects_non_origin_allowed_origin(self, client, auth_headers):
+        resp = client.post(
+            "/link/bootstrap",
+            json={
+                "allowed_origin": "https://app.example.com/callback?next=1",
+            },
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 422
+        assert "allowed_origin" in resp.text
+
     def test_exchange_link_bootstrap(self, client, auth_headers):
         bootstrap_resp = client.post(
             "/link/bootstrap",
@@ -199,7 +239,6 @@ class TestLinkSessions:
         resp = client.post(
             f"/link/sessions/{token}/event",
             json={"event": "INSTITUTION_SELECTED", "site": "hydro_one"},
-            headers=auth_headers,
         )
         assert resp.status_code == 200
 
@@ -216,10 +255,10 @@ class TestLinkSessions:
         events = [
             ("INSTITUTION_SELECTED", "awaiting_credentials"),
             ("CREDENTIALS_SUBMITTED", "connecting"),
-            ("CONNECTED", "completed"),
+            ("ERROR", "error"),
         ]
         for event_name, expected_status in events:
-            client.post(f"/link/sessions/{token}/event", json={"event": event_name}, headers=auth_headers)
+            client.post(f"/link/sessions/{token}/event", json={"event": event_name})
             status = client.get(f"/link/sessions/{token}/status").json()
             assert status["status"] == expected_status
 
@@ -227,14 +266,14 @@ class TestLinkSessions:
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        client.post(f"/link/sessions/{token}/event", json={"event": "INSTITUTION_SELECTED"}, headers=auth_headers)
-        client.post(f"/link/sessions/{token}/event", json={"event": "CREDENTIALS_SUBMITTED"}, headers=auth_headers)
-        client.post(f"/link/sessions/{token}/event", json={"event": "MFA_REQUIRED"}, headers=auth_headers)
+        client.post(f"/link/sessions/{token}/event", json={"event": "INSTITUTION_SELECTED"})
+        client.post(f"/link/sessions/{token}/event", json={"event": "CREDENTIALS_SUBMITTED"})
+        client.post(f"/link/sessions/{token}/event", json={"event": "MFA_REQUIRED"})
 
         status = client.get(f"/link/sessions/{token}/status").json()
         assert status["status"] == "mfa_required"
 
-        client.post(f"/link/sessions/{token}/event", json={"event": "MFA_SUBMITTED"}, headers=auth_headers)
+        client.post(f"/link/sessions/{token}/event", json={"event": "MFA_SUBMITTED"})
         status = client.get(f"/link/sessions/{token}/status").json()
         assert status["status"] == "verifying_mfa"
 
@@ -245,7 +284,7 @@ class TestLinkSessions:
         # Manually expire the session
         session_store._mem_link_sessions[token]["created_at"] = 0
 
-        resp = client.post(f"/link/sessions/{token}/event", json={"event": "TEST"}, headers=auth_headers)
+        resp = client.post(f"/link/sessions/{token}/event", json={"event": "TEST"})
         assert resp.status_code == 410
 
 
@@ -418,58 +457,44 @@ class TestWebhooks:
 
 
 class TestPublicTokenExchange:
-    def _create_session_with_access_token(self, client, auth_headers):
-        """Helper: create a link session and simulate the CONNECTED event with an access_token."""
+    def _create_completed_session(self, client, auth_headers):
+        """Helper: create a hosted link session and complete it through /connect."""
         create_resp = client.post("/link/sessions", headers=auth_headers)
         token = create_resp.json()["link_token"]
 
-        # Create a real access token in DB first
-        from src.database import AccessToken, Link, get_db
-
-        db = next(get_db())
-        # Ensure a Link record exists
-        link = db.query(Link).filter_by(link_token=token).first()
-        if not link:
-            # Get user_id from session
-            user_id = session_store.get_link_session(token)["user_id"]
-            link = Link(link_token=token, site="test_site", user_id=user_id)
-            db.add(link)
-            db.commit()
-
-        at = AccessToken(
-            token="at-test-123",
-            link_token=token,
-            username_encrypted="enc_user",
-            password_encrypted="enc_pass",
-            user_id=session_store.get_link_session(token)["user_id"],
-        )
-        db.add(at)
-        db.commit()
-        db.close()
-
-        # Fire CONNECTED event (this creates the public_token)
-        resp = client.post(
-            f"/link/sessions/{token}/event",
+        connect_resp = client.post(
+            "/connect",
             json={
-                "event": "CONNECTED",
-                "access_token": "at-test-123",
+                "link_token": token,
+                "password": "Secret@pass123",
+                "site": "hydro_one",
+                "username": "demo-user",
             },
-            headers=auth_headers,
         )
-        return token, resp.json()
+        assert connect_resp.status_code == 200
+        assert connect_resp.json()["status"] == "connected"
 
-    def test_connected_event_returns_public_token(self, client, auth_headers):
-        token, data = self._create_session_with_access_token(client, auth_headers)
+        status_resp = client.get(f"/link/sessions/{token}/status")
+        assert status_resp.status_code == 200
+        return token, status_resp.json()
+
+    def test_completed_session_returns_public_token(self, client, auth_headers):
+        token, data = self._create_completed_session(client, auth_headers)
         assert "public_token" in data
         assert data["public_token"].startswith("public-")
 
     def test_session_status_includes_public_token(self, client, auth_headers):
-        token, data = self._create_session_with_access_token(client, auth_headers)
+        token, data = self._create_completed_session(client, auth_headers)
         status_resp = client.get(f"/link/sessions/{token}/status")
         assert status_resp.json()["public_token"] == data["public_token"]
 
+    def test_session_status_does_not_expose_result_payload(self, client, auth_headers):
+        token, _ = self._create_completed_session(client, auth_headers)
+        status_resp = client.get(f"/link/sessions/{token}/status")
+        assert "result" not in status_resp.json()
+
     def test_exchange_public_token(self, client, auth_headers):
-        token, data = self._create_session_with_access_token(client, auth_headers)
+        token, data = self._create_completed_session(client, auth_headers)
         public_token = data["public_token"]
 
         resp = client.post(
@@ -480,10 +505,10 @@ class TestPublicTokenExchange:
             headers=auth_headers,
         )
         assert resp.status_code == 200
-        assert resp.json()["access_token"] == "at-test-123"
+        assert resp.json()["access_token"]
 
     def test_exchange_public_token_single_use(self, client, auth_headers):
-        token, data = self._create_session_with_access_token(client, auth_headers)
+        token, data = self._create_completed_session(client, auth_headers)
         public_token = data["public_token"]
 
         # First exchange succeeds
@@ -525,7 +550,7 @@ class TestPublicTokenExchange:
         assert resp.status_code in (401, 403)
 
     def test_exchange_public_token_wrong_user(self, client, auth_headers, second_user_headers):
-        token, data = self._create_session_with_access_token(client, auth_headers)
+        token, data = self._create_completed_session(client, auth_headers)
         public_token = data["public_token"]
 
         # Second user can't exchange first user's token
@@ -567,7 +592,7 @@ class TestSDKModels:
         try:
             from plaidify.models import LinkEvent
 
-            event = LinkEvent(event="CONNECTED", data={"access_token": "xyz"})
+            event = LinkEvent(event="CONNECTED", data={"public_token": "public-xyz"})
             assert event.event == "CONNECTED"
         finally:
             sys.path.pop(0)

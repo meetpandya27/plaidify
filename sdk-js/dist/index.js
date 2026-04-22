@@ -216,6 +216,18 @@ var Plaidify = class {
   async createPublicLinkSession() {
     return this.post("/link/sessions/public");
   }
+  async createHostedLinkBootstrap(options) {
+    return this.post("/link/bootstrap", {
+      site: options?.site,
+      allowed_origin: options?.allowedOrigin,
+      scopes: options?.scopes
+    });
+  }
+  async exchangeHostedLinkBootstrap(launchToken) {
+    return this.post("/link/sessions/bootstrap", {
+      launch_token: launchToken
+    });
+  }
   getLinkUrl(linkToken, options) {
     const url = new URL(`${this.baseUrl}/link`);
     url.searchParams.set("token", linkToken);

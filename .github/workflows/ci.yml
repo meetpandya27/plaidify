@@ -57,6 +57,27 @@ jobs:
           name: coverage-report
           path: .coverage
 
+  playwright:
+    name: Hosted Link E2E (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Run hosted Link browser tests
+        run: PYTHONPATH=$PWD pytest tests/test_hosted_link_e2e.py -q -m playwright
+
   security:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -112,7 +133,7 @@ jobs:
   deploy:
     name: Deploy (staging)
     runs-on: ubuntu-latest
-    needs: [lint, test, security, codeql, docker]
+    needs: [lint, test, playwright, security, codeql, secrets-scan, docker]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read

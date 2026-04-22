@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildPlaidifyHostedLinkUrl,
+  createPlaidifyReactNativeMessageHandler,
   createPlaidifyReactNativeWebViewProps,
   isPlaidifyTerminalEvent,
   parsePlaidifyLinkMessage,
@@ -30,6 +31,7 @@ describe("react-native helpers", () => {
     });
 
     expect(props.source.uri).toBe("https://api.example.com/link?token=lnk-123");
+    expect(props.originWhitelist).toEqual(["https://api.example.com"]);
     expect(props.javaScriptEnabled).toBe(true);
     expect(props.domStorageEnabled).toBe(true);
   });
@@ -40,18 +42,62 @@ describe("react-native helpers", () => {
         data: JSON.stringify({
           source: "plaidify-link",
           event: "CONNECTED",
-          access_token: "acc-123",
+          public_token: "public-123",
         }),
       },
     });
 
     expect(payload?.event).toBe("CONNECTED");
-    expect(payload?.access_token).toBe("acc-123");
+    expect(payload?.public_token).toBe("public-123");
   });
 
   it("rejects non-plaidify bridge messages", () => {
     const payload = parsePlaidifyLinkMessage(JSON.stringify({ event: "CONNECTED" }));
     expect(payload).toBeNull();
+  });
+
+  it("sanitizes extra fields from bridge messages", () => {
+    const payload = parsePlaidifyLinkMessage(
+      JSON.stringify({
+        source: "plaidify-link",
+        event: "CONNECTED",
+        public_token: "public-123",
+        data: { balance: 42 },
+        access_token: "secret",
+      }),
+    ) as Record<string, unknown> | null;
+
+    expect(payload?.public_token).toBe("public-123");
+    expect(payload).not.toHaveProperty("data");
+    expect(payload).not.toHaveProperty("access_token");
+  });
+
+  it("passes only approved metadata to onSuccess", () => {
+    let successToken = "";
+    let successMetadata: Record<string, unknown> | null = null;
+    const handleMessage = createPlaidifyReactNativeMessageHandler({
+      onSuccess: (publicToken, metadata) => {
+        successToken = publicToken;
+        successMetadata = metadata as Record<string, unknown>;
+      },
+    });
+
+    handleMessage({
+      nativeEvent: {
+        data: JSON.stringify({
+          source: "plaidify-link",
+          event: "CONNECTED",
+          public_token: "public-456",
+          job_id: "job-123",
+          data: { should_not_escape: true },
+        }),
+      },
+    });
+
+    expect(successToken).toBe("public-456");
+    expect(successMetadata?.public_token).toBe("public-456");
+    expect(successMetadata?.job_id).toBe("job-123");
+    expect(successMetadata).not.toHaveProperty("data");
   });
 
   it("detects terminal events", () => {

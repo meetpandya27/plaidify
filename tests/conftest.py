@@ -136,10 +136,13 @@ async def _mock_connect_to_site(site, username=None, password=None, **kwargs):
 def mock_browser_engine(request):
     """Mock connect_to_site in all routers to prevent Playwright browser launch.
 
-    Tests that need real browser automation should use:
-        @pytest.mark.playwright
+    Browser-automation tests still keep this mock by default so hosted-link
+    UI coverage stays deterministic. Tests that need the real connector backend
+    should use:
+        @pytest.mark.real_connector
     """
-    if "playwright" in [m.name for m in request.node.iter_markers()]:
+    marker_names = {marker.name for marker in request.node.iter_markers()}
+    if "real_connector" in marker_names:
         yield
         return
 

@@ -29,6 +29,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "playwright: mark test as requiring a real Playwright browser (deselected by default)",
+    "real_connector: mark test as requiring a live connector backend instead of the mocked connect_to_site fixture",
 ]
 
 [tool.coverage.run]

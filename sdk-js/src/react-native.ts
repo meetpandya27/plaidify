@@ -17,7 +17,7 @@ export interface PlaidifyReactNativeLinkConfig {
 
 export interface PlaidifyReactNativeCallbacks {
   onEvent?: (event: string, payload: PlaidifyLinkEventPayload) => void;
-  onSuccess?: (accessToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
+  onSuccess?: (publicToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
   onExit?: (details: PlaidifyLinkExitDetails) => void;
   onMFA?: (details: PlaidifyLinkMfaDetails) => void;
 }
@@ -86,9 +86,10 @@ export function buildPlaidifyHostedLinkUrl(
 export function createPlaidifyReactNativeWebViewProps(
   config: PlaidifyReactNativeLinkConfig,
 ): PlaidifyReactNativeWebViewProps {
+  const origin = new URL(config.serverUrl.replace(/\/+$/, "")).origin;
   return {
     source: { uri: buildPlaidifyHostedLinkUrl(config) },
-    originWhitelist: ["*"],
+    originWhitelist: [origin],
     javaScriptEnabled: true,
     domStorageEnabled: true,
     sharedCookiesEnabled: true,
@@ -116,7 +117,7 @@ export function createPlaidifyReactNativeMessageHandler(
     switch (payload.event) {
       case "CONNECTED":
         callbacks?.onStatusChange?.("success");
-        callbacks?.onSuccess?.(payload.access_token || "", payload);
+        callbacks?.onSuccess?.(payload.public_token || "", payload);
         break;
       case "MFA_REQUIRED":
         callbacks?.onStatusChange?.("active");
@@ -237,7 +238,19 @@ export function parsePlaidifyLinkMessage(
     return null;
   }
 
-  return eventPayload;
+  return {
+    source: "plaidify-link",
+    event: eventPayload.event,
+    error: eventPayload.error,
+    job_id: eventPayload.job_id,
+    mfa_type: eventPayload.mfa_type,
+    organization_id: eventPayload.organization_id,
+    organization_name: eventPayload.organization_name,
+    public_token: eventPayload.public_token,
+    reason: eventPayload.reason,
+    session_id: eventPayload.session_id,
+    site: eventPayload.site,
+  };
 }
 
 export function isPlaidifyTerminalEvent(eventName?: string): boolean {

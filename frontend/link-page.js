@@ -32,8 +32,8 @@
     select: {
       eyebrow: "Step 1 of 3",
       title: "Choose your organization",
-      subtitle: "Search from a large USA and Canada directory and continue with read-only, encrypted access.",
-      footer: "Credentials stay inside this encrypted connection window.",
+      subtitle: "Choose from trusted providers and continue through a secure, read-only connection.",
+      footer: "Your sign-in details stay inside this encrypted connection window.",
     },
     credentials: {
       eyebrow: "Step 2 of 3",
@@ -44,7 +44,7 @@
     connecting: {
       eyebrow: "Connecting",
       title: "Creating your secure session",
-      subtitle: "We are opening the provider portal and progressing through the authenticated flow.",
+      subtitle: "We are opening the provider portal and preparing a secure handoff back to your app.",
       footer: "If the provider prompts for additional verification, the flow will pause here.",
     },
     mfa: {
@@ -55,8 +55,8 @@
     },
     success: {
       eyebrow: "Connected",
-      title: "Your account is ready",
-      subtitle: "Plaidify completed the provider flow and packaged the resulting data.",
+      title: "Your secure handoff is ready",
+      subtitle: "Plaidify completed the provider flow and prepared the final handoff back to your app.",
       footer: "You can safely close this window at any time.",
     },
     error: {
@@ -219,6 +219,35 @@
     });
   }
 
+  function renderInstitutionState(kind, title, copy) {
+    const container = $("#institution-list");
+    if (!container) {
+      return;
+    }
+
+    if (kind === "loading") {
+      container.innerHTML = `
+        <div class="institution-state institution-state--loading" aria-live="polite">
+          <span class="institution-spinner" aria-hidden="true"></span>
+          <div>
+            <div class="institution-state__title">${escapeHtml(title)}</div>
+            <div class="institution-state__copy">${escapeHtml(copy)}</div>
+          </div>
+        </div>`;
+      return;
+    }
+
+    const icon = kind === "error" ? "!" : "?";
+    container.innerHTML = `
+      <div class="institution-state" aria-live="polite">
+        <span class="institution-state__icon" aria-hidden="true">${escapeHtml(icon)}</span>
+        <div>
+          <div class="institution-state__title">${escapeHtml(title)}</div>
+          <div class="institution-state__copy">${escapeHtml(copy)}</div>
+        </div>
+      </div>`;
+  }
+
   function escapeHtml(value) {
     const div = document.createElement("div");
     div.textContent = value == null ? "" : String(value);
@@ -373,6 +402,13 @@
   async function loadOrganizations(overrides) {
     const requestId = ++state.searchRequestId;
     const path = buildSearchPath(overrides);
+    renderInstitutionState(
+      "loading",
+      overrides?.site ? "Preparing your provider" : "Finding the best matches",
+      overrides?.site
+        ? "We are loading a secure connection path for your selected provider."
+        : "Curating trusted providers for this secure connection."
+    );
     const payload = await apiCall("GET", path);
 
     if (requestId !== state.searchRequestId) {
@@ -400,45 +436,23 @@
       try {
         await loadOrganizations();
       } catch (error) {
-        $("#institution-list").innerHTML = `<div class="institution-empty">${escapeHtml(error.message || "Unable to load organizations.")}</div>`;
+        renderInstitutionState(
+          "error",
+          "We couldn't load providers right now",
+          error.message || "Try again in a moment."
+        );
       }
     }, 180);
   }
 
-  function formatCurrency(value) {
-    const amount = Number(value);
-    if (!Number.isFinite(amount)) {
-      return value == null ? "-" : String(value);
-    }
-    return new Intl.NumberFormat("en-US", {
-      currency: "USD",
-      style: "currency",
-      minimumFractionDigits: 2,
-    }).format(amount);
-  }
-
-  function buildHighlightCards(data) {
-    const cards = [];
-
-    if (data.current_bill != null) {
-      cards.push({ label: "Current bill", value: formatCurrency(data.current_bill) });
-    }
-    if (data.usage_kwh) {
-      cards.push({ label: "Usage", value: data.usage_kwh });
-    }
-    if (data.plan_name) {
-      cards.push({ label: "Plan", value: data.plan_name });
-    }
-    if (data.account_status && cards.length < 3) {
-      cards.push({ label: "Status", value: data.account_status });
-    }
-
-    if (!cards.length) {
-      cards.push({ label: "Status", value: "Connection ready" });
-    }
+  function buildSuccessCards(providerName) {
+    const cards = [
+      { label: "Status", value: "Connection verified" },
+      { label: "Provider", value: providerName },
+      { label: "Next step", value: "Finish in your app" },
+    ];
 
     return cards
-      .slice(0, 3)
       .map(
         (card) => `
           <div class="highlight-card">
@@ -466,8 +480,8 @@
 
     const consentItems = [
       `Open a secure browser session for ${provider.name}.`,
-      "Encrypt credentials before they leave this window.",
-      "Return the read-only fields defined by the connector runtime.",
+      "Encrypt your sign-in details before they leave this window.",
+      "Return a secure completion back to your app when verification finishes.",
     ];
 
     if (provider.has_mfa) {
@@ -482,7 +496,11 @@
   function renderInstitutions(list) {
     const container = $("#institution-list");
     if (!list.length) {
-      container.innerHTML = '<div class="institution-empty">No organizations matched your search.</div>';
+      renderInstitutionState(
+        "empty",
+        "No providers matched that search",
+        "Try a broader search, or change your country or category filters."
+      );
       return;
     }
 
@@ -494,8 +512,8 @@
           .join("");
 
         const support = organization.has_mfa
-          ? "Verification supported when the provider challenges the session"
-          : "Read-only connection flow routed through the selected connector runtime";
+          ? "Additional verification is supported if the provider asks for it"
+          : "Secure sign-in and read-only access are supported for this connection";
 
         return `
           <button class="institution-item" type="button" data-organization-id="${escapeHtml(organization.organization_id)}">
@@ -523,12 +541,13 @@
     }
 
     try {
-      const payload = await apiCall("GET", `/link/sessions/${encodeURIComponent(linkToken)}/status`);
+      const payload = await getLinkSessionStatus();
       if (payload.status === "expired" || payload.status === "completed") {
         showError(`This link has ${payload.status}. Request a fresh link to continue.`);
         return false;
       }
 
+      state.currentJobId = payload.job_id || state.currentJobId;
       state.preselectedSite = payload.site || null;
       return true;
     } catch (error) {
@@ -549,7 +568,11 @@
 
       await loadOrganizations();
     } catch (error) {
-      $("#institution-list").innerHTML = `<div class="institution-empty">${escapeHtml(error.message || "Unable to load organizations.")}</div>`;
+      renderInstitutionState(
+        "error",
+        "We couldn't load providers right now",
+        error.message || "Try again in a moment."
+      );
     }
   }
 
@@ -662,7 +685,7 @@
 
     state.progressTimers.push(
       window.setTimeout(() => {
-        setConnectingState(3, "Reading structured data", "The connector is extracting the configured fields from the authenticated experience.");
+        setConnectingState(3, "Preparing secure handoff", "Packaging a completion token for your app.");
       }, 2400)
     );
   }
@@ -671,16 +694,37 @@
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
+  async function getLinkSessionStatus() {
+    return apiCall("GET", `/link/sessions/${encodeURIComponent(linkToken)}/status`);
+  }
+
   function normalizeResult(payload) {
-    const inner = payload.result || payload;
     return {
-      accessToken: inner.access_token || payload.access_token || "",
-      data: inner.data || payload.data || {},
       jobId: payload.job_id || state.currentJobId || "",
-      metadata: inner.metadata || payload.metadata || {},
-      publicToken: inner.public_token || payload.public_token || "",
-      status: inner.status || payload.status || "connected",
+      metadata: payload.metadata || {},
+      publicToken: payload.public_token || "",
+      sessionId: payload.session_id || state.sessionId || "",
+      status: payload.status || "connected",
     };
+  }
+
+  async function resolveHostedSuccess(fallbackResult) {
+    if (!linkToken) {
+      return fallbackResult;
+    }
+
+    try {
+      const payload = await getLinkSessionStatus();
+      state.currentJobId = payload.job_id || state.currentJobId;
+      state.sessionId = payload.session_id || state.sessionId;
+      if (payload.status === "completed") {
+        return normalizeResult(payload);
+      }
+    } catch (_) {
+      // Fall back to the local response when session reconciliation is unavailable.
+    }
+
+    return fallbackResult;
   }
 
   function showMfa(message, mfaType) {
@@ -696,38 +740,34 @@
     $("#mfa-code").focus();
   }
 
-  async function pollAccessJob(jobId, options) {
-    if (!jobId) {
-      throw new Error("The connection is running, but no job id was returned.");
-    }
-
-    state.currentJobId = jobId;
+  async function pollLinkSession(options) {
     state.polling = true;
     const afterMfaSubmit = Boolean(options && options.afterMfaSubmit);
 
     for (let attempt = 0; attempt < 90; attempt += 1) {
-      const payload = await apiCall("GET", `/access_jobs/${encodeURIComponent(jobId)}`);
+      const payload = await getLinkSessionStatus();
+      state.currentJobId = payload.job_id || state.currentJobId;
+      state.sessionId = payload.session_id || state.sessionId;
 
       if (payload.status === "mfa_required") {
         if (afterMfaSubmit && attempt < 3) {
           await sleep(700);
           continue;
         }
-        state.sessionId = payload.session_id || state.sessionId;
         state.polling = false;
-        showMfa(payload.metadata?.message, payload.mfa_type);
+        showMfa(payload.message || payload.metadata?.message, payload.mfa_type);
         return;
       }
 
-      if (payload.status === "completed" && payload.result) {
+      if (payload.status === "completed") {
         state.polling = false;
         showSuccess(normalizeResult(payload));
         return;
       }
 
-      if (payload.status === "failed" || payload.status === "cancelled") {
+      if (payload.status === "error") {
         state.polling = false;
-        showError(payload.error_message || "The connection could not be completed.");
+        showError(payload.error_message || payload.message || "The connection could not be completed.");
         return;
       }
 
@@ -735,7 +775,7 @@
         setConnectingState(2, "Verifying credentials", "The provider flow is active and the connector is waiting for the next page state.");
       }
       if (attempt >= 3) {
-        setConnectingState(3, "Reading structured data", "The connection is still active and extracting structured fields.");
+        setConnectingState(3, "Preparing secure handoff", "The connection is active and preparing the secure handoff back to your app.");
       }
 
       await sleep(1100);
@@ -749,22 +789,17 @@
     clearProgressTimers();
     state.lastResult = result;
 
-    const data = result.data || {};
-    const fieldCount = Object.keys(data).length;
     const providerName = state.selectedSite ? state.selectedSite.name : "Your provider";
 
     $("#success-provider").textContent = providerName;
-    $("#success-message").textContent = fieldCount
-      ? `${fieldCount} structured data field${fieldCount === 1 ? "" : "s"} are ready to use.`
-      : "The secure connection completed successfully.";
-    $("#success-highlights").innerHTML = buildHighlightCards(data);
+    $("#success-message").textContent = result.publicToken
+      ? "Your secure connection is complete. Return to your app to finish setup."
+      : "The secure connection completed successfully. Return to your app to continue.";
+    $("#success-highlights").innerHTML = buildSuccessCards(providerName);
 
     const references = [];
     if (result.publicToken) {
       references.push({ label: "Public token", value: result.publicToken });
-    }
-    if (result.accessToken) {
-      references.push({ label: "Access token", value: result.accessToken });
     }
     if (result.jobId || state.currentJobId) {
       references.push({ label: "Connection id", value: result.jobId || state.currentJobId });
@@ -789,15 +824,7 @@
 
     showStep("success", "complete");
     postEvent("CONNECTED", {
-      access_token: result.accessToken,
-      data,
-      organization_id: state.selectedSite ? state.selectedSite.organization_id : null,
-      organization_name: state.selectedSite ? state.selectedSite.name : null,
-      public_token: result.publicToken,
-      site: state.selectedSite ? state.selectedSite.site : null,
-    });
-    bestEffortLinkEvent("CONNECTED", {
-      access_token: result.accessToken,
+      job_id: result.jobId || state.currentJobId || null,
       organization_id: state.selectedSite ? state.selectedSite.organization_id : null,
       organization_name: state.selectedSite ? state.selectedSite.name : null,
       public_token: result.publicToken,
@@ -837,7 +864,7 @@
     }
 
     if (response.status === "connected") {
-      showSuccess(normalizeResult(response));
+      showSuccess(await resolveHostedSuccess(normalizeResult(response)));
       return;
     }
 
@@ -848,7 +875,7 @@
     }
 
     if (response.status === "pending") {
-      await pollAccessJob(response.job_id);
+      await pollLinkSession();
       return;
     }
 
@@ -1029,12 +1056,12 @@
       }
 
       if (result.status === "connected") {
-        showSuccess(normalizeResult(result));
+        showSuccess(await resolveHostedSuccess(normalizeResult(result)));
         return;
       }
 
-      if (state.currentJobId) {
-        await pollAccessJob(state.currentJobId, { afterMfaSubmit: true });
+      if (linkToken) {
+        await pollLinkSession({ afterMfaSubmit: true });
         return;
       }
 

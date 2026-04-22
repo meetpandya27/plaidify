@@ -83,6 +83,18 @@ interface HostedLinkUrlOptions {
     origin?: string;
     theme?: LinkTheme;
 }
+interface HostedLinkBootstrapRequest {
+    site?: string;
+    allowedOrigin?: string;
+    scopes?: string[];
+}
+interface HostedLinkBootstrapResponse {
+    launch_token: string;
+    expires_in: number;
+    site?: string;
+    allowed_origin?: string;
+    scopes?: string[] | null;
+}
 type PlaidifyLinkEventName = "OPEN" | "CLOSE" | "INSTITUTION_SELECTED" | "CREDENTIALS_SUBMITTED" | "MFA_REQUIRED" | "MFA_SUBMITTED" | "CONNECTED" | "ERROR" | "EXIT" | "DONE";
 interface PlaidifyLinkMfaDetails {
     mfa_type?: string;
@@ -93,7 +105,7 @@ interface PlaidifyLinkExitDetails {
     error?: string;
 }
 interface PlaidifyLinkSuccessMetadata {
-    data?: Record<string, unknown>;
+    job_id?: string;
     organization_id?: string;
     organization_name?: string;
     public_token?: string;
@@ -102,12 +114,11 @@ interface PlaidifyLinkSuccessMetadata {
 interface PlaidifyLinkEventPayload extends PlaidifyLinkExitDetails, PlaidifyLinkMfaDetails {
     source?: "plaidify-link";
     event?: PlaidifyLinkEventName | string;
-    access_token?: string;
+    job_id?: string;
     public_token?: string;
     organization_id?: string;
     organization_name?: string;
     site?: string;
-    data?: Record<string, unknown>;
 }
 interface LinkEvent {
     event: string;
@@ -207,8 +218,8 @@ interface PlaidifyLinkConfig {
     token: string;
     /** Theme overrides for the link UI. */
     theme?: LinkTheme;
-    /** Called when link completes successfully. */
-    onSuccess?: (accessToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
+    /** Called when link completes successfully with a public token, when one exists. */
+    onSuccess?: (publicToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
     /** Called when the user exits the link flow. */
     onExit?: (details: PlaidifyLinkExitDetails) => void;
     /** Called on each link event. */
@@ -280,6 +291,8 @@ declare class Plaidify {
     me(): Promise<UserProfile>;
     createLinkSession(site?: string): Promise<LinkSession>;
     createPublicLinkSession(): Promise<LinkSession>;
+    createHostedLinkBootstrap(options?: HostedLinkBootstrapRequest): Promise<HostedLinkBootstrapResponse>;
+    exchangeHostedLinkBootstrap(launchToken: string): Promise<LinkSession>;
     getLinkUrl(linkToken: string, options?: HostedLinkUrlOptions): string;
     registerWebhook(linkToken: string, url: string): Promise<WebhookRegistration>;
     exchangePublicToken(publicToken: string): Promise<PublicTokenExchangeResult>;
@@ -381,4 +394,4 @@ declare class ServerError extends PlaidifyError {
     constructor(message?: string);
 }
 
-export { type AccessJob, type AccessJobListResult, type AgentInfo, type AgentListResult, type ApiKeyInfo, type AuditEntry, type AuditLogResult, type AuditVerifyResult, type AuthToken, AuthenticationError, type BlueprintInfo, type BlueprintListResult, type ConnectResult, type ConsentGrant, type ConsentRequest, type HealthStatus, type HostedLinkUrlOptions, type LinkEvent, type LinkSession, type LinkTheme, type MFAChallenge, NotFoundError, Plaidify, type PlaidifyConfig, PlaidifyError, type PlaidifyErrorResponse, type PlaidifyLinkConfig, type PlaidifyLinkEventName, type PlaidifyLinkEventPayload, type PlaidifyLinkExitDetails, type PlaidifyLinkMfaDetails, type PlaidifyLinkSuccessMetadata, type PublicTokenExchangeResult, RateLimitError, type RefreshScheduleResult, ServerError, type UserProfile, type WebhookDelivery, type WebhookDeliveryResult, type WebhookRegistration };
+export { type AccessJob, type AccessJobListResult, type AgentInfo, type AgentListResult, type ApiKeyInfo, type AuditEntry, type AuditLogResult, type AuditVerifyResult, type AuthToken, AuthenticationError, type BlueprintInfo, type BlueprintListResult, type ConnectResult, type ConsentGrant, type ConsentRequest, type HealthStatus, type HostedLinkBootstrapRequest, type HostedLinkBootstrapResponse, type HostedLinkUrlOptions, type LinkEvent, type LinkSession, type LinkTheme, type MFAChallenge, NotFoundError, Plaidify, type PlaidifyConfig, PlaidifyError, type PlaidifyErrorResponse, type PlaidifyLinkConfig, type PlaidifyLinkEventName, type PlaidifyLinkEventPayload, type PlaidifyLinkExitDetails, type PlaidifyLinkMfaDetails, type PlaidifyLinkSuccessMetadata, type PublicTokenExchangeResult, RateLimitError, type RefreshScheduleResult, ServerError, type UserProfile, type WebhookDelivery, type WebhookDeliveryResult, type WebhookRegistration };
