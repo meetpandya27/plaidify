@@ -24,6 +24,38 @@ export type OrganizationAuthStyle =
   | "email_password"
   | "member_number";
 
+export type SchemaFieldType = "text" | "email" | "password" | "tel" | "number";
+
+export interface SchemaField {
+  readonly id: string;
+  readonly label: string;
+  readonly type: SchemaFieldType;
+  readonly autocomplete?: string;
+  readonly inputmode?: "text" | "numeric" | "tel" | "email" | "decimal" | "search" | "url" | "none";
+  readonly placeholder?: string;
+  readonly help_text?: string;
+  readonly pattern?: string;
+  readonly min_length?: number;
+  readonly max_length?: number;
+  readonly required?: boolean;
+  readonly secret?: boolean;
+  readonly reveal?: boolean;
+}
+
+export interface CredentialSchema {
+  readonly fields: readonly SchemaField[];
+  readonly submit_label?: string;
+}
+
+export interface MfaSchemaEntry {
+  readonly title?: string;
+  readonly help_text?: string;
+  readonly submit_label?: string;
+  readonly fields: readonly SchemaField[];
+}
+
+export type MfaSchema = Readonly<Record<string, MfaSchemaEntry>>;
+
 export interface Organization {
   readonly organization_id: string;
   readonly name: string;
@@ -40,6 +72,8 @@ export interface Organization {
   readonly accent_color?: string;
   readonly hint_copy?: string;
   readonly auth_style?: OrganizationAuthStyle;
+  readonly credential_schema?: CredentialSchema;
+  readonly mfa_schema?: MfaSchema;
 }
 
 export interface OrganizationSearchResponse {

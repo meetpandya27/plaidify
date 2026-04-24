@@ -12,11 +12,16 @@ import {
   LinkApi,
   pollLinkSession as defaultPollLinkSession,
   type ConnectResponse,
+  type CredentialSchema,
   type LinkSessionStatus,
+  type MfaSchema,
+  type MfaSchemaEntry,
   type Organization,
   type PollOptions,
+  type SchemaField,
 } from "./api";
 import { detectNativeBridges, readHostedLinkConfig } from "./config";
+import { DynamicForm, validateSchemaValues } from "./DynamicForm";
 import { EventDelivery, postBridgeEvent } from "./events";
 import {
   flowReducer,
@@ -62,9 +67,11 @@ export interface AppProps {
 export function App(props: AppProps = {}) {
   const [state, dispatch] = useReducer(flowReducer, props.initialState ?? initialFlowState);
   const [query, setQuery] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [mfaCode, setMfaCode] = useState("");
+  const [credentialValues, setCredentialValues] = useState<Readonly<Record<string, string>>>({});
+  const [credentialErrors, setCredentialErrors] = useState<Readonly<Record<string, string>>>({});
+  const [mfaValues, setMfaValues] = useState<Readonly<Record<string, string>>>({});
+  const [mfaErrors, setMfaErrors] = useState<Readonly<Record<string, string>>>({});
+  const [mfaType, setMfaType] = useState<string>("otp_input");
   const [organizations, setOrganizations] = useState<readonly Organization[]>(
     props.seedInstitutions ?? [],
   );
@@ -90,6 +97,16 @@ export function App(props: AppProps = {}) {
 
   const encryptFn = props.encryptCredentials ?? defaultEncryptCredentials;
   const pollFn = props.pollLinkSession ?? defaultPollLinkSession;
+
+  const credentialSchema: CredentialSchema = useMemo(
+    () =>
+      state.institution?.credential_schema ?? fallbackCredentialSchema(state.institution?.auth_style),
+    [state.institution],
+  );
+  const mfaSchemaEntry: MfaSchemaEntry = useMemo(
+    () => resolveMfaSchemaEntry(state.institution?.mfa_schema, mfaType),
+    [state.institution, mfaType],
+  );
 
   // Build the API client + event delivery once per linkToken.
   if (apiRef.current === null && configRef.current.linkToken) {
@@ -268,6 +285,9 @@ export function App(props: AppProps = {}) {
         const message =
           (response.metadata as { message?: string } | null)?.message ??
           "Enter the verification code from your provider to continue.";
+        setMfaType(response.mfa_type ?? "otp_input");
+        setMfaValues({});
+        setMfaErrors({});
         dispatch({ type: "MFA_REQUIRED", prompt: message });
         emit("MFA_REQUIRED", {
           mfa_type: response.mfa_type ?? "otp",
@@ -282,6 +302,9 @@ export function App(props: AppProps = {}) {
           return;
         }
         if (terminal.status === "mfa_required") {
+          setMfaType(terminal.mfa_type ?? "otp_input");
+          setMfaValues({});
+          setMfaErrors({});
           dispatch({
             type: "MFA_REQUIRED",
             prompt:
@@ -343,13 +366,36 @@ export function App(props: AppProps = {}) {
   );
 
   const onSubmitCredentials = useCallback(() => {
-    void runConnect(username, password);
-  }, [password, runConnect, username]);
+    const errors = validateSchemaValues(credentialSchema.fields, credentialValues);
+    if (errors.length) {
+      const map: Record<string, string> = {};
+      for (const err of errors) map[err.field] = err.message;
+      setCredentialErrors(map);
+      return;
+    }
+    setCredentialErrors({});
+    const usernameValue = credentialValues.username ?? "";
+    const passwordValue = credentialValues.password ?? "";
+    void runConnect(usernameValue.trim(), passwordValue);
+  }, [credentialSchema, credentialValues, runConnect]);
 
   const onSubmitMfa = useCallback(async () => {
     const api = apiRef.current;
     const sessionId = sessionIdRef.current;
-    if (!api || !sessionId || !mfaCode.trim()) {
+    if (!api || !sessionId) {
+      return;
+    }
+    const errors = validateSchemaValues(mfaSchemaEntry.fields, mfaValues);
+    if (errors.length) {
+      const map: Record<string, string> = {};
+      for (const err of errors) map[err.field] = err.message;
+      setMfaErrors(map);
+      return;
+    }
+    setMfaErrors({});
+    const codeValue = (mfaValues.code ?? "").trim();
+    // Push-type prompts omit fields — treat the submit click as confirmation.
+    if (!codeValue && mfaSchemaEntry.fields.length > 0) {
       return;
     }
     dispatch({ type: "SUBMIT_MFA" });
@@ -357,7 +403,7 @@ export function App(props: AppProps = {}) {
     try {
       const response = await api.submitMfa({
         sessionId,
-        code: mfaCode.trim(),
+        code: codeValue,
       });
       await handleConnectResponse(api, response);
     } catch (err) {
@@ -365,7 +411,7 @@ export function App(props: AppProps = {}) {
       dispatch({ type: "FAIL", payload: { message } });
       emit("ERROR", { error: message, site: siteRef.current });
     }
-  }, [emit, handleConnectResponse, mfaCode]);
+  }, [emit, handleConnectResponse, mfaSchemaEntry, mfaValues]);
 
   const consent = useMemo(() => CONSENT_BULLETS, []);
 
@@ -494,35 +540,31 @@ export function App(props: AppProps = {}) {
             <li key={item}>{item}</li>
           ))}
         </ul>
-        <label htmlFor="link-username">
-          {state.institution?.auth_style === "email_password"
-            ? "Email"
-            : state.institution?.auth_style === "member_number"
-              ? "Member number"
-              : "Username"}
-        </label>
-        <input
-          id="link-username"
-          type={state.institution?.auth_style === "email_password" ? "email" : "text"}
-          autoComplete={
-            state.institution?.auth_style === "email_password" ? "email" : "username"
-          }
-          inputMode={
-            state.institution?.auth_style === "member_number" ? "numeric" : undefined
-          }
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-        />
-        <label htmlFor="link-password">Password</label>
-        <input
-          id="link-password"
-          type="password"
-          autoComplete="current-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
+        <DynamicForm
+          fields={credentialSchema.fields}
+          values={credentialValues}
+          errors={credentialErrors}
+          onChange={(id, value) => {
+            setCredentialValues((prev) => ({ ...prev, [id]: value }));
+            if (credentialErrors[id]) {
+              setCredentialErrors((prev) => {
+                const next = { ...prev };
+                delete next[id];
+                return next;
+              });
+            }
+          }}
+          onBlur={(id) => {
+            const field = credentialSchema.fields.find((f) => f.id === id);
+            if (!field) return;
+            const errors = validateSchemaValues([field], credentialValues);
+            if (errors.length) {
+              setCredentialErrors((prev) => ({ ...prev, [id]: errors[0].message }));
+            }
+          }}
         />
         <button id="connect-btn" type="button" onClick={onSubmitCredentials}>
-          Continue
+          {credentialSchema.submit_label ?? "Continue"}
         </button>
       </section>
 
@@ -540,19 +582,53 @@ export function App(props: AppProps = {}) {
         className={state.step === "mfa" ? "link-step active" : "link-step"}
         role="region"
         aria-label="Finish verification"
+        style={
+          state.institution?.primary_color
+            ? ({
+                "--organization-primary": state.institution.primary_color,
+                "--organization-secondary":
+                  state.institution.secondary_color ?? "transparent",
+                "--organization-accent":
+                  state.institution.accent_color ?? state.institution.primary_color,
+              } as React.CSSProperties)
+            : undefined
+        }
       >
+        {mfaSchemaEntry.title ? (
+          <h2 id="mfa-title">{mfaSchemaEntry.title}</h2>
+        ) : null}
         <p id="mfa-message">{state.mfaPrompt ?? ""}</p>
-        <label htmlFor="mfa-code">Verification code</label>
-        <input
-          id="mfa-code"
-          type="text"
-          inputMode="numeric"
-          autoComplete="one-time-code"
-          value={mfaCode}
-          onChange={(e) => setMfaCode(e.target.value)}
+        {mfaSchemaEntry.help_text ? (
+          <p id="mfa-help" className="credentials-hint">
+            {mfaSchemaEntry.help_text}
+          </p>
+        ) : null}
+        <DynamicForm
+          idPrefix="mfa"
+          fields={mfaSchemaEntry.fields}
+          values={mfaValues}
+          errors={mfaErrors}
+          onChange={(id, value) => {
+            setMfaValues((prev) => ({ ...prev, [id]: value }));
+            if (mfaErrors[id]) {
+              setMfaErrors((prev) => {
+                const next = { ...prev };
+                delete next[id];
+                return next;
+              });
+            }
+          }}
+          onBlur={(id) => {
+            const field = mfaSchemaEntry.fields.find((f) => f.id === id);
+            if (!field) return;
+            const errors = validateSchemaValues([field], mfaValues);
+            if (errors.length) {
+              setMfaErrors((prev) => ({ ...prev, [id]: errors[0].message }));
+            }
+          }}
         />
         <button id="mfa-submit-btn" type="button" onClick={() => void onSubmitMfa()}>
-          Verify and continue
+          {mfaSchemaEntry.submit_label ?? "Verify and continue"}
         </button>
       </section>
 
@@ -590,4 +666,109 @@ export function App(props: AppProps = {}) {
       </section>
     </main>
   );
+}
+
+// ── Schema fallbacks ─────────────────────────────────────────────────────────
+// Mirror `organization_catalog._default_credential_schema` and
+// `_default_mfa_schema` so the UI still renders something sensible if the
+// backend omits them (e.g. older catalog payload or unit tests).
+
+const DEFAULT_CRED_FIELDS: Record<string, readonly SchemaField[]> = {
+  username_password: [
+    {
+      id: "username",
+      label: "Username",
+      type: "text",
+      autocomplete: "username",
+      required: true,
+      min_length: 3,
+      max_length: 128,
+    },
+    {
+      id: "password",
+      label: "Password",
+      type: "password",
+      autocomplete: "current-password",
+      required: true,
+      secret: true,
+      reveal: true,
+      min_length: 6,
+      max_length: 128,
+    },
+  ],
+  email_password: [
+    {
+      id: "username",
+      label: "Email",
+      type: "email",
+      autocomplete: "email",
+      required: true,
+      min_length: 5,
+      max_length: 254,
+    },
+    {
+      id: "password",
+      label: "Password",
+      type: "password",
+      autocomplete: "current-password",
+      required: true,
+      secret: true,
+      reveal: true,
+      min_length: 6,
+      max_length: 128,
+    },
+  ],
+  member_number: [
+    {
+      id: "username",
+      label: "Member number",
+      type: "text",
+      autocomplete: "username",
+      inputmode: "numeric",
+      required: true,
+      min_length: 4,
+      max_length: 32,
+    },
+    {
+      id: "password",
+      label: "Password",
+      type: "password",
+      autocomplete: "current-password",
+      required: true,
+      secret: true,
+      reveal: true,
+      min_length: 6,
+      max_length: 128,
+    },
+  ],
+};
+
+function fallbackCredentialSchema(authStyle?: string): CredentialSchema {
+  const fields =
+    DEFAULT_CRED_FIELDS[authStyle ?? "username_password"] ??
+    DEFAULT_CRED_FIELDS.username_password;
+  return { submit_label: "Connect securely", fields };
+}
+
+const DEFAULT_MFA_ENTRY: MfaSchemaEntry = {
+  title: "Enter your verification code",
+  help_text: "Check your phone, email, or authenticator app for the code.",
+  submit_label: "Verify and continue",
+  fields: [
+    {
+      id: "code",
+      label: "Verification code",
+      type: "text",
+      inputmode: "numeric",
+      autocomplete: "one-time-code",
+      pattern: "^\\d{4,8}$",
+      min_length: 4,
+      max_length: 8,
+      required: true,
+    },
+  ],
+};
+
+function resolveMfaSchemaEntry(schema: MfaSchema | undefined, type: string): MfaSchemaEntry {
+  return (schema?.[type] ?? schema?.otp_input ?? DEFAULT_MFA_ENTRY) as MfaSchemaEntry;
 }

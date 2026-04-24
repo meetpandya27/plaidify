@@ -113,5 +113,54 @@
   "health_check": {
     "url": "https://www.hydroone.com",
     "expected_status": 200
+  },
+
+  "credential_schema": {
+    "submit_label": "Connect securely",
+    "fields": [
+      {
+        "id": "username",
+        "label": "Hydro One username or email",
+        "type": "text",
+        "autocomplete": "username",
+        "placeholder": "you@example.com",
+        "help_text": "The username or email you use to sign in to myAccount.",
+        "required": true,
+        "min_length": 3,
+        "max_length": 128
+      },
+      {
+        "id": "password",
+        "label": "Password",
+        "type": "password",
+        "autocomplete": "current-password",
+        "required": true,
+        "secret": true,
+        "reveal": true,
+        "min_length": 6,
+        "max_length": 128
+      }
+    ]
+  },
+
+  "mfa_schema": {
+    "otp_input": {
+      "title": "Enter your 6-digit verification code",
+      "help_text": "Hydro One just sent a code to your phone or email.",
+      "submit_label": "Verify and continue",
+      "fields": [
+        {
+          "id": "code",
+          "label": "Verification code",
+          "type": "text",
+          "inputmode": "numeric",
+          "autocomplete": "one-time-code",
+          "pattern": "^\\d{4,8}$",
+          "min_length": 4,
+          "max_length": 8,
+          "required": true
+        }
+      ]
+    }
   }
 }

@@ -72,3 +72,38 @@ class TestOrganizationCatalog:
         ).json()["results"][0]
         assert finance["primary_color"] != utility["primary_color"]
         assert finance["auth_style"] != utility["auth_style"] or finance["hint_copy"] != utility["hint_copy"]
+
+    def test_credential_schema_defaults_follow_auth_style(self, client):
+        finance = client.get(
+            "/organizations/search", params={"category": "finance", "limit": 1}
+        ).json()["results"][0]
+        utility = client.get(
+            "/organizations/search", params={"category": "utility", "limit": 1}
+        ).json()["results"][0]
+        government = client.get(
+            "/organizations/search", params={"category": "government", "limit": 1}
+        ).json()["results"][0]
+
+        # Every org ships a credential_schema + mfa_schema (#54).
+        for org in (finance, utility, government):
+            schema = org["credential_schema"]
+            assert isinstance(schema.get("fields"), list) and schema["fields"]
+            field_ids = [field["id"] for field in schema["fields"]]
+            assert "username" in field_ids and "password" in field_ids
+            mfa_schema = org["mfa_schema"]
+            assert isinstance(mfa_schema, dict) and mfa_schema
+
+        finance_username = next(
+            field for field in finance["credential_schema"]["fields"] if field["id"] == "username"
+        )
+        utility_username = next(
+            field for field in utility["credential_schema"]["fields"] if field["id"] == "username"
+        )
+        government_username = next(
+            field
+            for field in government["credential_schema"]["fields"]
+            if field["id"] == "username"
+        )
+        assert finance_username["type"] == "text"
+        assert utility_username["type"] == "email"
+        assert government_username["label"].lower().startswith("member")

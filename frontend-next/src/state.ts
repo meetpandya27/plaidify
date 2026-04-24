@@ -23,6 +23,8 @@ export type FlowStep =
   | "success"
   | "error";
 
+import type { CredentialSchema, MfaSchema } from "./api";
+
 export interface Institution {
   readonly site: string;
   readonly name: string;
@@ -34,6 +36,8 @@ export interface Institution {
   readonly accent_color?: string;
   readonly hint_copy?: string;
   readonly auth_style?: "username_password" | "email_password" | "member_number";
+  readonly credential_schema?: CredentialSchema;
+  readonly mfa_schema?: MfaSchema;
 }
 
 export interface SuccessPayload {
