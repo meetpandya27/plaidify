@@ -50,14 +50,22 @@
 }
 
 .institution-item {
+  list-style: none;
+}
+
+.institution-item__button {
   display: grid;
   grid-template-columns: 40px 1fr auto;
   align-items: center;
   gap: var(--plaidify-space-3);
+  width: 100%;
   padding: var(--plaidify-space-3) var(--plaidify-space-4);
   border: 1px solid var(--plaidify-color-border-default);
   border-radius: var(--plaidify-radius-md);
   background: var(--plaidify-color-bg-surface);
+  color: inherit;
+  text-align: left;
+  font: inherit;
   cursor: pointer;
   transition:
     background-color var(--plaidify-duration-fast) var(--plaidify-easing-standard),
@@ -65,8 +73,8 @@
     transform var(--plaidify-duration-fast) var(--plaidify-easing-standard);
 }
 
-.institution-item:hover,
-.institution-item:focus-visible {
+.institution-item__button:hover,
+.institution-item__button:focus-visible {
   outline: none;
   border-color: var(--organization-primary, var(--plaidify-color-border-focus));
   background: var(--organization-secondary, var(--plaidify-color-bg-surface-alt));
@@ -181,4 +189,38 @@
 .reference-value {
   color: var(--plaidify-color-fg-default);
   user-select: all;
+}
+
+/* ── Error step remediation layout ─────────────────────────────────── */
+#step-error #error-title {
+  margin: 0;
+  font-size: var(--plaidify-font-size-lg);
+  font-weight: var(--plaidify-font-weight-semibold);
+  color: var(--plaidify-color-fg-default);
+}
+#step-error #error-description {
+  margin: 0;
+  color: var(--plaidify-color-fg-muted);
+}
+#step-error .error-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--plaidify-space-2);
+}
+#step-error #error-secondary-btn.secondary {
+  background: transparent;
+  color: var(--plaidify-color-fg-default);
+  border: 1px solid var(--plaidify-color-border-default);
+}
+
+/* ── Reduced motion (WCAG 2.1 AA / issue #56) ──────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
