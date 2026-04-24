@@ -1,0 +1,184 @@
+/**
+ * Hosted-link layout styles. Per-institution branding is plumbed
+ * through as CSS custom properties (`--organization-primary`,
+ * `--organization-secondary`, `--organization-accent`) by App.tsx, so
+ * every section can opt in to branded accents without hard-coding
+ * colours.
+ */
+
+.plaidify-link {
+  max-width: var(--plaidify-max-width-content);
+  margin: 0 auto;
+  padding: var(--plaidify-space-6);
+  background: var(--plaidify-color-bg-surface);
+  color: var(--plaidify-color-fg-default);
+  border-radius: var(--plaidify-radius-lg);
+  box-shadow: var(--plaidify-shadow-md);
+  font-family: var(--plaidify-font-family-sans);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.link-step {
+  display: none;
+  flex-direction: column;
+  gap: var(--plaidify-space-4);
+}
+.link-step.active {
+  display: flex;
+}
+
+#institution-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--plaidify-space-2);
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.institution-item {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  align-items: center;
+  gap: var(--plaidify-space-3);
+  padding: var(--plaidify-space-3) var(--plaidify-space-4);
+  border: 1px solid var(--plaidify-color-border-default);
+  border-radius: var(--plaidify-radius-md);
+  background: var(--plaidify-color-bg-surface);
+  cursor: pointer;
+  transition:
+    background-color var(--plaidify-duration-fast) var(--plaidify-easing-standard),
+    border-color var(--plaidify-duration-fast) var(--plaidify-easing-standard),
+    transform var(--plaidify-duration-fast) var(--plaidify-easing-standard);
+}
+
+.institution-item:hover,
+.institution-item:focus-visible {
+  outline: none;
+  border-color: var(--organization-primary, var(--plaidify-color-border-focus));
+  background: var(--organization-secondary, var(--plaidify-color-bg-surface-alt));
+  box-shadow: var(--plaidify-shadow-focus);
+}
+
+.institution-item__logo {
+  border-radius: var(--plaidify-radius-sm);
+  display: block;
+  width: 32px;
+  height: 32px;
+}
+
+.institution-item__monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--plaidify-radius-sm);
+  font-size: var(--plaidify-font-size-sm);
+  font-weight: var(--plaidify-font-weight-semibold);
+  background: var(--organization-primary, var(--plaidify-color-accent-default));
+  color: var(--organization-secondary, var(--plaidify-color-fg-on-accent));
+}
+
+.institution-item__name {
+  font-size: var(--plaidify-font-size-md);
+  font-weight: var(--plaidify-font-weight-medium);
+}
+
+.institution-item__category {
+  font-size: var(--plaidify-font-size-xs);
+  color: var(--plaidify-color-fg-muted);
+}
+
+.credentials-header {
+  display: flex;
+  align-items: center;
+  gap: var(--plaidify-space-3);
+}
+
+.credentials-header__logo {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--plaidify-radius-md);
+  display: block;
+}
+
+.credentials-hint {
+  margin: 0;
+  padding: var(--plaidify-space-3) var(--plaidify-space-4);
+  background: var(--organization-secondary, var(--plaidify-color-bg-surface-alt));
+  border-left: 3px solid var(--organization-primary, var(--plaidify-color-accent-default));
+  border-radius: var(--plaidify-radius-sm);
+  color: var(--plaidify-color-fg-muted);
+  font-size: var(--plaidify-font-size-sm);
+  line-height: var(--plaidify-line-height-normal);
+}
+
+#connect-btn,
+#mfa-submit-btn {
+  background: var(--organization-primary, var(--plaidify-color-accent-default));
+  color: var(--plaidify-color-fg-on-accent);
+  border: none;
+  border-radius: var(--plaidify-radius-md);
+  padding: var(--plaidify-space-3) var(--plaidify-space-5);
+  font-size: var(--plaidify-font-size-md);
+  font-weight: var(--plaidify-font-weight-semibold);
+  cursor: pointer;
+}
+#connect-btn:hover,
+#mfa-submit-btn:hover {
+  background: var(--organization-accent, var(--plaidify-color-accent-hover));
+}
+
+#institution-search,
+#link-username,
+#link-password,
+#mfa-code {
+  width: 100%;
+  padding: var(--plaidify-space-3) var(--plaidify-space-4);
+  border: 1px solid var(--plaidify-color-border-strong);
+  border-radius: var(--plaidify-radius-md);
+  background: var(--plaidify-color-bg-surface);
+  color: var(--plaidify-color-fg-default);
+  font-family: var(--plaidify-font-family-sans);
+  font-size: var(--plaidify-font-size-md);
+}
+#institution-search:focus,
+#link-username:focus,
+#link-password:focus,
+#mfa-code:focus {
+  outline: none;
+  border-color: var(--organization-primary, var(--plaidify-color-border-focus));
+  box-shadow: var(--plaidify-shadow-focus);
+}
+
+.reference-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--plaidify-space-3) var(--plaidify-space-4);
+  background: var(--plaidify-color-bg-surface-alt);
+  border-radius: var(--plaidify-radius-md);
+  font-family: var(--plaidify-font-family-mono);
+  font-size: var(--plaidify-font-size-sm);
+}
+.reference-label {
+  color: var(--plaidify-color-fg-muted);
+}
+.reference-value {
+  color: var(--plaidify-color-fg-default);
+  user-select: all;
+}

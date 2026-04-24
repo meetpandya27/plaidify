@@ -89,6 +89,13 @@ _CATEGORY_SPECS = (
     {
         "key": "finance",
         "label": "Finance",
+        "branding": {
+            "primary_color": "#0f4c81",
+            "secondary_color": "#e6efff",
+            "accent_color": "#f4a261",
+            "hint_copy": "Use the same username and password you use for online banking.",
+            "auth_style": "username_password",
+        },
         "brands": (
             "North Harbor Bank",
             "Summit Credit Union",
@@ -118,6 +125,13 @@ _CATEGORY_SPECS = (
     {
         "key": "utility",
         "label": "Utilities",
+        "branding": {
+            "primary_color": "#1f6f43",
+            "secondary_color": "#e7f4ec",
+            "accent_color": "#f2c14e",
+            "hint_copy": "Sign in with the email or account number on your utility bill.",
+            "auth_style": "email_password",
+        },
         "brands": (
             "Everstream Electric",
             "Northline Utilities",
@@ -141,6 +155,13 @@ _CATEGORY_SPECS = (
     {
         "key": "insurance",
         "label": "Insurance",
+        "branding": {
+            "primary_color": "#6a1b9a",
+            "secondary_color": "#f3e8ff",
+            "accent_color": "#ffb703",
+            "hint_copy": "Enter your policy portal credentials — usually the email on file.",
+            "auth_style": "email_password",
+        },
         "brands": (
             "Harbor Shield Insurance",
             "Summit Mutual",
@@ -162,6 +183,13 @@ _CATEGORY_SPECS = (
     {
         "key": "telecom",
         "label": "Telecom",
+        "branding": {
+            "primary_color": "#c2410c",
+            "secondary_color": "#ffedd5",
+            "accent_color": "#0ea5e9",
+            "hint_copy": "Use your wireless or subscriber account login.",
+            "auth_style": "username_password",
+        },
         "brands": (
             "Northern Signal",
             "Prairie Connect",
@@ -181,6 +209,13 @@ _CATEGORY_SPECS = (
     {
         "key": "healthcare",
         "label": "Healthcare",
+        "branding": {
+            "primary_color": "#0d9488",
+            "secondary_color": "#e0f7f4",
+            "accent_color": "#f43f5e",
+            "hint_copy": "Sign in with your patient portal or member-services credentials.",
+            "auth_style": "email_password",
+        },
         "brands": (
             "Civic Health Network",
             "Maple Care Alliance",
@@ -199,6 +234,13 @@ _CATEGORY_SPECS = (
     {
         "key": "government",
         "label": "Government",
+        "branding": {
+            "primary_color": "#1e293b",
+            "secondary_color": "#e2e8f0",
+            "accent_color": "#2563eb",
+            "hint_copy": "Use your citizen or resident services sign-in.",
+            "auth_style": "member_number",
+        },
         "brands": (
             "Civic Services Office",
             "Regional Benefits Administration",
@@ -218,6 +260,38 @@ _CATEGORY_SPECS = (
 
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def _monogram(name: str) -> str:
+    """Two-letter monogram from the most significant words in `name`."""
+    words = [w for w in re.split(r"\s+", re.sub(r"[^A-Za-z\s]+", " ", name)) if w]
+    if not words:
+        return "?"
+    stopwords = {"the", "of", "and", "for", "co", "inc", "ltd"}
+    meaningful = [w for w in words if w.lower() not in stopwords] or words
+    letters = "".join(w[0] for w in meaningful[:2]).upper()
+    return letters or "?"
+
+
+def _logo_svg(monogram: str, primary: str, secondary: str) -> str:
+    """Inline SVG logo placeholder — rendered via data: URL in the picker."""
+    return (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' role='img'>"
+        f"<rect width='64' height='64' rx='14' fill='{primary}'/>"
+        f"<text x='50%' y='54%' text-anchor='middle' dominant-baseline='middle' "
+        f"font-family='Inter, Segoe UI, system-ui, sans-serif' font-size='24' "
+        f"font-weight='600' fill='{secondary}'>{monogram}</text>"
+        "</svg>"
+    )
+
+
+def _logo_data_url(monogram: str, primary: str, secondary: str) -> str:
+    import base64
+
+    encoded = base64.b64encode(
+        _logo_svg(monogram, primary, secondary).encode("utf-8")
+    ).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 @lru_cache(maxsize=1)
@@ -289,6 +363,15 @@ def get_organization_catalog() -> tuple[dict[str, Any], ...]:
         for spec in _CATEGORY_SPECS:
             template_site = _resolve_template_site(spec["key"], country_code, templates)
             template = templates.get(template_site, {})
+            branding = spec.get("branding", {})
+            primary_color = branding.get("primary_color", "#1f2937")
+            secondary_color = branding.get("secondary_color", "#ffffff")
+            accent_color = branding.get("accent_color", "#2563eb")
+            hint_copy = branding.get(
+                "hint_copy",
+                "Use your online account credentials to continue.",
+            )
+            auth_style = branding.get("auth_style", "username_password")
 
             for region_code, region_name in regions:
                 for brand in spec["brands"]:
@@ -316,6 +399,8 @@ def get_organization_catalog() -> tuple[dict[str, Any], ...]:
                                 *spec["search_terms"],
                             )
                         ).lower()
+                        monogram = _monogram(brand)
+                        logo_url = _logo_data_url(monogram, primary_color, secondary_color)
                         catalog.append(
                             {
                                 "organization_id": organization_id,
@@ -334,6 +419,13 @@ def get_organization_catalog() -> tuple[dict[str, Any], ...]:
                                 "has_mfa": bool(template.get("has_mfa")),
                                 "supported": True,
                                 "read_only": True,
+                                "logo_url": logo_url,
+                                "logo_monogram": monogram,
+                                "primary_color": primary_color,
+                                "secondary_color": secondary_color,
+                                "accent_color": accent_color,
+                                "hint_copy": hint_copy,
+                                "auth_style": auth_style,
                                 "search_text": search_text,
                             }
                         )

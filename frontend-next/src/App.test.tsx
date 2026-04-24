@@ -9,10 +9,20 @@ const hydro: Organization = {
   organization_id: "org-hydro",
   site: "hydro_one",
   name: "Hydro One",
+  logo_url: "data:image/svg+xml;base64,PHN2Zy8+",
+  logo_monogram: "HO",
+  primary_color: "#1f6f43",
+  secondary_color: "#e7f4ec",
+  accent_color: "#f2c14e",
+  hint_copy: "Use your utility portal sign-in.",
+  auth_style: "email_password",
 };
 const institutionHydro: Institution = {
   site: "hydro_one",
   name: "Hydro One",
+  primary_color: "#1f6f43",
+  hint_copy: "Use your utility portal sign-in.",
+  auth_style: "email_password",
 };
 
 describe("App (SSR smoke)", () => {
@@ -37,6 +47,8 @@ describe("App (SSR smoke)", () => {
     expect(html).toContain('id="institution-search"');
     expect(html).toContain('class="institution-item"');
     expect(html).toContain("Hydro One");
+    expect(html).toContain('data-organization-id="org-hydro"');
+    expect(html).toContain('src="data:image/svg+xml;base64,PHN2Zy8+"');
     expect(html).toContain('id="consent-list"');
     expect(html).toContain(
       "Return a secure completion back to your app when verification finishes.",
@@ -53,6 +65,9 @@ describe("App (SSR smoke)", () => {
     expect(html).toContain('id="step-credentials"');
     expect(html).toContain('id="provider-name"');
     expect(html).toContain("Hydro One");
+    expect(html).toContain('id="provider-hint"');
+    expect(html).toContain("Use your utility portal sign-in.");
+    expect(html).toContain(">Email<");
     expect(html).toContain('id="link-username"');
     expect(html).toContain('id="link-password"');
     expect(html).toContain('id="connect-btn"');

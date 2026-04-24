@@ -197,6 +197,12 @@ export function App(props: AppProps = {}) {
         name: organization.name,
         category: organization.category_label,
         country: organization.country_code,
+        logo_url: organization.logo_url,
+        primary_color: organization.primary_color,
+        secondary_color: organization.secondary_color,
+        accent_color: organization.accent_color,
+        hint_copy: organization.hint_copy,
+        auth_style: organization.auth_style,
       };
       siteRef.current = organization.site;
       dispatch({ type: "SELECT_INSTITUTION", institution });
@@ -394,6 +400,16 @@ export function App(props: AppProps = {}) {
               className="institution-item"
               role="button"
               tabIndex={0}
+              data-organization-id={organization.organization_id}
+              style={
+                organization.primary_color
+                  ? ({
+                      "--organization-primary": organization.primary_color,
+                      "--organization-secondary":
+                        organization.secondary_color ?? "transparent",
+                    } as React.CSSProperties)
+                  : undefined
+              }
               onClick={() => onSelectInstitution(organization)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
@@ -402,7 +418,37 @@ export function App(props: AppProps = {}) {
                 }
               }}
             >
-              {organization.name}
+              {organization.logo_url ? (
+                <img
+                  className="institution-item__logo"
+                  src={organization.logo_url}
+                  alt=""
+                  width={32}
+                  height={32}
+                  aria-hidden="true"
+                />
+              ) : (
+                <span
+                  className="institution-item__monogram"
+                  aria-hidden="true"
+                  style={
+                    organization.primary_color
+                      ? {
+                          background: organization.primary_color,
+                          color: organization.secondary_color ?? "#fff",
+                        }
+                      : undefined
+                  }
+                >
+                  {organization.logo_monogram ?? organization.name.slice(0, 1)}
+                </span>
+              )}
+              <span className="institution-item__name">{organization.name}</span>
+              {organization.category_label ? (
+                <span className="institution-item__category">
+                  {organization.category_label}
+                </span>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -413,18 +459,57 @@ export function App(props: AppProps = {}) {
         className={state.step === "credentials" ? "link-step active" : "link-step"}
         role="region"
         aria-label="Enter your credentials"
+        style={
+          state.institution?.primary_color
+            ? ({
+                "--organization-primary": state.institution.primary_color,
+                "--organization-secondary":
+                  state.institution.secondary_color ?? "transparent",
+                "--organization-accent":
+                  state.institution.accent_color ?? state.institution.primary_color,
+              } as React.CSSProperties)
+            : undefined
+        }
       >
-        <h2 id="provider-name">{state.institution?.name ?? ""}</h2>
+        <header className="credentials-header">
+          {state.institution?.logo_url ? (
+            <img
+              className="credentials-header__logo"
+              src={state.institution.logo_url}
+              alt=""
+              width={48}
+              height={48}
+              aria-hidden="true"
+            />
+          ) : null}
+          <h2 id="provider-name">{state.institution?.name ?? ""}</h2>
+        </header>
+        {state.institution?.hint_copy ? (
+          <p id="provider-hint" className="credentials-hint">
+            {state.institution.hint_copy}
+          </p>
+        ) : null}
         <ul id="consent-list">
           {consent.map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ul>
-        <label htmlFor="link-username">Username</label>
+        <label htmlFor="link-username">
+          {state.institution?.auth_style === "email_password"
+            ? "Email"
+            : state.institution?.auth_style === "member_number"
+              ? "Member number"
+              : "Username"}
+        </label>
         <input
           id="link-username"
-          type="text"
-          autoComplete="username"
+          type={state.institution?.auth_style === "email_password" ? "email" : "text"}
+          autoComplete={
+            state.institution?.auth_style === "email_password" ? "email" : "username"
+          }
+          inputMode={
+            state.institution?.auth_style === "member_number" ? "numeric" : undefined
+          }
           value={username}
           onChange={(e) => setUsername(e.target.value)}
         />
