@@ -36,6 +36,7 @@ import {
   getMessages,
   resolveLocale,
 } from "./i18n";
+import { SkeletonRowList } from "./Skeleton";
 import {
   flowReducer,
   initialFlowState,
@@ -548,6 +549,9 @@ export function App(props: AppProps = {}) {
             {searchError}
           </p>
         ) : null}
+        {organizations.length === 0 && !searchError ? (
+          <SkeletonRowList rows={4} />
+        ) : null}
         <ul id="institution-list" aria-label="Matching providers">
           {organizations.map((organization) => (
             <li
@@ -702,6 +706,7 @@ export function App(props: AppProps = {}) {
         >
           {messages.step_connecting_body}
         </p>
+        <SkeletonRowList rows={3} />
       </section>
 
       <section

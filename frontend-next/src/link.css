@@ -224,3 +224,67 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Motion polish (#60) ───────────────────────────────────────────── */
+@keyframes plaidify-skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.skeleton {
+  display: block;
+  border-radius: var(--plaidify-radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--plaidify-color-bg-surface-alt) 0%,
+    var(--plaidify-color-bg-surface) 50%,
+    var(--plaidify-color-bg-surface-alt) 100%
+  );
+  background-size: 200% 100%;
+  animation: plaidify-skeleton-shimmer
+    var(--plaidify-duration-slow, 1200ms) linear infinite;
+}
+
+.skeleton--row {
+  height: 56px;
+  margin-bottom: var(--plaidify-space-2);
+}
+
+.skeleton--text {
+  height: 1em;
+  width: 100%;
+}
+
+.skeleton-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+/* Reserve space so the step transition never shifts layout. */
+.plaidify-link {
+  min-height: 420px;
+}
+
+/* Subtle fade-in for the active step. Duration is pulled from tokens
+ * so the existing reduced-motion rule near the top of this file zeros
+ * it out automatically. */
+.link-step.active {
+  animation: plaidify-step-fade-in var(--plaidify-duration-base, 220ms)
+    var(--plaidify-easing-standard, ease-out);
+}
+
+@keyframes plaidify-step-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
