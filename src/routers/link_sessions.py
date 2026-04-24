@@ -270,8 +270,10 @@ async def _push_link_session_event(
     await _publish_link_session_event(link_token, event_data)
 
     webhook_event_map = {
+        "OPEN": "LINK_OPEN",
         "CONNECTED": "LINK_COMPLETE",
         "ERROR": "LINK_ERROR",
+        "EXIT": "LINK_EXIT",
         "MFA_REQUIRED": "MFA_REQUIRED",
     }
     if event_name in webhook_event_map:
@@ -630,7 +632,12 @@ async def post_link_session_event(
         {k: v for k, v in body.items() if k != "event"}
     )
     updates = {}
-    if event_name == "INSTITUTION_SELECTED":
+    if event_name == "OPEN":
+        # Page loaded; no session-state transition required but event is
+        # still recorded and fanned out to SSE/webhooks so developers can
+        # observe when the user actually saw the Link modal.
+        pass
+    elif event_name == "INSTITUTION_SELECTED":
         updates["status"] = "awaiting_credentials"
         updates["site"] = body.get("site", session.get("site"))
     elif event_name == "CREDENTIALS_SUBMITTED":
@@ -639,11 +646,20 @@ async def post_link_session_event(
         updates["status"] = "mfa_required"
     elif event_name == "MFA_SUBMITTED":
         updates["status"] = "verifying_mfa"
+    elif event_name == "EXIT":
+        # Only transition to exited if not already terminal; preserves
+        # completed/error states when the page unloads after success/failure.
+        if session.get("status") not in {"completed", "error", "expired"}:
+            updates["status"] = "exited"
     elif event_name == "ERROR":
         updates["status"] = "error"
         updates["error_message"] = body.get("error")
 
     if event_name == "CONNECTED":
+        # CONNECTED is authoritative from the server-side job reconciler,
+        # not from the browser, to prevent a client from lying about a
+        # successful completion. We still 200 so the page's retry queue
+        # treats the write as durable.
         return {"status": "ignored"}
 
     await _push_link_session_event(
