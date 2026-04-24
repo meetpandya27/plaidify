@@ -30,20 +30,25 @@ import {
 } from "./errorTaxonomy";
 import { EventDelivery, postBridgeEvent } from "./events";
 import {
+  DEFAULT_LOCALE,
+  type Locale,
+  type Messages,
+  getMessages,
+  resolveLocale,
+} from "./i18n";
+import {
   flowReducer,
   initialFlowState,
   type FlowState,
   type Institution,
 } from "./state";
 
-const CONSENT_BULLETS: readonly string[] = [
-  "Open a secure browser session with the provider you choose.",
-  "Encrypt your sign-in details before they leave this window.",
-  "Return a secure completion back to your app when verification finishes.",
-];
-
-const SUCCESS_MESSAGE =
-  "Your secure connection is complete. Return to your app to finish setup.";
+// NOTE: The canonical English copy for the E2E DOM contract now lives
+// in `./i18n` (the `en-US` catalog). Keep the following strings stable
+// when evolving that catalog: the third consent bullet must read
+// "Return a secure completion back to your app when verification
+// finishes.", the success message must contain "Return to your app",
+// and the public-token label must be "PUBLIC TOKEN".
 
 type EncryptCredentialsFn = typeof defaultEncryptCredentials;
 type PollLinkSessionFn = (options: PollOptions) => Promise<LinkSessionStatus>;
@@ -68,6 +73,8 @@ export interface AppProps {
   ) => EventDelivery | null;
   /** Default institution list (used before the first search completes). */
   readonly seedInstitutions?: readonly Organization[];
+  /** Override the negotiated UI locale (tests / storybook). */
+  readonly locale?: Locale;
 }
 
 export function App(props: AppProps = {}) {
@@ -103,6 +110,19 @@ export function App(props: AppProps = {}) {
   const stepHeadingRef = useRef<HTMLElement | null>(null);
   const previousStepRef = useRef<string>(state.step);
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
+
+  const locale: Locale =
+    props.locale ??
+    (typeof window !== "undefined"
+      ? resolveLocale({
+          search: window.location.search,
+          navigatorLanguages:
+            typeof navigator !== "undefined"
+              ? [...(navigator.languages ?? [navigator.language ?? "en-US"])]
+              : undefined,
+        })
+      : DEFAULT_LOCALE);
+  const messages: Messages = useMemo(() => getMessages(locale), [locale]);
 
   const encryptFn = props.encryptCredentials ?? defaultEncryptCredentials;
   const pollFn = props.pollLinkSession ?? defaultPollLinkSession;
@@ -238,17 +258,17 @@ export function App(props: AppProps = {}) {
       }
     }
     const announcements: Record<string, string> = {
-      select: "Choose your provider to get started.",
-      credentials: "Enter your credentials for the selected provider.",
-      connecting: "Connecting to your provider.",
-      mfa: "Additional verification required.",
-      success: "Connection successful.",
+      select: messages.live_select,
+      credentials: messages.live_credentials,
+      connecting: messages.live_connecting,
+      mfa: messages.live_mfa,
+      success: messages.live_success,
       error: state.error?.message
-        ? `Connection failed: ${state.error.message}`
-        : "Connection failed.",
+        ? `${messages.live_error} ${state.error.message}`
+        : messages.live_error,
     };
     setLiveAnnouncement(announcements[state.step] ?? "");
-  }, [state.step, state.error?.message]);
+  }, [state.step, state.error?.message, messages]);
 
   const failWith = useCallback(
     (err: unknown, options: { fallbackCode?: LinkErrorCode; site?: string | null } = {}) => {
@@ -423,7 +443,7 @@ export function App(props: AppProps = {}) {
       const publicToken = resolved.public_token ?? "";
       dispatch({
         type: "SUCCEED",
-        payload: { accessToken: publicToken, summary: SUCCESS_MESSAGE },
+        payload: { accessToken: publicToken, summary: messages.success_message },
       });
       emit("CONNECTED", {
         job_id: resolved.job_id ?? null,
@@ -431,7 +451,7 @@ export function App(props: AppProps = {}) {
         site: siteRef.current,
       });
     },
-    [emit],
+    [emit, messages],
   );
 
   const onSubmitCredentials = useCallback(() => {
@@ -483,10 +503,10 @@ export function App(props: AppProps = {}) {
     }
   }, [emit, failWith, handleConnectResponse, mfaSchemaEntry, mfaValues]);
 
-  const consent = useMemo(() => CONSENT_BULLETS, []);
+  const consent = useMemo(() => messages.consent_bullets, [messages]);
 
   return (
-    <main role="main" aria-label="Plaidify Link" className="plaidify-link">
+    <main role="main" aria-label="Plaidify Link" className="plaidify-link" lang={locale}>
       <div
         id="link-live-region"
         role="status"
@@ -500,7 +520,7 @@ export function App(props: AppProps = {}) {
         id="step-select"
         className={state.step === "select" ? "link-step active" : "link-step"}
         role="region"
-        aria-label="Select your provider"
+        aria-label={messages.step_select_heading}
       >
         <h2
           id="step-select-heading"
@@ -510,17 +530,17 @@ export function App(props: AppProps = {}) {
           }}
           tabIndex={-1}
         >
-          Select your provider
+          {messages.step_select_heading}
         </h2>
         <label className="sr-only" htmlFor="institution-search">
-          Search providers
+          {messages.search_label}
         </label>
         <input
           id="institution-search"
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search providers"
+          placeholder={messages.search_placeholder}
           autoComplete="off"
         />
         {searchError ? (
@@ -595,7 +615,7 @@ export function App(props: AppProps = {}) {
         id="step-credentials"
         className={state.step === "credentials" ? "link-step active" : "link-step"}
         role="region"
-        aria-label="Enter your credentials"
+        aria-label={messages.step_credentials_heading}
         style={
           state.institution?.primary_color
             ? ({
@@ -663,7 +683,7 @@ export function App(props: AppProps = {}) {
           }}
         />
         <button id="connect-btn" type="button" onClick={onSubmitCredentials}>
-          {credentialSchema.submit_label ?? "Continue"}
+          {credentialSchema.submit_label ?? messages.continue_cta}
         </button>
       </section>
 
@@ -671,7 +691,7 @@ export function App(props: AppProps = {}) {
         id="step-connecting"
         className={state.step === "connecting" ? "link-step active" : "link-step"}
         role="region"
-        aria-label="Connecting"
+        aria-label={messages.step_connecting_heading}
       >
         <p
           role="status"
@@ -680,7 +700,7 @@ export function App(props: AppProps = {}) {
           }}
           tabIndex={-1}
         >
-          Creating your secure session&hellip;
+          {messages.step_connecting_body}
         </p>
       </section>
 
@@ -688,7 +708,7 @@ export function App(props: AppProps = {}) {
         id="step-mfa"
         className={state.step === "mfa" ? "link-step active" : "link-step"}
         role="region"
-        aria-label="Finish verification"
+        aria-label={messages.step_mfa_heading}
         style={
           state.institution?.primary_color
             ? ({
@@ -752,7 +772,7 @@ export function App(props: AppProps = {}) {
           }}
         />
         <button id="mfa-submit-btn" type="button" onClick={() => void onSubmitMfa()}>
-          {mfaSchemaEntry.submit_label ?? "Verify and continue"}
+          {mfaSchemaEntry.submit_label ?? messages.verify_cta}
         </button>
       </section>
 
@@ -760,7 +780,7 @@ export function App(props: AppProps = {}) {
         id="step-success"
         className={state.step === "success" ? "link-step active" : "link-step"}
         role="region"
-        aria-label="Connection successful"
+        aria-label={messages.step_success_heading}
       >
         <p
           id="success-message"
@@ -769,12 +789,12 @@ export function App(props: AppProps = {}) {
           }}
           tabIndex={-1}
         >
-          {state.success?.summary ?? SUCCESS_MESSAGE}
+          {state.success?.summary ?? messages.success_message}
         </p>
         <div id="access-token-display">
           {state.success?.accessToken ? (
             <div className="reference-row">
-              <span className="reference-label">PUBLIC TOKEN</span>
+              <span className="reference-label">{messages.public_token_label}</span>
               <span className="reference-value">{state.success.accessToken}</span>
             </div>
           ) : null}
@@ -785,7 +805,7 @@ export function App(props: AppProps = {}) {
         id="step-error"
         className={state.step === "error" ? "link-step active" : "link-step"}
         role="region"
-        aria-label="Connection failed"
+        aria-label={messages.step_error_heading}
         aria-live="assertive"
         data-error-code={state.error?.code ?? "internal_error"}
       >
