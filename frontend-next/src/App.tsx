@@ -100,6 +100,9 @@ export function App(props: AppProps = {}) {
   const deliveryRef = useRef<EventDelivery | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const siteRef = useRef<string | null>(null);
+  const stepHeadingRef = useRef<HTMLElement | null>(null);
+  const previousStepRef = useRef<string>(state.step);
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
 
   const encryptFn = props.encryptCredentials ?? defaultEncryptCredentials;
   const pollFn = props.pollLinkSession ?? defaultPollLinkSession;
@@ -215,6 +218,37 @@ export function App(props: AppProps = {}) {
       deliveryRef.current?.dispose();
     };
   }, [emit, state.error?.code]);
+
+  // Focus management + polite announcement on step transition (#56 a11y).
+  useEffect(() => {
+    if (previousStepRef.current === state.step) {
+      return;
+    }
+    previousStepRef.current = state.step;
+    const target = stepHeadingRef.current;
+    if (target) {
+      // Ensure programmatic focus works without showing a persistent tabindex.
+      if (!target.hasAttribute("tabindex")) {
+        target.setAttribute("tabindex", "-1");
+      }
+      try {
+        target.focus({ preventScroll: false });
+      } catch {
+        target.focus();
+      }
+    }
+    const announcements: Record<string, string> = {
+      select: "Choose your provider to get started.",
+      credentials: "Enter your credentials for the selected provider.",
+      connecting: "Connecting to your provider.",
+      mfa: "Additional verification required.",
+      success: "Connection successful.",
+      error: state.error?.message
+        ? `Connection failed: ${state.error.message}`
+        : "Connection failed.",
+    };
+    setLiveAnnouncement(announcements[state.step] ?? "");
+  }, [state.step, state.error?.message]);
 
   const failWith = useCallback(
     (err: unknown, options: { fallbackCode?: LinkErrorCode; site?: string | null } = {}) => {
@@ -453,12 +487,31 @@ export function App(props: AppProps = {}) {
 
   return (
     <main role="main" aria-label="Plaidify Link" className="plaidify-link">
+      <div
+        id="link-live-region"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {liveAnnouncement}
+      </div>
       <section
         id="step-select"
         className={state.step === "select" ? "link-step active" : "link-step"}
         role="region"
         aria-label="Select your provider"
       >
+        <h2
+          id="step-select-heading"
+          className="sr-only"
+          ref={(el) => {
+            if (state.step === "select") stepHeadingRef.current = el;
+          }}
+          tabIndex={-1}
+        >
+          Select your provider
+        </h2>
         <label className="sr-only" htmlFor="institution-search">
           Search providers
         </label>
@@ -480,57 +533,59 @@ export function App(props: AppProps = {}) {
             <li
               key={organization.organization_id || organization.site}
               className="institution-item"
-              role="button"
-              tabIndex={0}
-              data-organization-id={organization.organization_id}
-              style={
-                organization.primary_color
-                  ? ({
-                      "--organization-primary": organization.primary_color,
-                      "--organization-secondary":
-                        organization.secondary_color ?? "transparent",
-                    } as React.CSSProperties)
-                  : undefined
-              }
-              onClick={() => onSelectInstitution(organization)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onSelectInstitution(organization);
-                }
-              }}
             >
-              {organization.logo_url ? (
-                <img
-                  className="institution-item__logo"
-                  src={organization.logo_url}
-                  alt=""
-                  width={32}
-                  height={32}
-                  aria-hidden="true"
-                />
-              ) : (
-                <span
-                  className="institution-item__monogram"
-                  aria-hidden="true"
-                  style={
-                    organization.primary_color
-                      ? {
-                          background: organization.primary_color,
-                          color: organization.secondary_color ?? "#fff",
-                        }
-                      : undefined
-                  }
-                >
-                  {organization.logo_monogram ?? organization.name.slice(0, 1)}
-                </span>
-              )}
-              <span className="institution-item__name">{organization.name}</span>
-              {organization.category_label ? (
-                <span className="institution-item__category">
-                  {organization.category_label}
-                </span>
-              ) : null}
+              <button
+                type="button"
+                className="institution-item__button"
+                data-organization-id={organization.organization_id}
+                aria-label={
+                  organization.category_label
+                    ? `${organization.name}, ${organization.category_label}`
+                    : organization.name
+                }
+                style={
+                  organization.primary_color
+                    ? ({
+                        "--organization-primary": organization.primary_color,
+                        "--organization-secondary":
+                          organization.secondary_color ?? "transparent",
+                      } as React.CSSProperties)
+                    : undefined
+                }
+                onClick={() => onSelectInstitution(organization)}
+              >
+                {organization.logo_url ? (
+                  <img
+                    className="institution-item__logo"
+                    src={organization.logo_url}
+                    alt=""
+                    width={32}
+                    height={32}
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <span
+                    className="institution-item__monogram"
+                    aria-hidden="true"
+                    style={
+                      organization.primary_color
+                        ? {
+                            background: organization.primary_color,
+                            color: organization.secondary_color ?? "#fff",
+                          }
+                        : undefined
+                    }
+                  >
+                    {organization.logo_monogram ?? organization.name.slice(0, 1)}
+                  </span>
+                )}
+                <span className="institution-item__name">{organization.name}</span>
+                {organization.category_label ? (
+                  <span className="institution-item__category">
+                    {organization.category_label}
+                  </span>
+                ) : null}
+              </button>
             </li>
           ))}
         </ul>
@@ -564,7 +619,15 @@ export function App(props: AppProps = {}) {
               aria-hidden="true"
             />
           ) : null}
-          <h2 id="provider-name">{state.institution?.name ?? ""}</h2>
+          <h2
+            id="provider-name"
+            ref={(el) => {
+              if (state.step === "credentials") stepHeadingRef.current = el;
+            }}
+            tabIndex={-1}
+          >
+            {state.institution?.name ?? ""}
+          </h2>
         </header>
         {state.institution?.hint_copy ? (
           <p id="provider-hint" className="credentials-hint">
@@ -610,7 +673,15 @@ export function App(props: AppProps = {}) {
         role="region"
         aria-label="Connecting"
       >
-        <p>Creating your secure session&hellip;</p>
+        <p
+          role="status"
+          ref={(el) => {
+            if (state.step === "connecting") stepHeadingRef.current = el;
+          }}
+          tabIndex={-1}
+        >
+          Creating your secure session&hellip;
+        </p>
       </section>
 
       <section
@@ -631,9 +702,26 @@ export function App(props: AppProps = {}) {
         }
       >
         {mfaSchemaEntry.title ? (
-          <h2 id="mfa-title">{mfaSchemaEntry.title}</h2>
+          <h2
+            id="mfa-title"
+            ref={(el) => {
+              if (state.step === "mfa") stepHeadingRef.current = el;
+            }}
+            tabIndex={-1}
+          >
+            {mfaSchemaEntry.title}
+          </h2>
         ) : null}
-        <p id="mfa-message">{state.mfaPrompt ?? ""}</p>
+        <p
+          id="mfa-message"
+          ref={(el) => {
+            if (state.step === "mfa" && !mfaSchemaEntry.title)
+              stepHeadingRef.current = el;
+          }}
+          tabIndex={-1}
+        >
+          {state.mfaPrompt ?? ""}
+        </p>
         {mfaSchemaEntry.help_text ? (
           <p id="mfa-help" className="credentials-hint">
             {mfaSchemaEntry.help_text}
@@ -674,7 +762,15 @@ export function App(props: AppProps = {}) {
         role="region"
         aria-label="Connection successful"
       >
-        <p id="success-message">{state.success?.summary ?? SUCCESS_MESSAGE}</p>
+        <p
+          id="success-message"
+          ref={(el) => {
+            if (state.step === "success") stepHeadingRef.current = el;
+          }}
+          tabIndex={-1}
+        >
+          {state.success?.summary ?? SUCCESS_MESSAGE}
+        </p>
         <div id="access-token-display">
           {state.success?.accessToken ? (
             <div className="reference-row">
@@ -690,6 +786,7 @@ export function App(props: AppProps = {}) {
         className={state.step === "error" ? "link-step active" : "link-step"}
         role="region"
         aria-label="Connection failed"
+        aria-live="assertive"
         data-error-code={state.error?.code ?? "internal_error"}
       >
         {(() => {
@@ -712,7 +809,15 @@ export function App(props: AppProps = {}) {
           };
           return (
             <>
-              <h2 id="error-title">{remediation.title}</h2>
+              <h2
+                id="error-title"
+                ref={(el) => {
+                  if (state.step === "error") stepHeadingRef.current = el;
+                }}
+                tabIndex={-1}
+              >
+                {remediation.title}
+              </h2>
               <p id="error-description">{remediation.description}</p>
               <p id="error-message" className="sr-only">
                 {state.error?.message ?? ""}
