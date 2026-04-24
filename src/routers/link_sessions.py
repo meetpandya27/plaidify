@@ -122,6 +122,7 @@ def _create_ephemeral_link_session(
     db: Optional[Session],
     scopes: Optional[list[str]],
     allowed_origin: Optional[str],
+    allowed_origins: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     """Create a hosted link session and its ephemeral encryption material."""
     link_token = str(uuid.uuid4())
@@ -136,11 +137,24 @@ def _create_ephemeral_link_session(
     if scopes is not None:
         session_store.set_link_scopes(link_token, json.dumps(scopes))
 
+    normalized_primary = _normalize_origin(allowed_origin)
+    normalized_list: list[str] = []
+    seen: set[str] = set()
+    if normalized_primary:
+        normalized_list.append(normalized_primary)
+        seen.add(normalized_primary)
+    for entry in allowed_origins or []:
+        normalized_entry = _normalize_origin(entry)
+        if normalized_entry and normalized_entry not in seen:
+            seen.add(normalized_entry)
+            normalized_list.append(normalized_entry)
+
     session_store.create_link_session(
         link_token,
         {
             "status": "awaiting_institution",
-            "allowed_origin": _normalize_origin(allowed_origin),
+            "allowed_origin": normalized_primary,
+            "allowed_origins": normalized_list,
             "current_job_id": None,
             "error_message": None,
             "site": site,
@@ -481,6 +495,7 @@ async def create_link_bootstrap(
         user_id=user.id,
         site=body.site,
         allowed_origin=body.allowed_origin,
+        allowed_origins=body.allowed_origins,
         scopes=effective_scopes,
         expires_seconds=expires_in,
     )
@@ -504,6 +519,7 @@ async def create_link_bootstrap(
         expires_in=expires_in,
         site=body.site,
         allowed_origin=body.allowed_origin,
+        allowed_origins=body.allowed_origins,
         scopes=effective_scopes,
     )
 
@@ -523,8 +539,12 @@ async def exchange_link_bootstrap(
         raise HTTPException(status_code=400, detail="Invalid link bootstrap token.")
 
     allowed_origin = payload.get("allowed_origin")
+    allowed_origins_payload = payload.get("allowed_origins") or []
     request_origin = _extract_request_origin(request)
-    if allowed_origin and request_origin != allowed_origin:
+    allowed_set = {entry.rstrip("/") for entry in allowed_origins_payload if entry}
+    if allowed_origin:
+        allowed_set.add(allowed_origin.rstrip("/"))
+    if allowed_set and (request_origin is None or request_origin.rstrip("/") not in allowed_set):
         raise HTTPException(
             status_code=403,
             detail="This origin is not allowed to redeem the hosted-link bootstrap token.",
@@ -551,6 +571,7 @@ async def exchange_link_bootstrap(
         db=db,
         scopes=scopes,
         allowed_origin=allowed_origin,
+        allowed_origins=allowed_origins_payload,
     )
 
     logger.info(

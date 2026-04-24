@@ -302,3 +302,98 @@ class TestHostedLinkEventSanitization:
         # Status response never contains access_token or result.
         assert "access_token" not in status
         assert "result" not in status
+
+
+class TestHostedLinkFrameAncestors:
+    """Verify hosted /link CSP frame-ancestors is derived from per-session allowlist."""
+
+    def test_link_html_no_token_defaults_to_self(self, client):
+        response = client.get("/link")
+        assert response.status_code == 200
+        csp = response.headers.get("Content-Security-Policy", "")
+        assert "frame-ancestors 'self'" in csp
+        # Hard default stays SAMEORIGIN when no session allowlist is present.
+        assert response.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+    def test_link_html_with_unknown_token_defaults_to_self(self, client):
+        response = client.get("/link?token=does-not-exist")
+        assert response.status_code == 200
+        csp = response.headers.get("Content-Security-Policy", "")
+        assert "frame-ancestors 'self'" in csp
+        assert response.headers.get("X-Frame-Options") == "SAMEORIGIN"
+
+    def test_link_html_uses_session_allowed_origin(self, client, auth_headers):
+        session = client.post(
+            "/link/sessions",
+            params={"site": "internal_bank"},
+            headers={**auth_headers, "Origin": "https://partner.example.com"},
+        ).json()
+        link_token = session["link_token"]
+
+        response = client.get(f"/link?token={link_token}")
+        csp = response.headers.get("Content-Security-Policy", "")
+        assert "frame-ancestors 'self' https://partner.example.com" in csp
+        # X-Frame-Options removed so the document can be framed cross-origin.
+        assert "X-Frame-Options" not in response.headers
+
+    def test_bootstrap_multi_origin_allowlist(self, client, auth_headers):
+        bootstrap = client.post(
+            "/link/bootstrap",
+            json={
+                "site": "internal_bank",
+                "allowed_origins": [
+                    "https://partner-a.example.com",
+                    "https://partner-b.example.com/",
+                    "https://partner-a.example.com",
+                ],
+            },
+            headers=auth_headers,
+        )
+        assert bootstrap.status_code == 200
+        body = bootstrap.json()
+        assert body["allowed_origins"] == [
+            "https://partner-a.example.com",
+            "https://partner-b.example.com",
+        ]
+
+        exchange = client.post(
+            "/link/sessions/bootstrap",
+            json={"launch_token": body["launch_token"]},
+            headers={"Origin": "https://partner-b.example.com"},
+        )
+        assert exchange.status_code == 200
+        link_token = exchange.json()["link_token"]
+
+        response = client.get(f"/link?token={link_token}")
+        csp = response.headers.get("Content-Security-Policy", "")
+        assert "https://partner-a.example.com" in csp
+        assert "https://partner-b.example.com" in csp
+        assert "X-Frame-Options" not in response.headers
+
+    def test_bootstrap_rejects_origin_outside_allowlist(self, client, auth_headers):
+        bootstrap = client.post(
+            "/link/bootstrap",
+            json={
+                "site": "internal_bank",
+                "allowed_origins": ["https://partner-a.example.com"],
+            },
+            headers=auth_headers,
+        ).json()
+
+        exchange = client.post(
+            "/link/sessions/bootstrap",
+            json={"launch_token": bootstrap["launch_token"]},
+            headers={"Origin": "https://attacker.example.com"},
+        )
+        assert exchange.status_code == 403
+
+    def test_bootstrap_rejects_invalid_origin_format(self, client, auth_headers):
+        response = client.post(
+            "/link/bootstrap",
+            json={
+                "site": "internal_bank",
+                "allowed_origins": ["not-a-valid-origin"],
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 422

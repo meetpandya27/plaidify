@@ -49,6 +49,7 @@ def create_link_launch_token(
     user_id: int,
     site: Optional[str] = None,
     allowed_origin: Optional[str] = None,
+    allowed_origins: Optional[list[str]] = None,
     scopes: Optional[list[str]] = None,
     expires_seconds: Optional[int] = None,
 ) -> str:
@@ -66,6 +67,8 @@ def create_link_launch_token(
         payload["site"] = site
     if allowed_origin:
         payload["allowed_origin"] = allowed_origin.rstrip("/")
+    if allowed_origins:
+        payload["allowed_origins"] = [entry.rstrip("/") for entry in allowed_origins]
     if scopes is not None:
         payload["scopes"] = scopes
 
