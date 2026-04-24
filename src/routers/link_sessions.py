@@ -37,6 +37,7 @@ from src.models import (
 settings = get_settings()
 logger = get_logger("api.link_sessions")
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+FRONTEND_NEXT_DIST = Path(__file__).resolve().parents[2] / "frontend-next" / "dist"
 
 router = APIRouter(tags=["link_sessions"])
 
@@ -418,7 +419,19 @@ async def hosted_link_page(token: Optional[str] = None):
     """Serve the hosted Link page.
 
     The page validates the token client-side via the /link/sessions API.
+    When HOSTED_LINK_FRONTEND=react and the compiled bundle exists under
+    frontend-next/dist/, the React rewrite is served instead. If the
+    flag is on but the build is missing, we fall back to the legacy
+    page and log a warning so the deployment isn't broken.
     """
+    if get_settings().hosted_link_frontend == "react":
+        react_index = FRONTEND_NEXT_DIST / "index.html"
+        if react_index.exists():
+            return HTMLResponse(content=react_index.read_text(encoding="utf-8"))
+        logger.warning(
+            "HOSTED_LINK_FRONTEND=react but frontend-next/dist/index.html is missing; serving legacy page."
+        )
+
     link_html = FRONTEND_DIR / "link.html"
     if not link_html.exists():
         raise HTTPException(status_code=500, detail="Link page not found.")

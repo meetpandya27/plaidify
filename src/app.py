@@ -59,6 +59,7 @@ from src.routers import (
 settings = get_settings()
 logger = get_logger("api")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_NEXT_DIST = Path(__file__).resolve().parent.parent / "frontend-next" / "dist"
 
 _TOKEN_CLEANUP_INTERVAL = 3600
 _AUDIT_CLEANUP_INTERVAL = 86400
@@ -393,6 +394,22 @@ try:
     app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=False), name="frontend")
 except Exception:
     logger.warning("Frontend directory not found, /ui will not be served")
+
+if FRONTEND_NEXT_DIST.exists():
+    try:
+        app.mount(
+            "/ui-next",
+            StaticFiles(directory=str(FRONTEND_NEXT_DIST), html=False),
+            name="frontend-next",
+        )
+    except Exception:
+        logger.warning(
+            "frontend-next/dist present but could not be mounted at /ui-next"
+        )
+else:
+    logger.info(
+        "frontend-next/dist not found; /ui-next will not be served (run 'npm run build' in frontend-next)"
+    )
 
 
 @app.exception_handler(PlaidifyError)
