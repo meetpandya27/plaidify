@@ -88,6 +88,10 @@ class Settings(BaseSettings):
         default=300,
         description="Seconds before a signed hosted-link bootstrap token expires.",
     )
+    hosted_link_frontend: str = Field(
+        default="legacy",
+        description="Which hosted /link frontend to serve. 'legacy' serves frontend/link.html; 'react' serves the frontend-next/dist bundle when it is present.",
+    )
     enforce_https: bool = Field(
         default=False,
         description="Redirect HTTP to HTTPS and add HSTS header. Auto-enabled in production.",
@@ -317,6 +321,17 @@ class Settings(BaseSettings):
                 "Set CORS_ORIGINS to specific origins (e.g. 'https://app.example.com')."
             )
         return v
+
+    @field_validator("hosted_link_frontend")
+    @classmethod
+    def validate_hosted_link_frontend(cls, v: str) -> str:
+        normalized = (v or "legacy").strip().lower()
+        allowed = {"legacy", "react"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"HOSTED_LINK_FRONTEND must be one of {sorted(allowed)}; got {v!r}."
+            )
+        return normalized
 
     model_config = {
         "env_prefix": "",
