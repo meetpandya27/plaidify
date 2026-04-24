@@ -380,6 +380,28 @@ class BlueprintV2(BaseModel):
         None,
         description="Health check configuration.",
     )
+    credential_schema: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Optional UI-facing schema describing credential fields for the hosted "
+            "Link flow (#54). Keys: `fields` (list of field descriptors) and "
+            "`submit_label`. Each field has `id`, `label`, `type` (text|email|"
+            "password|tel|number), optional `autocomplete`, `inputmode`, "
+            "`placeholder`, `help_text`, `pattern`, `min_length`, `max_length`, "
+            "`required`, `secret`, `reveal`. When omitted, the frontend derives "
+            "a default from the organization's `auth_style`."
+        ),
+    )
+    mfa_schema: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Optional UI-facing schema describing MFA prompts keyed by MFA "
+            "type (sms, totp, security_question, push, email_code). Each entry "
+            "has a `title`, `help_text`, `fields` (same descriptor shape as "
+            "credential_schema), and optional `submit_label`. When omitted, "
+            "the frontend renders a single numeric `code` field."
+        ),
+    )
 
     @field_validator("schema_version")
     @classmethod

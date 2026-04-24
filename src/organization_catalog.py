@@ -294,6 +294,144 @@ def _logo_data_url(monogram: str, primary: str, secondary: str) -> str:
     return f"data:image/svg+xml;base64,{encoded}"
 
 
+_DEFAULT_CREDENTIAL_SCHEMAS: dict[str, dict[str, Any]] = {
+    "username_password": {
+        "submit_label": "Connect securely",
+        "fields": [
+            {
+                "id": "username",
+                "label": "Username",
+                "type": "text",
+                "autocomplete": "username",
+                "required": True,
+                "min_length": 3,
+                "max_length": 128,
+            },
+            {
+                "id": "password",
+                "label": "Password",
+                "type": "password",
+                "autocomplete": "current-password",
+                "required": True,
+                "secret": True,
+                "reveal": True,
+                "min_length": 6,
+                "max_length": 128,
+            },
+        ],
+    },
+    "email_password": {
+        "submit_label": "Connect securely",
+        "fields": [
+            {
+                "id": "username",
+                "label": "Email",
+                "type": "email",
+                "autocomplete": "email",
+                "required": True,
+                "pattern": r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+                "help_text": "Use the email address on file with your account.",
+                "min_length": 5,
+                "max_length": 254,
+            },
+            {
+                "id": "password",
+                "label": "Password",
+                "type": "password",
+                "autocomplete": "current-password",
+                "required": True,
+                "secret": True,
+                "reveal": True,
+                "min_length": 6,
+                "max_length": 128,
+            },
+        ],
+    },
+    "member_number": {
+        "submit_label": "Connect securely",
+        "fields": [
+            {
+                "id": "username",
+                "label": "Member number",
+                "type": "text",
+                "autocomplete": "username",
+                "inputmode": "numeric",
+                "pattern": r"^[0-9\-]{4,32}$",
+                "help_text": "Your member or account number as it appears on your statement.",
+                "required": True,
+                "min_length": 4,
+                "max_length": 32,
+            },
+            {
+                "id": "password",
+                "label": "Password",
+                "type": "password",
+                "autocomplete": "current-password",
+                "required": True,
+                "secret": True,
+                "reveal": True,
+                "min_length": 6,
+                "max_length": 128,
+            },
+        ],
+    },
+}
+
+
+_DEFAULT_MFA_SCHEMA: dict[str, dict[str, Any]] = {
+    "otp_input": {
+        "title": "Enter your verification code",
+        "help_text": "Check your phone, email, or authenticator app for the code.",
+        "submit_label": "Verify and continue",
+        "fields": [
+            {
+                "id": "code",
+                "label": "Verification code",
+                "type": "text",
+                "inputmode": "numeric",
+                "autocomplete": "one-time-code",
+                "pattern": r"^\d{4,8}$",
+                "min_length": 4,
+                "max_length": 8,
+                "required": True,
+            }
+        ],
+    },
+    "security_question": {
+        "title": "Answer your security question",
+        "submit_label": "Continue",
+        "fields": [
+            {
+                "id": "code",
+                "label": "Answer",
+                "type": "text",
+                "autocomplete": "off",
+                "required": True,
+                "min_length": 1,
+                "max_length": 128,
+            }
+        ],
+    },
+    "push": {
+        "title": "Approve the push notification on your device",
+        "help_text": "Waiting for you to approve the sign-in from your authenticator app.",
+        "submit_label": "I approved it",
+        "fields": [],
+    },
+}
+
+
+def _default_credential_schema(auth_style: str) -> dict[str, Any]:
+    return _DEFAULT_CREDENTIAL_SCHEMAS.get(
+        auth_style, _DEFAULT_CREDENTIAL_SCHEMAS["username_password"]
+    )
+
+
+def _default_mfa_schema() -> dict[str, Any]:
+    # Return a fresh dict to avoid downstream mutation.
+    return {key: dict(value) for key, value in _DEFAULT_MFA_SCHEMA.items()}
+
+
 @lru_cache(maxsize=1)
 def _load_connector_templates() -> dict[str, dict[str, Any]]:
     connectors_path = Path(settings.connectors_dir).resolve()
@@ -319,6 +457,9 @@ def _load_connector_templates() -> dict[str, dict[str, Any]]:
             "domain": blueprint.domain,
             "has_mfa": blueprint.mfa is not None,
             "tags": tags,
+            "credential_schema": blueprint.credential_schema,
+            "mfa_schema": blueprint.mfa_schema,
+            "mfa_type": blueprint.mfa.type.value if blueprint.mfa else None,
         }
 
     return templates
@@ -372,6 +513,12 @@ def get_organization_catalog() -> tuple[dict[str, Any], ...]:
                 "Use your online account credentials to continue.",
             )
             auth_style = branding.get("auth_style", "username_password")
+            # Synthetic directory entries render with schemas derived from the
+            # category's `auth_style`. Connector-specific `credential_schema` /
+            # `mfa_schema` blocks still live in the blueprint JSON for real
+            # integrations and are surfaced via /blueprints.
+            credential_schema = _default_credential_schema(auth_style)
+            mfa_schema = _default_mfa_schema()
 
             for region_code, region_name in regions:
                 for brand in spec["brands"]:
@@ -426,6 +573,8 @@ def get_organization_catalog() -> tuple[dict[str, Any], ...]:
                                 "accent_color": accent_color,
                                 "hint_copy": hint_copy,
                                 "auth_style": auth_style,
+                                "credential_schema": credential_schema,
+                                "mfa_schema": mfa_schema,
                                 "search_text": search_text,
                             }
                         )
