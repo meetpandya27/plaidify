@@ -31,9 +31,10 @@ class TestHostedLinkPage:
         resp = client.get("/link?token=some-token")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "Plaidify" in resp.text
-        assert "/ui/link-page.css" in resp.text
-        assert "/ui/link-page.js" in resp.text
+        # The React bundle ships a single <div id="root"/> mount point and
+        # loads its hashed JS asset from the /ui-next/ mount (#65).
+        assert 'id="root"' in resp.text
+        assert "/ui-next/" in resp.text
 
     def test_link_page_without_token(self, client):
         resp = client.get("/link")

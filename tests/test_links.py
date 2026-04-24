@@ -515,37 +515,13 @@ class TestHostedLinkEventEndpoint:
         assert response.status_code == 200
 
 
-class TestHostedLinkFrontendFlag:
-    """Coverage for the HOSTED_LINK_FRONTEND env flag wiring (#68).
-
-    The legacy frontend/link.html is served by default. When the flag
-    is 'react' and frontend-next/dist/index.html exists, GET /link
-    serves that bundle instead. If the flag is 'react' but the React
-    build is missing, the legacy page is served so deployments aren't
-    broken.
+class TestHostedLinkFrontend:
+    """The React bundle under frontend-next/dist/ is the only supported
+    hosted-link frontend (#65). When the build is missing, GET /link
+    returns a 500 with a clear error so deployment failures are loud.
     """
 
-    def _legacy_marker(self) -> str:
-        # The legacy page ships the institution picker shell inline.
-        return "institution-search"
-
-    def _react_marker(self) -> str:
-        # The Vite bundle always injects <div id="root"></div>.
-        return 'id="root"'
-
-    def test_flag_defaults_to_legacy(self, client, monkeypatch):
-        monkeypatch.delenv("HOSTED_LINK_FRONTEND", raising=False)
-        response = client.get("/link")
-        assert response.status_code == 200
-        assert self._legacy_marker() in response.text
-
-    def test_flag_legacy_serves_legacy_page(self, client, monkeypatch):
-        monkeypatch.setenv("HOSTED_LINK_FRONTEND", "legacy")
-        response = client.get("/link")
-        assert response.status_code == 200
-        assert self._legacy_marker() in response.text
-
-    def test_flag_react_serves_react_bundle_when_built(self, client, monkeypatch, tmp_path):
+    def test_link_page_serves_react_bundle(self, client, monkeypatch, tmp_path):
         from src.routers import link_sessions as link_sessions_module
 
         fake_dist = tmp_path / "dist"
@@ -556,15 +532,12 @@ class TestHostedLinkFrontendFlag:
             encoding="utf-8",
         )
         monkeypatch.setattr(link_sessions_module, "FRONTEND_NEXT_DIST", fake_dist)
-        monkeypatch.setenv("HOSTED_LINK_FRONTEND", "react")
 
         response = client.get("/link")
         assert response.status_code == 200
-        assert self._react_marker() in response.text
-        # The legacy markup must not leak into the React response.
-        assert self._legacy_marker() not in response.text
+        assert 'id="root"' in response.text
 
-    def test_flag_react_falls_back_when_bundle_missing(
+    def test_link_page_returns_500_when_bundle_missing(
         self, client, monkeypatch, tmp_path, caplog
     ):
         from src.routers import link_sessions as link_sessions_module
@@ -572,25 +545,12 @@ class TestHostedLinkFrontendFlag:
         monkeypatch.setattr(
             link_sessions_module, "FRONTEND_NEXT_DIST", tmp_path / "does-not-exist"
         )
-        monkeypatch.setenv("HOSTED_LINK_FRONTEND", "react")
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("ERROR"):
             response = client.get("/link")
-        assert response.status_code == 200
-        assert self._legacy_marker() in response.text
+        assert response.status_code == 500
         assert any(
             "frontend-next/dist/index.html is missing" in record.getMessage()
             for record in caplog.records
         )
-
-    def test_flag_rejects_unknown_values(self, monkeypatch):
-        from src.config import Settings
-
-        monkeypatch.setenv("HOSTED_LINK_FRONTEND", "angular")
-        try:
-            Settings()  # type: ignore[call-arg]
-        except Exception as exc:
-            assert "HOSTED_LINK_FRONTEND" in str(exc)
-        else:  # pragma: no cover — we expect the constructor to raise
-            raise AssertionError("Settings() should reject unknown HOSTED_LINK_FRONTEND values")
 
