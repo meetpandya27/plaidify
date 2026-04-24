@@ -232,3 +232,73 @@ class TestUserIsolation:
             headers=second_user_headers,
         )
         assert response.status_code == 401
+
+
+class TestHostedLinkEventSanitization:
+    """Ensure hosted-link events never leak access_token / result payloads.
+
+    Enforces the completion contract: /link surfaces only public_token +
+    metadata to browser/mobile clients.
+    """
+
+    def test_build_event_strips_forbidden_keys(self):
+        from src.routers.link_sessions import _build_link_session_event
+
+        event = _build_link_session_event(
+            "CONNECTED",
+            data={
+                "public_token": "public-abc",
+                "access_token": "at-should-not-leak",
+                "result": {"balance": 1234, "access_token": "nested-leak"},
+                "site": "internal_bank",
+                "job_id": "job-1",
+            },
+        )
+
+        assert event["event"] == "CONNECTED"
+        assert event["data"]["public_token"] == "public-abc"
+        assert event["data"]["site"] == "internal_bank"
+        assert event["data"]["job_id"] == "job-1"
+        assert "access_token" not in event["data"]
+        assert "result" not in event["data"]
+
+    def test_sanitizer_handles_nested_lists(self):
+        from src.routers.link_sessions import _sanitize_hosted_event_data
+
+        sanitized = _sanitize_hosted_event_data(
+            {
+                "items": [
+                    {"name": "a", "access_token": "leak-a"},
+                    {"name": "b", "password": "pw"},
+                ],
+                "public_token": "public-xyz",
+            }
+        )
+
+        assert sanitized["public_token"] == "public-xyz"
+        assert sanitized["items"][0] == {"name": "a"}
+        assert sanitized["items"][1] == {"name": "b"}
+
+    def test_event_endpoint_strips_forbidden_keys(self, client, auth_headers):
+        session = client.post(
+            "/link/sessions",
+            params={"site": "internal_bank"},
+            headers=auth_headers,
+        ).json()
+        link_token = session["link_token"]
+
+        response = client.post(
+            f"/link/sessions/{link_token}/event",
+            json={
+                "event": "INSTITUTION_SELECTED",
+                "site": "internal_bank",
+                "access_token": "should-not-persist",
+                "result": {"leak": True},
+            },
+        )
+        assert response.status_code == 200
+
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        # Status response never contains access_token or result.
+        assert "access_token" not in status
+        assert "result" not in status

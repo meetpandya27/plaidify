@@ -165,11 +165,48 @@ def _create_ephemeral_link_session(
     }
 
 
+# Keys that must never appear in hosted-link event payloads delivered to
+# browser or mobile webview clients. Hosted Link's completion contract is
+# public_token + metadata only; durable credentials (access_token, raw
+# extracted data, passwords) stay server-side and are exchanged by the
+# developer's backend via authenticated APIs.
+_HOSTED_EVENT_FORBIDDEN_KEYS = frozenset(
+    {
+        "access_token",
+        "accessToken",
+        "password",
+        "password_encrypted",
+        "username_encrypted",
+        "private_key",
+        "secret",
+        "result",
+        "data",
+    }
+)
+
+
+def _sanitize_hosted_event_data(data: Any) -> Any:
+    """Recursively strip forbidden keys from hosted-link event payloads.
+
+    Defense-in-depth so a future caller cannot accidentally leak
+    access_token or extracted result data to browser/webview clients.
+    """
+    if isinstance(data, dict):
+        return {
+            key: _sanitize_hosted_event_data(value)
+            for key, value in data.items()
+            if key not in _HOSTED_EVENT_FORBIDDEN_KEYS
+        }
+    if isinstance(data, list):
+        return [_sanitize_hosted_event_data(item) for item in data]
+    return data
+
+
 def _build_link_session_event(event_name: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return {
         "event": event_name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "data": data or {},
+        "data": _sanitize_hosted_event_data(data or {}),
     }
 
 
@@ -568,7 +605,9 @@ async def post_link_session_event(
 
     body = await request.json()
     event_name = body.get("event", "UNKNOWN")
-    data = {k: v for k, v in body.items() if k not in {"event", "access_token"}}
+    data = _sanitize_hosted_event_data(
+        {k: v for k, v in body.items() if k != "event"}
+    )
     updates = {}
     if event_name == "INSTITUTION_SELECTED":
         updates["status"] = "awaiting_credentials"
