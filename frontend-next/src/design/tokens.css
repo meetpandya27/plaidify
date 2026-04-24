@@ -1,0 +1,198 @@
+/**
+ * Plaidify hosted-link design tokens.
+ *
+ * Every colour, spacing, radius, elevation, motion and typography
+ * primitive the React hosted-link app consumes lives here. The tokens
+ * are defined as CSS custom properties on :root so they can be
+ * overridden per-theme, and mirrored as a typed object in tokens.ts so
+ * components can reason about them at runtime (e.g. JS-driven motion).
+ *
+ * Dark mode is supported by both the user's system preference
+ * (prefers-color-scheme: dark) and an explicit opt-in via
+ * `data-theme="dark"` on the document root — the latter is what the
+ * hosted-link bootstrap will toggle when an embedding app requests a
+ * specific theme.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ── Colour — light theme defaults ──────────────────────────── */
+  --plaidify-color-bg-canvas: #f6f7f9;
+  --plaidify-color-bg-surface: #ffffff;
+  --plaidify-color-bg-surface-alt: #f0f2f5;
+  --plaidify-color-bg-overlay: rgba(15, 23, 42, 0.48);
+
+  --plaidify-color-fg-default: #0f172a;
+  --plaidify-color-fg-muted: #475569;
+  --plaidify-color-fg-subtle: #94a3b8;
+  --plaidify-color-fg-on-accent: #ffffff;
+
+  --plaidify-color-border-default: #e2e8f0;
+  --plaidify-color-border-strong: #cbd5e1;
+  --plaidify-color-border-focus: #2563eb;
+
+  --plaidify-color-accent-default: #2563eb;
+  --plaidify-color-accent-hover: #1d4ed8;
+  --plaidify-color-accent-active: #1e40af;
+  --plaidify-color-accent-subtle: rgba(37, 99, 235, 0.12);
+
+  --plaidify-color-success-default: #16a34a;
+  --plaidify-color-success-subtle: rgba(22, 163, 74, 0.12);
+
+  --plaidify-color-warning-default: #d97706;
+  --plaidify-color-warning-subtle: rgba(217, 119, 6, 0.14);
+
+  --plaidify-color-danger-default: #dc2626;
+  --plaidify-color-danger-subtle: rgba(220, 38, 38, 0.12);
+
+  /* ── Spacing scale ──────────────────────────────────────────── */
+  --plaidify-space-0: 0;
+  --plaidify-space-1: 4px;
+  --plaidify-space-2: 8px;
+  --plaidify-space-3: 12px;
+  --plaidify-space-4: 16px;
+  --plaidify-space-5: 20px;
+  --plaidify-space-6: 24px;
+  --plaidify-space-8: 32px;
+  --plaidify-space-10: 40px;
+  --plaidify-space-12: 48px;
+  --plaidify-space-16: 64px;
+
+  /* ── Radii ──────────────────────────────────────────────────── */
+  --plaidify-radius-xs: 4px;
+  --plaidify-radius-sm: 6px;
+  --plaidify-radius-md: 10px;
+  --plaidify-radius-lg: 14px;
+  --plaidify-radius-xl: 20px;
+  --plaidify-radius-pill: 999px;
+
+  /* ── Elevation ──────────────────────────────────────────────── */
+  --plaidify-shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --plaidify-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --plaidify-shadow-md: 0 4px 8px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.06);
+  --plaidify-shadow-lg: 0 12px 24px rgba(15, 23, 42, 0.12), 0 4px 8px rgba(15, 23, 42, 0.08);
+  --plaidify-shadow-focus: 0 0 0 3px rgba(37, 99, 235, 0.35);
+
+  /* ── Typography ─────────────────────────────────────────────── */
+  --plaidify-font-family-sans: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --plaidify-font-family-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --plaidify-font-size-xs: 12px;
+  --plaidify-font-size-sm: 13px;
+  --plaidify-font-size-md: 15px;
+  --plaidify-font-size-lg: 17px;
+  --plaidify-font-size-xl: 20px;
+  --plaidify-font-size-2xl: 24px;
+  --plaidify-font-size-3xl: 30px;
+
+  --plaidify-line-height-tight: 1.2;
+  --plaidify-line-height-normal: 1.5;
+  --plaidify-line-height-relaxed: 1.7;
+
+  --plaidify-font-weight-regular: 400;
+  --plaidify-font-weight-medium: 500;
+  --plaidify-font-weight-semibold: 600;
+  --plaidify-font-weight-bold: 700;
+
+  /* ── Motion ─────────────────────────────────────────────────── */
+  --plaidify-duration-instant: 80ms;
+  --plaidify-duration-fast: 140ms;
+  --plaidify-duration-base: 220ms;
+  --plaidify-duration-slow: 360ms;
+
+  --plaidify-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --plaidify-easing-emphasized: cubic-bezier(0.3, 0, 0, 1.2);
+  --plaidify-easing-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* Spring-ish keyframe amplitudes consumed by ProgressDots etc. */
+  --plaidify-spring-soft: cubic-bezier(0.34, 1.3, 0.64, 1);
+  --plaidify-spring-bouncy: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── Layout ─────────────────────────────────────────────────── */
+  --plaidify-max-width-content: 440px;
+  --plaidify-z-index-dialog: 1000;
+  --plaidify-z-index-toast: 1100;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --plaidify-color-bg-canvas: #0b1220;
+    --plaidify-color-bg-surface: #111827;
+    --plaidify-color-bg-surface-alt: #1f2937;
+    --plaidify-color-bg-overlay: rgba(0, 0, 0, 0.64);
+
+    --plaidify-color-fg-default: #e2e8f0;
+    --plaidify-color-fg-muted: #94a3b8;
+    --plaidify-color-fg-subtle: #64748b;
+
+    --plaidify-color-border-default: #1f2937;
+    --plaidify-color-border-strong: #334155;
+    --plaidify-color-border-focus: #60a5fa;
+
+    --plaidify-color-accent-default: #3b82f6;
+    --plaidify-color-accent-hover: #2563eb;
+    --plaidify-color-accent-active: #1d4ed8;
+    --plaidify-color-accent-subtle: rgba(96, 165, 250, 0.2);
+
+    --plaidify-color-success-default: #22c55e;
+    --plaidify-color-success-subtle: rgba(34, 197, 94, 0.18);
+
+    --plaidify-color-warning-default: #f59e0b;
+    --plaidify-color-warning-subtle: rgba(245, 158, 11, 0.22);
+
+    --plaidify-color-danger-default: #ef4444;
+    --plaidify-color-danger-subtle: rgba(239, 68, 68, 0.2);
+
+    --plaidify-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --plaidify-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --plaidify-shadow-md: 0 4px 10px rgba(0, 0, 0, 0.55);
+    --plaidify-shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.6);
+    --plaidify-shadow-focus: 0 0 0 3px rgba(96, 165, 250, 0.5);
+  }
+}
+
+/* Explicit opt-in wins over system preference either way. */
+[data-theme="dark"] {
+  --plaidify-color-bg-canvas: #0b1220;
+  --plaidify-color-bg-surface: #111827;
+  --plaidify-color-bg-surface-alt: #1f2937;
+  --plaidify-color-bg-overlay: rgba(0, 0, 0, 0.64);
+
+  --plaidify-color-fg-default: #e2e8f0;
+  --plaidify-color-fg-muted: #94a3b8;
+  --plaidify-color-fg-subtle: #64748b;
+
+  --plaidify-color-border-default: #1f2937;
+  --plaidify-color-border-strong: #334155;
+  --plaidify-color-border-focus: #60a5fa;
+
+  --plaidify-color-accent-default: #3b82f6;
+  --plaidify-color-accent-hover: #2563eb;
+  --plaidify-color-accent-active: #1d4ed8;
+  --plaidify-color-accent-subtle: rgba(96, 165, 250, 0.2);
+
+  --plaidify-color-success-default: #22c55e;
+  --plaidify-color-success-subtle: rgba(34, 197, 94, 0.18);
+
+  --plaidify-color-warning-default: #f59e0b;
+  --plaidify-color-warning-subtle: rgba(245, 158, 11, 0.22);
+
+  --plaidify-color-danger-default: #ef4444;
+  --plaidify-color-danger-subtle: rgba(239, 68, 68, 0.2);
+
+  --plaidify-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --plaidify-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --plaidify-shadow-md: 0 4px 10px rgba(0, 0, 0, 0.55);
+  --plaidify-shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.6);
+  --plaidify-shadow-focus: 0 0 0 3px rgba(96, 165, 250, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --plaidify-duration-instant: 0ms;
+    --plaidify-duration-fast: 0ms;
+    --plaidify-duration-base: 0ms;
+    --plaidify-duration-slow: 0ms;
+  }
+}
