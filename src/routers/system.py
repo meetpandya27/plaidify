@@ -13,6 +13,7 @@ from src.config import get_settings
 from src.core.browser_pool import get_browser_pool
 from src.database import User, get_db
 from src.dependencies import get_current_user, get_current_user_or_api_key
+from src.error_taxonomy import serialize_taxonomy
 from src.logging_config import get_logger
 from src.organization_catalog import get_organization_by_id, get_organization_summary, search_organizations
 
@@ -165,6 +166,16 @@ async def organization_detail(organization_id: str):
     if entry is None:
         raise HTTPException(status_code=404, detail="Organization not found.")
     return entry
+
+
+@router.get("/link/error-taxonomy")
+async def link_error_taxonomy():
+    """Return the shared hosted-link error taxonomy (issue #55).
+
+    Shared between server, SDKs, and the hosted Link page so that error
+    codes, remediation copy, and CTAs stay consistent across surfaces.
+    """
+    return serialize_taxonomy()
 
 
 # ── Blueprint Discovery ──────────────────────────────────────────────────────

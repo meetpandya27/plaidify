@@ -415,11 +415,21 @@ else:
 @app.exception_handler(PlaidifyError)
 async def plaidify_error_handler(request: Request, exc: PlaidifyError) -> JSONResponse:
     """Catch PlaidifyError subclasses and return structured JSON."""
+    code = exc.error_code.value if hasattr(exc.error_code, "value") else str(exc.error_code)
     logger.error(
         exc.message,
-        extra={"extra_data": {"status_code": exc.status_code, "path": request.url.path}},
+        extra={
+            "extra_data": {
+                "status_code": exc.status_code,
+                "path": request.url.path,
+                "error_code": code,
+            }
+        },
     )
-    return JSONResponse(status_code=exc.status_code, content={"error": exc.message})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.message, "error_code": code},
+    )
 
 
 for router in (

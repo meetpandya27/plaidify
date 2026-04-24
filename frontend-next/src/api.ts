@@ -107,9 +107,11 @@ export interface EncryptedCredentials {
 }
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  public readonly error_code?: string;
+  constructor(message: string, readonly status: number, error_code?: string) {
     super(message);
     this.name = "ApiError";
+    this.error_code = error_code;
   }
 }
 
@@ -133,10 +135,10 @@ async function request<T>(
   const text = await response.text();
   const payload = text ? (JSON.parse(text) as unknown) : ({} as unknown);
   if (!response.ok) {
-    const record = payload as { detail?: string; error?: string };
+    const record = payload as { detail?: string; error?: string; error_code?: string };
     const message =
       record.detail || record.error || response.statusText || "Request failed";
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, record.error_code);
   }
   return payload as T;
 }
