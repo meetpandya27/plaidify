@@ -19,6 +19,11 @@ export interface LinkSessionStatus {
   readonly error_message?: string | null;
 }
 
+export type OrganizationAuthStyle =
+  | "username_password"
+  | "email_password"
+  | "member_number";
+
 export interface Organization {
   readonly organization_id: string;
   readonly name: string;
@@ -28,6 +33,13 @@ export interface Organization {
   readonly category_label?: string;
   readonly service_area?: string;
   readonly has_mfa?: boolean;
+  readonly logo_url?: string;
+  readonly logo_monogram?: string;
+  readonly primary_color?: string;
+  readonly secondary_color?: string;
+  readonly accent_color?: string;
+  readonly hint_copy?: string;
+  readonly auth_style?: OrganizationAuthStyle;
 }
 
 export interface OrganizationSearchResponse {

@@ -28,6 +28,12 @@ export interface Institution {
   readonly name: string;
   readonly category?: string;
   readonly country?: string;
+  readonly logo_url?: string;
+  readonly primary_color?: string;
+  readonly secondary_color?: string;
+  readonly accent_color?: string;
+  readonly hint_copy?: string;
+  readonly auth_style?: "username_password" | "email_password" | "member_number";
 }
 
 export interface SuccessPayload {

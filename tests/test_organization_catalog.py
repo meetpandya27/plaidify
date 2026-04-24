@@ -49,3 +49,26 @@ class TestOrganizationCatalog:
     def test_search_validates_pagination(self, client):
         response = client.get("/organizations/search", params={"limit": 0})
         assert response.status_code == 422
+
+    def test_results_expose_branding_metadata(self, client):
+        response = client.get("/organizations/search", params={"category": "finance", "limit": 1})
+        assert response.status_code == 200
+        result = response.json()["results"][0]
+        # #53: every entry ships logo + brand palette + auth affordances.
+        assert result["logo_url"].startswith("data:image/svg+xml;base64,")
+        assert result["logo_monogram"] and result["logo_monogram"].isupper()
+        assert result["primary_color"].startswith("#") and len(result["primary_color"]) == 7
+        assert result["secondary_color"].startswith("#") and len(result["secondary_color"]) == 7
+        assert result["accent_color"].startswith("#")
+        assert result["hint_copy"]
+        assert result["auth_style"] in {"username_password", "email_password", "member_number"}
+
+    def test_branding_differs_across_categories(self, client):
+        finance = client.get(
+            "/organizations/search", params={"category": "finance", "limit": 1}
+        ).json()["results"][0]
+        utility = client.get(
+            "/organizations/search", params={"category": "utility", "limit": 1}
+        ).json()["results"][0]
+        assert finance["primary_color"] != utility["primary_color"]
+        assert finance["auth_style"] != utility["auth_style"] or finance["hint_copy"] != utility["hint_copy"]
