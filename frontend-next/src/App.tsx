@@ -37,6 +37,7 @@ import {
   resolveLocale,
 } from "./i18n";
 import { SkeletonRowList } from "./Skeleton";
+import { createTelemetry, type Telemetry } from "./telemetry";
 import {
   flowReducer,
   initialFlowState,
@@ -111,6 +112,7 @@ export function App(props: AppProps = {}) {
   const stepHeadingRef = useRef<HTMLElement | null>(null);
   const previousStepRef = useRef<string>(state.step);
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
+  const telemetryRef = useRef<Telemetry | null>(null);
 
   const locale: Locale =
     props.locale ??
@@ -174,6 +176,13 @@ export function App(props: AppProps = {}) {
     [],
   );
 
+  // Initialize structured UX telemetry (#61) once the emit pipeline
+  // exists. Telemetry rides on the same bus under `TELEMETRY` so
+  // downstream analytics can subscribe via SSE.
+  if (telemetryRef.current === null) {
+    telemetryRef.current = createTelemetry({ emit });
+  }
+
   // Validate the session token and announce OPEN on mount.
   useEffect(() => {
     const api = apiRef.current;
@@ -236,6 +245,7 @@ export function App(props: AppProps = {}) {
         reason: "unmount",
         error_code: state.error?.code ?? null,
       });
+      telemetryRef.current?.exitReason("unmount", state.error?.code ?? undefined);
       deliveryRef.current?.dispose();
     };
   }, [emit, state.error?.code]);
@@ -245,6 +255,7 @@ export function App(props: AppProps = {}) {
     if (previousStepRef.current === state.step) {
       return;
     }
+    const fromStep = previousStepRef.current;
     previousStepRef.current = state.step;
     const target = stepHeadingRef.current;
     if (target) {
@@ -257,6 +268,13 @@ export function App(props: AppProps = {}) {
       } catch {
         target.focus();
       }
+    }
+    // Telemetry (#61): step_complete for the prior step, step_view for the new.
+    if (telemetryRef.current) {
+      if (fromStep && fromStep !== state.step) {
+        telemetryRef.current.stepComplete(fromStep);
+      }
+      telemetryRef.current.stepView(state.step);
     }
     const announcements: Record<string, string> = {
       select: messages.live_select,
@@ -318,6 +336,7 @@ export function App(props: AppProps = {}) {
         organization_name: organization.name,
         site: organization.site,
       });
+      telemetryRef.current?.institutionSelected(organization.organization_id);
     },
     [emit],
   );
@@ -383,6 +402,7 @@ export function App(props: AppProps = {}) {
           mfa_type: response.mfa_type ?? "otp",
           session_id: response.session_id ?? null,
         });
+        telemetryRef.current?.mfaShown(response.mfa_type ?? "otp");
         return;
       }
       if (response.status === "pending") {
@@ -405,6 +425,7 @@ export function App(props: AppProps = {}) {
             mfa_type: terminal.mfa_type ?? "otp",
             session_id: terminal.session_id ?? null,
           });
+          telemetryRef.current?.mfaShown(terminal.mfa_type ?? "otp");
           return;
         }
         const message =
@@ -461,6 +482,9 @@ export function App(props: AppProps = {}) {
       const map: Record<string, string> = {};
       for (const err of errors) map[err.field] = err.message;
       setCredentialErrors(map);
+      for (const err of errors) {
+        telemetryRef.current?.fieldError("credentials", err.field);
+      }
       return;
     }
     setCredentialErrors({});
@@ -480,6 +504,9 @@ export function App(props: AppProps = {}) {
       const map: Record<string, string> = {};
       for (const err of errors) map[err.field] = err.message;
       setMfaErrors(map);
+      for (const err of errors) {
+        telemetryRef.current?.fieldError("mfa", err.field);
+      }
       return;
     }
     setMfaErrors({});
@@ -490,6 +517,7 @@ export function App(props: AppProps = {}) {
     }
     dispatch({ type: "SUBMIT_MFA" });
     emit("MFA_SUBMITTED", { session_id: sessionId });
+    telemetryRef.current?.mfaSubmitted();
     try {
       const response = await api.submitMfa({
         sessionId,
