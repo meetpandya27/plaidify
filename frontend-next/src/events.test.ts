@@ -217,8 +217,8 @@ describe("postBridgeEvent", () => {
     );
   });
 
-  it("serializes to a native bridge when present", () => {
-    const nativeBridge = { postMessage: vi.fn() };
+  it("serializes to a React Native bridge when present", () => {
+    const reactNativeBridge = { postMessage: vi.fn() };
 
     postBridgeEvent(
       "EXIT",
@@ -226,15 +226,36 @@ describe("postBridgeEvent", () => {
       {
         parentOrigin: "*",
         inIframe: false,
-        nativeBridge,
+        reactNativeBridge,
       },
     );
 
-    expect(nativeBridge.postMessage).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(nativeBridge.postMessage.mock.calls[0][0])).toEqual({
+    expect(reactNativeBridge.postMessage).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(reactNativeBridge.postMessage.mock.calls[0][0])).toEqual({
       source: "plaidify-link",
       event: "EXIT",
       reason: "user-closed",
+    });
+  });
+
+  it("delivers the raw object to a WKWebView bridge", () => {
+    const webkitBridge = { postMessage: vi.fn() };
+
+    postBridgeEvent(
+      "CONNECTED",
+      { public_token: "public-1" },
+      {
+        parentOrigin: "*",
+        inIframe: false,
+        webkitBridge,
+      },
+    );
+
+    expect(webkitBridge.postMessage).toHaveBeenCalledTimes(1);
+    expect(webkitBridge.postMessage.mock.calls[0][0]).toEqual({
+      source: "plaidify-link",
+      event: "CONNECTED",
+      public_token: "public-1",
     });
   });
 

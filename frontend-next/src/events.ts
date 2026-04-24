@@ -166,12 +166,20 @@ export class EventDelivery {
 /**
  * Fire-and-forget bridge notification to the parent frame and/or the
  * native webview shell. Matches the message shape the legacy page uses
- * so the Plaidify SDKs (JS, Swift) keep working unchanged.
+ * so the Plaidify SDKs (JS, Swift) keep working unchanged:
+ *   - React Native WebView receives the JSON-serialised string.
+ *   - WKWebView (webkit.messageHandlers.plaidifyLink) receives the
+ *     object directly, which is what the iOS SDK expects.
  */
 export interface ParentBridgeOptions {
   readonly parentOrigin: string;
   readonly inIframe: boolean;
   readonly targetWindow?: Window | null;
+  readonly reactNativeBridge?: { postMessage: (payload: string) => void } | null;
+  readonly webkitBridge?:
+    | { postMessage: (payload: Record<string, unknown>) => void }
+    | null;
+  /** Legacy alias retained for tests that pre-date the split bridges. */
   readonly nativeBridge?: { postMessage: (payload: string) => void } | null;
 }
 
@@ -191,9 +199,18 @@ export function postBridgeEvent(
     }
   }
 
-  if (options.nativeBridge) {
+  const rn = options.reactNativeBridge ?? options.nativeBridge ?? null;
+  if (rn) {
     try {
-      options.nativeBridge.postMessage(JSON.stringify(message));
+      rn.postMessage(JSON.stringify(message));
+    } catch {
+      // Same rationale as above.
+    }
+  }
+
+  if (options.webkitBridge) {
+    try {
+      options.webkitBridge.postMessage(message);
     } catch {
       // Same rationale as above.
     }
