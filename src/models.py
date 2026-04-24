@@ -193,36 +193,55 @@ class BlueprintInfoResponse(BaseModel):
 # ── Hosted Link Bootstrap Models ────────────────────────────────────────────
 
 
+def _normalize_allowed_origin_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return value
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        return None
+
+    parsed = urlparse(normalized)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("allowed_origin must be an http(s) origin without a path, query, or fragment.")
+
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 class HostedLinkBootstrapRequest(BaseModel):
     """Request body for POST /link/bootstrap."""
 
     site: Optional[str] = Field(default=None, min_length=1, max_length=64)
     allowed_origin: Optional[str] = Field(default=None, max_length=512)
+    allowed_origins: Optional[list[str]] = Field(default=None, max_length=20)
     scopes: Optional[list[str]] = Field(default=None, max_length=100)
 
     @field_validator("allowed_origin")
     @classmethod
     def normalize_allowed_origin(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_allowed_origin_value(value)
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def normalize_allowed_origins(cls, value: Optional[list[str]]) -> Optional[list[str]]:
         if value is None:
             return value
-        normalized = value.strip().rstrip("/")
-        if not normalized:
-            return None
-
-        parsed = urlparse(normalized)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or parsed.path not in {"", "/"}
-            or parsed.params
-            or parsed.query
-            or parsed.fragment
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
-            raise ValueError("allowed_origin must be an http(s) origin without a path, query, or fragment.")
-
-        return f"{parsed.scheme}://{parsed.netloc}"
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            entry = _normalize_allowed_origin_value(item)
+            if entry and entry not in seen:
+                seen.add(entry)
+                normalized.append(entry)
+        return normalized or None
 
 
 class HostedLinkBootstrapResponse(BaseModel):
@@ -232,6 +251,7 @@ class HostedLinkBootstrapResponse(BaseModel):
     expires_in: int
     site: Optional[str] = None
     allowed_origin: Optional[str] = None
+    allowed_origins: Optional[list[str]] = None
     scopes: Optional[list[str]] = None
 
 

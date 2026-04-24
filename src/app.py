@@ -334,8 +334,18 @@ async def security_headers_middleware(request: Request, call_next):
         link_token = request.query_params.get("token")
         if link_token:
             session = session_store.get_link_session(link_token)
-            if session and session.get("allowed_origin"):
-                frame_ancestors = f"'self' {session['allowed_origin']}"
+            if session:
+                origins: list[str] = []
+                seen: set[str] = set()
+                for candidate in list(session.get("allowed_origins") or []) + [session.get("allowed_origin")]:
+                    if not candidate:
+                        continue
+                    normalized = candidate.rstrip("/")
+                    if normalized and normalized not in seen:
+                        seen.add(normalized)
+                        origins.append(normalized)
+                if origins:
+                    frame_ancestors = " ".join(["'self'", *origins])
 
     response.headers["X-Content-Type-Options"] = "nosniff"
     if is_hosted_link_html and frame_ancestors != "'self'":
