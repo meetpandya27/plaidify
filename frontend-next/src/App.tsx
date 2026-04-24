@@ -22,6 +22,12 @@ import {
 } from "./api";
 import { detectNativeBridges, readHostedLinkConfig } from "./config";
 import { DynamicForm, validateSchemaValues } from "./DynamicForm";
+import {
+  classifyError,
+  remediationFor,
+  type LinkErrorCode,
+  type RemediationAction,
+} from "./errorTaxonomy";
 import { EventDelivery, postBridgeEvent } from "./events";
 import {
   flowReducer,
@@ -202,10 +208,39 @@ export function App(props: AppProps = {}) {
   // Emit EXIT on unmount so the server can reconcile abandoned sessions.
   useEffect(() => {
     return () => {
-      emit("EXIT", { reason: "unmount" });
+      emit("EXIT", {
+        reason: "unmount",
+        error_code: state.error?.code ?? null,
+      });
       deliveryRef.current?.dispose();
     };
-  }, [emit]);
+  }, [emit, state.error?.code]);
+
+  const failWith = useCallback(
+    (err: unknown, options: { fallbackCode?: LinkErrorCode; site?: string | null } = {}) => {
+      const resolvedCode: LinkErrorCode = (() => {
+        const classified = classifyError(err);
+        if (classified === "internal_error" && options.fallbackCode) {
+          return options.fallbackCode;
+        }
+        return classified;
+      })();
+      const message =
+        (err && typeof err === "object" && (err as { message?: unknown }).message) ||
+        (typeof err === "string" ? err : "") ||
+        "Something went wrong.";
+      dispatch({
+        type: "FAIL",
+        payload: { message: String(message), code: resolvedCode },
+      });
+      emit("ERROR", {
+        error: String(message),
+        error_code: resolvedCode,
+        site: options.site ?? siteRef.current,
+      });
+    },
+    [emit],
+  );
 
   const onSelectInstitution = useCallback(
     (organization: Organization) => {
@@ -236,17 +271,15 @@ export function App(props: AppProps = {}) {
     async (credsUsername: string, credsPassword: string) => {
       const api = apiRef.current;
       if (!api) {
-        dispatch({
-          type: "FAIL",
-          payload: { message: "Session is not initialized." },
+        failWith(new Error("Session is not initialized."), {
+          fallbackCode: "internal_error",
         });
         return;
       }
       const site = siteRef.current;
       if (!site) {
-        dispatch({
-          type: "FAIL",
-          payload: { message: "Choose a provider before continuing." },
+        failWith(new Error("Choose a provider before continuing."), {
+          fallbackCode: "internal_error",
         });
         return;
       }
@@ -265,11 +298,13 @@ export function App(props: AppProps = {}) {
         await handleConnectResponse(api, response);
       } catch (err) {
         const message = (err as Error).message || "Connection failed.";
-        dispatch({ type: "FAIL", payload: { message } });
-        emit("ERROR", { error: message, site });
+        failWith(err instanceof Error ? err : new Error(message), {
+          fallbackCode: "network_error",
+          site,
+        });
       }
     },
-    [emit, encryptFn],
+    [emit, encryptFn, failWith],
   );
 
   const handleConnectResponse = useCallback(
@@ -323,16 +358,16 @@ export function App(props: AppProps = {}) {
           (terminal.status === "timeout"
             ? "The connection timed out before the provider completed the flow."
             : "The connection could not be completed.");
-        dispatch({ type: "FAIL", payload: { message } });
-        emit("ERROR", { error: message, site: siteRef.current });
+        const fallback: LinkErrorCode =
+          terminal.status === "timeout" ? "mfa_timeout" : "internal_error";
+        failWith(new Error(message), { fallbackCode: fallback });
         return;
       }
       const message =
         response.error || response.detail || `Unexpected status: ${response.status}`;
-      dispatch({ type: "FAIL", payload: { message } });
-      emit("ERROR", { error: message, site: siteRef.current });
+      failWith(new Error(message), { fallbackCode: "internal_error" });
     },
-    [emit, pollFn],
+    [emit, failWith, pollFn],
   );
 
   const finishSuccess = useCallback(
@@ -408,10 +443,11 @@ export function App(props: AppProps = {}) {
       await handleConnectResponse(api, response);
     } catch (err) {
       const message = (err as Error).message || "Verification failed.";
-      dispatch({ type: "FAIL", payload: { message } });
-      emit("ERROR", { error: message, site: siteRef.current });
+      failWith(err instanceof Error ? err : new Error(message), {
+        fallbackCode: "mfa_timeout",
+      });
     }
-  }, [emit, handleConnectResponse, mfaSchemaEntry, mfaValues]);
+  }, [emit, failWith, handleConnectResponse, mfaSchemaEntry, mfaValues]);
 
   const consent = useMemo(() => CONSENT_BULLETS, []);
 
@@ -654,15 +690,55 @@ export function App(props: AppProps = {}) {
         className={state.step === "error" ? "link-step active" : "link-step"}
         role="region"
         aria-label="Connection failed"
+        data-error-code={state.error?.code ?? "internal_error"}
       >
-        <p id="error-message">{state.error?.message ?? ""}</p>
-        <button
-          id="retry-btn"
-          type="button"
-          onClick={() => dispatch({ type: "BACK_TO_PICKER" })}
-        >
-          Try again
-        </button>
+        {(() => {
+          const remediation = remediationFor(state.error?.code);
+          const handleAction = (action: RemediationAction) => {
+            if (action === "retry") {
+              dispatch({ type: "BACK_TO_PICKER" });
+            } else if (action === "back_to_picker") {
+              dispatch({ type: "BACK_TO_PICKER" });
+            } else if (action === "contact_support") {
+              emit("SUPPORT_REQUESTED", {
+                error_code: state.error?.code ?? "internal_error",
+              });
+            } else if (action === "exit") {
+              emit("EXIT", {
+                reason: "user_exit",
+                error_code: state.error?.code ?? null,
+              });
+            }
+          };
+          return (
+            <>
+              <h2 id="error-title">{remediation.title}</h2>
+              <p id="error-description">{remediation.description}</p>
+              <p id="error-message" className="sr-only">
+                {state.error?.message ?? ""}
+              </p>
+              <div className="error-actions">
+                <button
+                  id="retry-btn"
+                  type="button"
+                  onClick={() => handleAction(remediation.primary_action)}
+                >
+                  {remediation.primary_cta}
+                </button>
+                {remediation.secondary_cta && remediation.secondary_action ? (
+                  <button
+                    id="error-secondary-btn"
+                    type="button"
+                    className="secondary"
+                    onClick={() => handleAction(remediation.secondary_action!)}
+                  >
+                    {remediation.secondary_cta}
+                  </button>
+                ) : null}
+              </div>
+            </>
+          );
+        })()}
       </section>
     </main>
   );

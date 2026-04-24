@@ -6,9 +6,15 @@ This allows callers to catch all Plaidify errors with a single except clause,
 or catch specific sub-types for fine-grained handling.
 """
 
+from src.error_taxonomy import LinkErrorCode
+
 
 class PlaidifyError(Exception):
     """Base exception for all Plaidify errors."""
+
+    #: Structured hosted-link error code (#55). Subclasses override this
+    #: class attribute; the global HTTP handler surfaces it to the UI.
+    error_code: LinkErrorCode = LinkErrorCode.INTERNAL_ERROR
 
     def __init__(self, message: str = "An unexpected error occurred.", status_code: int = 500):
         self.message = message
@@ -21,6 +27,8 @@ class PlaidifyError(Exception):
 
 class BlueprintNotFoundError(PlaidifyError):
     """Raised when a connector blueprint cannot be found for the requested site."""
+
+    error_code = LinkErrorCode.UNSUPPORTED_SITE
 
     def __init__(self, site: str):
         super().__init__(
@@ -46,6 +54,8 @@ class BlueprintValidationError(PlaidifyError):
 
 class ConnectionFailedError(PlaidifyError):
     """Raised when the engine fails to establish a connection to the target site."""
+
+    error_code = LinkErrorCode.NETWORK_ERROR
 
     def __init__(self, site: str, detail: str = ""):
         msg = f"Connection failed for site: {site}"
@@ -84,6 +94,8 @@ class ConcurrentAccessError(PlaidifyError):
 class AuthenticationError(PlaidifyError):
     """Raised when login credentials are rejected by the target site."""
 
+    error_code = LinkErrorCode.INVALID_CREDENTIALS
+
     def __init__(self, site: str):
         super().__init__(
             message=f"Authentication failed for site: {site}. Check your credentials.",
@@ -108,6 +120,8 @@ class MFARequiredError(PlaidifyError):
 class SiteUnavailableError(PlaidifyError):
     """Raised when the target site is unreachable or returns an error."""
 
+    error_code = LinkErrorCode.INSTITUTION_DOWN
+
     def __init__(self, site: str, detail: str = ""):
         msg = f"Site unavailable: {site}"
         if detail:
@@ -118,6 +132,8 @@ class SiteUnavailableError(PlaidifyError):
 
 class RateLimitedError(PlaidifyError):
     """Raised when the target site or Plaidify itself is rate-limiting requests."""
+
+    error_code = LinkErrorCode.RATE_LIMITED
 
     def __init__(self, retry_after: int = 60):
         super().__init__(
