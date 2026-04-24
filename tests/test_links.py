@@ -397,3 +397,119 @@ class TestHostedLinkFrameAncestors:
             headers=auth_headers,
         )
         assert response.status_code == 422
+
+
+class TestHostedLinkEventEndpoint:
+    """Full lifecycle coverage for POST /link/sessions/{token}/event.
+
+    Verifies that anonymous browser posts (authed by the link_token
+    capability) update session_state for every observable event so
+    webhooks and SSE cannot silently diverge from what the user saw.
+    """
+
+    def _create_session(self, client, auth_headers):
+        return client.post(
+            "/link/sessions",
+            params={"site": "internal_bank"},
+            headers=auth_headers,
+        ).json()["link_token"]
+
+    def test_unknown_token_returns_404(self, client):
+        response = client.post(
+            "/link/sessions/does-not-exist/event",
+            json={"event": "OPEN"},
+        )
+        assert response.status_code == 404
+
+    def test_open_event_records_but_does_not_transition(self, client, auth_headers):
+        link_token = self._create_session(client, auth_headers)
+        response = client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "OPEN"},
+        )
+        assert response.status_code == 200
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        assert "OPEN" in status["events"]
+        assert status["status"] == "awaiting_institution"
+
+    def test_institution_selected_transitions_state(self, client, auth_headers):
+        link_token = self._create_session(client, auth_headers)
+        response = client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "INSTITUTION_SELECTED", "site": "internal_bank"},
+        )
+        assert response.status_code == 200
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        assert status["status"] == "awaiting_credentials"
+
+    def test_credentials_submitted_transitions_state(self, client, auth_headers):
+        link_token = self._create_session(client, auth_headers)
+        response = client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "CREDENTIALS_SUBMITTED"},
+        )
+        assert response.status_code == 200
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        assert status["status"] == "connecting"
+
+    def test_mfa_events_transition_state(self, client, auth_headers):
+        link_token = self._create_session(client, auth_headers)
+        client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "MFA_REQUIRED", "mfa_type": "otp"},
+        )
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        assert status["status"] == "mfa_required"
+
+        client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "MFA_SUBMITTED"},
+        )
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        assert status["status"] == "verifying_mfa"
+
+    def test_connected_is_authoritative_server_side(self, client, auth_headers):
+        link_token = self._create_session(client, auth_headers)
+        response = client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "CONNECTED", "public_token": "should-not-trust"},
+        )
+        # Browser-reported CONNECTED is intentionally ignored so a client
+        # cannot lie about completion; page retry queue still sees 2xx.
+        assert response.status_code == 200
+        assert response.json() == {"status": "ignored"}
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        assert status["status"] == "awaiting_institution"
+
+    def test_exit_event_marks_session_exited(self, client, auth_headers):
+        link_token = self._create_session(client, auth_headers)
+        response = client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "EXIT", "reason": "user_closed"},
+        )
+        assert response.status_code == 200
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        assert status["status"] == "exited"
+
+    def test_error_event_marks_session_error(self, client, auth_headers):
+        link_token = self._create_session(client, auth_headers)
+        response = client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "ERROR", "error": "provider refused"},
+        )
+        assert response.status_code == 200
+        status = client.get(f"/link/sessions/{link_token}/status").json()
+        assert status["status"] == "error"
+        assert status["error_message"] == "provider refused"
+
+    def test_event_endpoint_requires_no_user_auth(self, client, auth_headers):
+        # The endpoint is deliberately authed by the link_token capability,
+        # not by a user JWT, because it is called from the anonymous
+        # hosted page.
+        link_token = self._create_session(client, auth_headers)
+        response = client.post(
+            f"/link/sessions/{link_token}/event",
+            json={"event": "INSTITUTION_SELECTED", "site": "internal_bank"},
+            # no auth headers at all
+        )
+        assert response.status_code == 200

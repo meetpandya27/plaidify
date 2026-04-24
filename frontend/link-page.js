@@ -320,15 +320,78 @@
     return payload;
   }
 
-  async function bestEffortLinkEvent(eventName, payload) {
+  // Durable event delivery: hosted-link lifecycle events must reach the
+  // server so session state, SSE, and webhooks stay in sync with what the
+  // user actually did in the browser. We queue posts and retry with
+  // exponential backoff; persistent failures are surfaced to the UI.
+  const eventDelivery = {
+    queue: [],
+    inFlight: false,
+    retryTimer: null,
+  };
+
+  function scheduleEventRetry(delayMs) {
+    if (eventDelivery.retryTimer) {
+      return;
+    }
+    eventDelivery.retryTimer = window.setTimeout(() => {
+      eventDelivery.retryTimer = null;
+      drainEventQueue();
+    }, delayMs);
+  }
+
+  async function drainEventQueue() {
+    if (eventDelivery.inFlight || !linkToken) {
+      return;
+    }
+    const next = eventDelivery.queue[0];
+    if (!next) {
+      return;
+    }
+    eventDelivery.inFlight = true;
+    try {
+      await apiCall(
+        "POST",
+        `/link/sessions/${encodeURIComponent(linkToken)}/event`,
+        Object.assign({ event: next.event }, next.payload || {}),
+      );
+      eventDelivery.queue.shift();
+      eventDelivery.inFlight = false;
+      if (eventDelivery.queue.length) {
+        drainEventQueue();
+      }
+    } catch (error) {
+      eventDelivery.inFlight = false;
+      next.attempts = (next.attempts || 0) + 1;
+      const maxAttempts = 6;
+      if (next.attempts >= maxAttempts) {
+        eventDelivery.queue.shift();
+        // Surface a visible error so the parent app/operator knows
+        // lifecycle state may have diverged from the server.
+        try {
+          postEvent("EVENT_DELIVERY_FAILED", {
+            failed_event: next.event,
+            error: error?.message || "event delivery failed",
+          });
+        } catch (_) {
+          // best-effort telemetry only
+        }
+        if (eventDelivery.queue.length) {
+          drainEventQueue();
+        }
+        return;
+      }
+      const backoff = Math.min(250 * 2 ** (next.attempts - 1), 4000);
+      scheduleEventRetry(backoff);
+    }
+  }
+
+  function bestEffortLinkEvent(eventName, payload) {
     if (!linkToken) {
       return;
     }
-    try {
-      await apiCall("POST", `/link/sessions/${encodeURIComponent(linkToken)}/event`, Object.assign({ event: eventName }, payload || {}));
-    } catch (_) {
-      // Ignore because hosted link pages can operate without a bearer token.
-    }
+    eventDelivery.queue.push({ event: eventName, payload, attempts: 0 });
+    drainEventQueue();
   }
 
   function buildSearchPath(overrides) {
@@ -1081,12 +1144,14 @@
   });
   document.getElementById("close-btn").addEventListener("click", () => {
     postEvent("EXIT", { reason: "user_closed" });
+    bestEffortLinkEvent("EXIT", { reason: "user_closed" });
     closeWindow();
   });
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       postEvent("EXIT", { reason: "user_pressed_escape" });
+      bestEffortLinkEvent("EXIT", { reason: "user_pressed_escape" });
       closeWindow();
     }
   });
@@ -1096,6 +1161,8 @@
     if (!valid) {
       return;
     }
+    postEvent("OPEN", {});
+    bestEffortLinkEvent("OPEN", {});
     await loadInitialOrganizations();
   }
 
