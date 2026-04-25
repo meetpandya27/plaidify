@@ -52,6 +52,7 @@ class TestDatabaseRoutesThroughKMS:
     def test_unwrap_dek_falls_back_to_previous_master_for_local(self, monkeypatch):
         """Rotation path: data wrapped with previous key still unwraps."""
         import base64
+
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         dek = os.urandom(32)

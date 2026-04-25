@@ -63,14 +63,10 @@ class KMSProvider(ABC):
     # azure-keyvault, hvac) directly.
 
     def wrap_key_sync(self, plaintext_key: bytes) -> str:
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement wrap_key_sync()."
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement wrap_key_sync().")
 
     def unwrap_key_sync(self, wrapped_key: str) -> bytes:
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement unwrap_key_sync()."
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement unwrap_key_sync().")
 
     @abstractmethod
     async def generate_data_key(self) -> tuple[bytes, str]:
@@ -172,16 +168,8 @@ class AWSKMSProvider(KMSProvider):
         from src.config import get_settings
 
         settings = get_settings()
-        self._key_id = (
-            key_id
-            or settings.kms_key_id
-            or os.environ.get("KMS_AWS_KEY_ID", "")
-        )
-        self._region = (
-            region
-            or settings.kms_region
-            or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-        )
+        self._key_id = key_id or settings.kms_key_id or os.environ.get("KMS_AWS_KEY_ID", "")
+        self._region = region or settings.kms_region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self._client = None
         if not self._key_id:
             raise ValueError(

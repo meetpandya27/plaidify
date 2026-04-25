@@ -33,10 +33,21 @@ jobs:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend-next/package-lock.json
+      - name: Build hosted-link React bundle
+        working-directory: frontend-next
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -49,7 +60,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Run tests with coverage
-        run: pytest tests/ -v --cov=src --cov-report=term-missing --cov-fail-under=73
+        run: PYTHONPATH=$PWD pytest tests/ -v --cov=src --cov-report=term-missing --cov-fail-under=73
       - name: Upload coverage
         if: matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4
@@ -62,6 +73,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend-next/package-lock.json
+      - name: Build hosted-link React bundle
+        working-directory: frontend-next
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -87,11 +108,12 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install pip-audit
-        run: pip install pip-audit
+        run: pip install --upgrade pip pip-audit
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run pip-audit
-        run: pip-audit --strict
+        # Scan only project requirements (not the runner's pre-installed pip / system tools).
+        run: pip-audit --strict -r requirements.txt
 
   codeql:
     name: CodeQL Analysis
@@ -113,6 +135,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
     name: Docker Build

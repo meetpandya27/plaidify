@@ -78,15 +78,16 @@ class TestRefreshScheduler:
 
     def test_start_stop(self, scheduler):
         assert scheduler.running is False
-        scheduler.start()
-        assert scheduler.running is True
-
-        # Run the stop in an event loop
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-        loop.run_until_complete(scheduler.stop())
-        assert scheduler.running is False
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            scheduler.start()
+            assert scheduler.running is True
+            loop.run_until_complete(scheduler.stop())
+            assert scheduler.running is False
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
 
 
 class TestRefreshJobDueLogic:

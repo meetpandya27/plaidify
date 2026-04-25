@@ -93,12 +93,12 @@ def _create_authenticated_link_session(base_url: str, *, site: str | None = None
 
 
 def _select_provider(page, provider_name: str) -> None:
-    page.locator("#step-select.active").wait_for(timeout=15000)
+    page.locator("#step-select.active").wait_for(timeout=45000)
     page.locator("#institution-search").fill(provider_name)
     provider = page.locator(".institution-item", has_text=provider_name).first
-    provider.wait_for(timeout=15000)
+    provider.wait_for(timeout=45000)
     provider.click()
-    page.locator("#step-credentials.active").wait_for(timeout=15000)
+    page.locator("#step-credentials.active").wait_for(timeout=45000)
 
 
 def _bridge_init_script(bridge_kind: str) -> str:

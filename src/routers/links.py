@@ -98,8 +98,7 @@ async def create_link(
             raise HTTPException(status_code=400, detail="refresh_schedule must be an object.")
         try:
             fmt, resolved_interval = resolve_schedule(
-                schedule_format=refresh_schedule.get("schedule_format")
-                or refresh_schedule.get("format"),
+                schedule_format=refresh_schedule.get("schedule_format") or refresh_schedule.get("format"),
                 interval_seconds=refresh_schedule.get("interval_seconds", 3600),
             )
         except ValueError as exc:

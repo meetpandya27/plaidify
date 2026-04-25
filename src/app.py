@@ -403,13 +403,9 @@ if FRONTEND_NEXT_DIST.exists():
             name="frontend-next",
         )
     except Exception:
-        logger.warning(
-            "frontend-next/dist present but could not be mounted at /ui-next"
-        )
+        logger.warning("frontend-next/dist present but could not be mounted at /ui-next")
 else:
-    logger.info(
-        "frontend-next/dist not found; /ui-next will not be served (run 'npm run build' in frontend-next)"
-    )
+    logger.info("frontend-next/dist not found; /ui-next will not be served (run 'npm run build' in frontend-next)")
 
 
 @app.exception_handler(PlaidifyError)

@@ -288,9 +288,7 @@ def _logo_svg(monogram: str, primary: str, secondary: str) -> str:
 def _logo_data_url(monogram: str, primary: str, secondary: str) -> str:
     import base64
 
-    encoded = base64.b64encode(
-        _logo_svg(monogram, primary, secondary).encode("utf-8")
-    ).decode("ascii")
+    encoded = base64.b64encode(_logo_svg(monogram, primary, secondary).encode("utf-8")).decode("ascii")
     return f"data:image/svg+xml;base64,{encoded}"
 
 
@@ -422,9 +420,7 @@ _DEFAULT_MFA_SCHEMA: dict[str, dict[str, Any]] = {
 
 
 def _default_credential_schema(auth_style: str) -> dict[str, Any]:
-    return _DEFAULT_CREDENTIAL_SCHEMAS.get(
-        auth_style, _DEFAULT_CREDENTIAL_SCHEMAS["username_password"]
-    )
+    return _DEFAULT_CREDENTIAL_SCHEMAS.get(auth_style, _DEFAULT_CREDENTIAL_SCHEMAS["username_password"])
 
 
 def _default_mfa_schema() -> dict[str, Any]:
@@ -678,8 +674,7 @@ def search_organizations(
         catalog = [
             entry
             for entry in catalog
-            if entry["category"] == normalized_category
-            or entry["category_label"].lower() == normalized_category
+            if entry["category"] == normalized_category or entry["category_label"].lower() == normalized_category
         ]
     if normalized_country:
         catalog = [entry for entry in catalog if entry["country_code"] == normalized_country]

@@ -76,11 +76,7 @@ def _extract_request_origin(request: Request) -> Optional[str]:
 
 
 def _configured_public_link_allowed_origins() -> set[str]:
-    return {
-        origin.strip().rstrip("/")
-        for origin in settings.public_link_allowed_origins.split(",")
-        if origin.strip()
-    }
+    return {origin.strip().rstrip("/") for origin in settings.public_link_allowed_origins.split(",") if origin.strip()}
 
 
 def _enforce_public_link_session_policy(request: Request) -> None:
@@ -634,9 +630,7 @@ async def post_link_session_event(
 
     body = await request.json()
     event_name = body.get("event", "UNKNOWN")
-    data = _sanitize_hosted_event_data(
-        {k: v for k, v in body.items() if k != "event"}
-    )
+    data = _sanitize_hosted_event_data({k: v for k, v in body.items() if k != "event"})
     updates = {}
     if event_name == "OPEN":
         # Page loaded; no session-state transition required but event is

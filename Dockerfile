@@ -10,6 +10,15 @@ WORKDIR /build
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
+# ── Stage 1b: Frontend Builder ───────────────────────────────────────────────
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /frontend
+COPY frontend-next/package.json frontend-next/package-lock.json* frontend-next/tsconfig.json frontend-next/vite.config.ts ./
+RUN npm install --no-audit --no-fund
+COPY frontend-next/ ./
+RUN npm run build
+
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
@@ -54,6 +63,9 @@ RUN playwright install chromium --with-deps 2>/dev/null || playwright install ch
 
 # Copy application code
 COPY . /app/
+
+# Copy built React bundle from frontend-builder stage
+COPY --from=frontend-builder /frontend/dist /app/frontend-next/dist
 
 # Set ownership
 RUN chown -R plaidify:plaidify /app
