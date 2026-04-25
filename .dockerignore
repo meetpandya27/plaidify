@@ -43,8 +43,9 @@ LICENSE
 sdk/
 sdk-js/
 
-# Load test scripts
+# Load test scripts (but keep the container entrypoint)
 scripts/
+!scripts/container-entrypoint.sh
 
 # CI/CD
 .github/
