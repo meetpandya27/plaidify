@@ -662,6 +662,7 @@ class ScheduledRefreshJob(Base):
     access_token = Column(String, ForeignKey("access_tokens.token", ondelete="CASCADE"), primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     interval_seconds = Column(Integer, nullable=False, default=3600)
+    schedule_format = Column(String, nullable=False, default="interval")
     enabled = Column(Boolean, default=True, nullable=False)
     last_refreshed = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)

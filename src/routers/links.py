@@ -62,11 +62,14 @@ async def create_link(
     or scope strings (e.g. ``["balance", "transactions"]``) that will be
     enforced on data retrieval. If omitted, all fields are allowed.
     """
-    # Parse optional scopes from JSON body
+    # Parse optional scopes / refresh_schedule from JSON body
     scopes = None
+    refresh_schedule = None
     try:
         body = await request.json()
-        scopes = body.get("scopes") if body else None
+        if body:
+            scopes = body.get("scopes")
+            refresh_schedule = body.get("refresh_schedule")
     except Exception:
         pass  # No body or non-JSON body is fine
 
@@ -86,6 +89,31 @@ async def create_link(
     if effective_scopes is not None:
         session_store.set_link_scopes(link_token, json_mod.dumps(effective_scopes))
         result["scopes"] = effective_scopes
+    if refresh_schedule is not None:
+        # Validate the directive eagerly so /create_link rejects bad input
+        # rather than silently failing later in /submit_credentials.
+        from src.scheduled_refresh import resolve_schedule
+
+        if not isinstance(refresh_schedule, dict):
+            raise HTTPException(status_code=400, detail="refresh_schedule must be an object.")
+        try:
+            fmt, resolved_interval = resolve_schedule(
+                schedule_format=refresh_schedule.get("schedule_format")
+                or refresh_schedule.get("format"),
+                interval_seconds=refresh_schedule.get("interval_seconds", 3600),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        from src.scheduled_refresh import MIN_INTERVAL_SECONDS
+
+        if resolved_interval < MIN_INTERVAL_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Minimum interval is {MIN_INTERVAL_SECONDS} seconds (5 minutes).",
+            )
+        directive = {"schedule_format": fmt, "interval_seconds": resolved_interval}
+        session_store.set_link_refresh_schedule(link_token, json_mod.dumps(directive))
+        result["refresh_schedule"] = directive
     return result
 
 
@@ -158,6 +186,31 @@ async def submit_credentials(
     result = {"access_token": access_token}
     if token_scopes:
         result["scopes"] = json_mod.loads(token_scopes)
+
+    # If /create_link attached a refresh_schedule directive, register it now
+    # that we have an access_token. Failures here are non-fatal; the caller
+    # can always re-register via POST /refresh/schedule.
+    deferred = session_store.pop_link_refresh_schedule(link_token)
+    if deferred:
+        try:
+            from src.routers.refresh import _get_refresh_scheduler
+
+            directive = json_mod.loads(deferred)
+            scheduler = _get_refresh_scheduler()
+            if not scheduler.running:
+                scheduler.start()
+            scheduler.schedule(
+                access_token,
+                user.id,
+                interval_seconds=directive.get("interval_seconds"),
+                schedule_format=directive.get("schedule_format"),
+            )
+            result["refresh_schedule"] = {
+                "interval_seconds": directive.get("interval_seconds"),
+                "schedule_format": directive.get("schedule_format"),
+            }
+        except Exception:
+            logger.exception("Failed to apply deferred refresh_schedule for %s", link_token)
     return result
 
 
