@@ -64,10 +64,7 @@ def resolve_schedule(
     """
     fmt = (schedule_format or SCHEDULE_FORMAT_INTERVAL).lower()
     if fmt not in SCHEDULE_FORMATS:
-        raise ValueError(
-            f"Unknown schedule format '{schedule_format}'. "
-            f"Supported: {', '.join(SCHEDULE_FORMATS)}."
-        )
+        raise ValueError(f"Unknown schedule format '{schedule_format}'. Supported: {', '.join(SCHEDULE_FORMATS)}.")
     if fmt in _PRESET_INTERVAL_SECONDS:
         return fmt, _PRESET_INTERVAL_SECONDS[fmt]
     if interval_seconds is None:
@@ -159,7 +156,9 @@ class RefreshScheduler:
             job.consecutive_failures = 0
             logger.info(
                 "Updated refresh job for %s (format=%s, interval=%ds)",
-                access_token[:12], fmt, job.interval_seconds,
+                access_token[:12],
+                fmt,
+                job.interval_seconds,
             )
         else:
             job = RefreshJob(
@@ -171,7 +170,9 @@ class RefreshScheduler:
             self._jobs[access_token] = job
             logger.info(
                 "Scheduled refresh for %s (format=%s, interval=%ds)",
-                access_token[:12], fmt, job.interval_seconds,
+                access_token[:12],
+                fmt,
+                job.interval_seconds,
             )
         self._persist_job(job)
         return job
@@ -342,12 +343,16 @@ class RefreshScheduler:
                             await self._webhook(
                                 job.access_token,
                                 job.user_id,
-                                {"__refresh_failed__": True, "error": str(exc),
-                                 "consecutive_failures": job.consecutive_failures},
+                                {
+                                    "__refresh_failed__": True,
+                                    "error": str(exc),
+                                    "consecutive_failures": job.consecutive_failures,
+                                },
                             )
                         except Exception:
                             logger.exception(
-                                "REFRESH_FAILED webhook callback failed for %s", token_short,
+                                "REFRESH_FAILED webhook callback failed for %s",
+                                token_short,
                             )
             finally:
                 self._persist_job(job)

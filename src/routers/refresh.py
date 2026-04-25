@@ -24,8 +24,6 @@ from src.dependencies import get_current_user, limiter
 from src.scheduled_refresh import (
     MIN_INTERVAL_SECONDS,
     RefreshScheduler,
-    SCHEDULE_FORMATS,
-    SCHEDULE_FORMAT_INTERVAL,
     resolve_schedule,
 )
 
@@ -180,10 +178,7 @@ async def schedule_refresh(
         if active >= MAX_SCHEDULES_PER_USER:
             raise HTTPException(
                 status_code=429,
-                detail=(
-                    f"Refresh schedule quota exceeded "
-                    f"(max {MAX_SCHEDULES_PER_USER} active schedules per user)."
-                ),
+                detail=(f"Refresh schedule quota exceeded (max {MAX_SCHEDULES_PER_USER} active schedules per user)."),
             )
     if not scheduler.running:
         scheduler.start()

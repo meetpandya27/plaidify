@@ -31,8 +31,9 @@ class TestSystemEndpoints:
     def test_detailed_health_is_public_when_token_unset(self, client):
         browser_pool = AsyncMock(return_value=object())
 
-        with patch("src.routers.system.settings.health_check_token", None), patch(
-            "src.routers.system.get_browser_pool", new=browser_pool
+        with (
+            patch("src.routers.system.settings.health_check_token", None),
+            patch("src.routers.system.get_browser_pool", new=browser_pool),
         ):
             response = client.get("/health/detailed")
 
@@ -46,8 +47,9 @@ class TestSystemEndpoints:
     def test_detailed_health_requires_valid_token_when_configured(self, client):
         browser_pool = AsyncMock(return_value=object())
 
-        with patch("src.routers.system.settings.health_check_token", "health-secret"), patch(
-            "src.routers.system.get_browser_pool", new=browser_pool
+        with (
+            patch("src.routers.system.settings.health_check_token", "health-secret"),
+            patch("src.routers.system.get_browser_pool", new=browser_pool),
         ):
             response = client.get("/health/detailed")
 
@@ -58,8 +60,9 @@ class TestSystemEndpoints:
     def test_detailed_health_accepts_configured_token(self, client):
         browser_pool = AsyncMock(return_value=object())
 
-        with patch("src.routers.system.settings.health_check_token", "health-secret"), patch(
-            "src.routers.system.get_browser_pool", new=browser_pool
+        with (
+            patch("src.routers.system.settings.health_check_token", "health-secret"),
+            patch("src.routers.system.get_browser_pool", new=browser_pool),
         ):
             response = client.get(
                 "/health/detailed",
@@ -73,8 +76,9 @@ class TestSystemEndpoints:
     def test_detailed_health_accepts_authenticated_user_when_token_configured(self, client, auth_headers):
         browser_pool = AsyncMock(return_value=object())
 
-        with patch("src.routers.system.settings.health_check_token", "health-secret"), patch(
-            "src.routers.system.get_browser_pool", new=browser_pool
+        with (
+            patch("src.routers.system.settings.health_check_token", "health-secret"),
+            patch("src.routers.system.get_browser_pool", new=browser_pool),
         ):
             response = client.get("/health/detailed", headers=auth_headers)
 
@@ -93,8 +97,9 @@ class TestSystemEndpoints:
 
         browser_pool = AsyncMock(return_value=object())
 
-        with patch("src.routers.system.settings.health_check_token", "health-secret"), patch(
-            "src.routers.system.get_browser_pool", new=browser_pool
+        with (
+            patch("src.routers.system.settings.health_check_token", "health-secret"),
+            patch("src.routers.system.get_browser_pool", new=browser_pool),
         ):
             response = client.get("/health/detailed", headers={"X-API-Key": api_key})
 

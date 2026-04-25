@@ -12,12 +12,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.scheduled_refresh import (
-    MIN_INTERVAL_SECONDS,
-    RefreshScheduler,
     SCHEDULE_FORMAT_DAILY,
     SCHEDULE_FORMAT_HOURLY,
     SCHEDULE_FORMAT_INTERVAL,
     SCHEDULE_FORMAT_WEEKLY,
+    RefreshScheduler,
     resolve_schedule,
 )
 
@@ -66,7 +65,9 @@ class TestSchedulerPresetsAndUpdate:
 
     def test_schedule_with_preset_uses_canonical_interval(self, scheduler):
         job = scheduler.schedule(
-            "acc-1", user_id=7, schedule_format=SCHEDULE_FORMAT_HOURLY,
+            "acc-1",
+            user_id=7,
+            schedule_format=SCHEDULE_FORMAT_HOURLY,
         )
         assert job.schedule_format == SCHEDULE_FORMAT_HOURLY
         assert job.interval_seconds == 3600

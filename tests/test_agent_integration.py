@@ -105,8 +105,9 @@ class TestLinkSessions:
         assert status_resp.json()["status"] == "awaiting_institution"
 
     def test_create_public_link_session_disabled_in_production(self, client):
-        with patch("src.routers.link_sessions.settings.env", "production"), patch(
-            "src.routers.link_sessions.settings.public_link_sessions_enabled", False
+        with (
+            patch("src.routers.link_sessions.settings.env", "production"),
+            patch("src.routers.link_sessions.settings.public_link_sessions_enabled", False),
         ):
             resp = client.post("/link/sessions/public")
 

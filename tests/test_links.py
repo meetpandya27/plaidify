@@ -537,20 +537,12 @@ class TestHostedLinkFrontend:
         assert response.status_code == 200
         assert 'id="root"' in response.text
 
-    def test_link_page_returns_500_when_bundle_missing(
-        self, client, monkeypatch, tmp_path, caplog
-    ):
+    def test_link_page_returns_500_when_bundle_missing(self, client, monkeypatch, tmp_path, caplog):
         from src.routers import link_sessions as link_sessions_module
 
-        monkeypatch.setattr(
-            link_sessions_module, "FRONTEND_NEXT_DIST", tmp_path / "does-not-exist"
-        )
+        monkeypatch.setattr(link_sessions_module, "FRONTEND_NEXT_DIST", tmp_path / "does-not-exist")
 
         with caplog.at_level("ERROR"):
             response = client.get("/link")
         assert response.status_code == 500
-        assert any(
-            "frontend-next/dist/index.html is missing" in record.getMessage()
-            for record in caplog.records
-        )
-
+        assert any("frontend-next/dist/index.html is missing" in record.getMessage() for record in caplog.records)

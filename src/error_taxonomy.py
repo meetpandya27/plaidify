@@ -59,10 +59,7 @@ REMEDIATIONS: dict[LinkErrorCode, Remediation] = {
     ),
     LinkErrorCode.MFA_TIMEOUT: Remediation(
         title="Verification timed out",
-        description=(
-            "We didn't receive your verification code in time. You can "
-            "request a new code and try again."
-        ),
+        description=("We didn't receive your verification code in time. You can request a new code and try again."),
         primary_cta="Start over",
         primary_action="retry",
         secondary_cta="Choose a different provider",
@@ -84,10 +81,7 @@ REMEDIATIONS: dict[LinkErrorCode, Remediation] = {
     ),
     LinkErrorCode.RATE_LIMITED: Remediation(
         title="Too many attempts",
-        description=(
-            "We're pausing briefly to protect your account. Please wait a "
-            "moment before trying again."
-        ),
+        description=("We're pausing briefly to protect your account. Please wait a moment before trying again."),
         primary_cta="Try again in a moment",
         primary_action="retry",
         secondary_cta="Exit",
@@ -108,10 +102,7 @@ REMEDIATIONS: dict[LinkErrorCode, Remediation] = {
     ),
     LinkErrorCode.NETWORK_ERROR: Remediation(
         title="Connection interrupted",
-        description=(
-            "We lost the connection to your provider. Check your internet "
-            "connection and try again."
-        ),
+        description=("We lost the connection to your provider. Check your internet connection and try again."),
         primary_cta="Try again",
         primary_action="retry",
         secondary_cta="Choose a different provider",
