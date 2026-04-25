@@ -55,6 +55,23 @@ class KMSProvider(ABC):
             The original plaintext key bytes.
         """
 
+    # ── Synchronous variants ────────────────────────────────────────────
+    # Sync helpers exist because the database / credential-encryption hot
+    # path is synchronous (SQLAlchemy 1.x style) and called from inside a
+    # FastAPI event loop where ``asyncio.run`` is unsafe. Subclasses
+    # override these to call their underlying synchronous SDKs (boto3,
+    # azure-keyvault, hvac) directly.
+
+    def wrap_key_sync(self, plaintext_key: bytes) -> str:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement wrap_key_sync()."
+        )
+
+    def unwrap_key_sync(self, wrapped_key: str) -> bytes:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement unwrap_key_sync()."
+        )
+
     @abstractmethod
     async def generate_data_key(self) -> tuple[bytes, str]:
         """Generate a new data encryption key and return both plaintext and wrapped forms.
@@ -100,11 +117,17 @@ class LocalKMSProvider(KMSProvider):
         self._nonce_bytes = 12
 
     async def wrap_key(self, plaintext_key: bytes) -> str:
+        return self.wrap_key_sync(plaintext_key)
+
+    async def unwrap_key(self, wrapped_key: str) -> bytes:
+        return self.unwrap_key_sync(wrapped_key)
+
+    def wrap_key_sync(self, plaintext_key: bytes) -> str:
         nonce = os.urandom(self._nonce_bytes)
         ct = self._get_aesgcm().encrypt(nonce, plaintext_key, None)
         return base64.urlsafe_b64encode(nonce + ct).decode("ascii")
 
-    async def unwrap_key(self, wrapped_key: str) -> bytes:
+    def unwrap_key_sync(self, wrapped_key: str) -> bytes:
         raw = base64.urlsafe_b64decode(wrapped_key)
         nonce = raw[: self._nonce_bytes]
         ct = raw[self._nonce_bytes :]
@@ -145,13 +168,25 @@ class AWSKMSProvider(KMSProvider):
     """
 
     def __init__(self, key_id: Optional[str] = None, region: Optional[str] = None) -> None:
-        self._key_id = key_id or os.environ.get("KMS_AWS_KEY_ID", "")
-        self._region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        # Settings take precedence so a single KMS_KEY_ID covers AWS / Azure / Vault.
+        from src.config import get_settings
+
+        settings = get_settings()
+        self._key_id = (
+            key_id
+            or settings.kms_key_id
+            or os.environ.get("KMS_AWS_KEY_ID", "")
+        )
+        self._region = (
+            region
+            or settings.kms_region
+            or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        )
         self._client = None
         if not self._key_id:
             raise ValueError(
-                "AWS KMS requires KMS_AWS_KEY_ID environment variable "
-                "(CMK ARN or alias). See docs/DEPLOYMENT.md for setup."
+                "AWS KMS requires KMS_KEY_ID (or KMS_AWS_KEY_ID) environment variable "
+                "(CMK ARN or alias). See docs/KMS_INTEGRATION.md for setup."
             )
 
     def _get_client(self):
@@ -165,14 +200,17 @@ class AWSKMSProvider(KMSProvider):
         return self._client
 
     async def wrap_key(self, plaintext_key: bytes) -> str:
-        client = self._get_client()
-        response = client.encrypt(
-            KeyId=self._key_id,
-            Plaintext=plaintext_key,
-        )
-        return base64.urlsafe_b64encode(response["CiphertextBlob"]).decode("ascii")
+        return self.wrap_key_sync(plaintext_key)
 
     async def unwrap_key(self, wrapped_key: str) -> bytes:
+        return self.unwrap_key_sync(wrapped_key)
+
+    def wrap_key_sync(self, plaintext_key: bytes) -> str:
+        client = self._get_client()
+        response = client.encrypt(KeyId=self._key_id, Plaintext=plaintext_key)
+        return base64.urlsafe_b64encode(response["CiphertextBlob"]).decode("ascii")
+
+    def unwrap_key_sync(self, wrapped_key: str) -> bytes:
         client = self._get_client()
         response = client.decrypt(
             CiphertextBlob=base64.urlsafe_b64decode(wrapped_key),
@@ -257,13 +295,19 @@ class AzureKeyVaultProvider(KMSProvider):
         return self._client
 
     async def wrap_key(self, plaintext_key: bytes) -> str:
+        return self.wrap_key_sync(plaintext_key)
+
+    async def unwrap_key(self, wrapped_key: str) -> bytes:
+        return self.unwrap_key_sync(wrapped_key)
+
+    def wrap_key_sync(self, plaintext_key: bytes) -> str:
         client = self._get_client()
         from azure.keyvault.keys.crypto import KeyWrapAlgorithm
 
         result = client.wrap_key(KeyWrapAlgorithm.rsa_oaep_256, plaintext_key)
         return base64.urlsafe_b64encode(result.encrypted_key).decode("ascii")
 
-    async def unwrap_key(self, wrapped_key: str) -> bytes:
+    def unwrap_key_sync(self, wrapped_key: str) -> bytes:
         client = self._get_client()
         from azure.keyvault.keys.crypto import KeyWrapAlgorithm
 
@@ -336,6 +380,12 @@ class HashiCorpVaultProvider(KMSProvider):
         return self._client
 
     async def wrap_key(self, plaintext_key: bytes) -> str:
+        return self.wrap_key_sync(plaintext_key)
+
+    async def unwrap_key(self, wrapped_key: str) -> bytes:
+        return self.unwrap_key_sync(wrapped_key)
+
+    def wrap_key_sync(self, plaintext_key: bytes) -> str:
         client = self._get_client()
         result = client.secrets.transit.encrypt_data(
             name=self._key_name,
@@ -343,7 +393,7 @@ class HashiCorpVaultProvider(KMSProvider):
         )
         return result["data"]["ciphertext"]
 
-    async def unwrap_key(self, wrapped_key: str) -> bytes:
+    def unwrap_key_sync(self, wrapped_key: str) -> bytes:
         client = self._get_client()
         result = client.secrets.transit.decrypt_data(
             name=self._key_name,
@@ -396,11 +446,11 @@ _provider_instance: Optional[KMSProvider] = None
 def get_kms_provider(provider_name: Optional[str] = None) -> KMSProvider:
     """Get or create the configured KMS provider.
 
-    Provider is selected from the ``KMS_PROVIDER`` environment variable,
-    or defaults to ``"local"`` (software AES-256-GCM).
-
-    Args:
-        provider_name: Override the environment variable.
+    Resolution order:
+      1. Explicit ``provider_name`` argument.
+      2. ``settings.kms_provider`` (from ``KMS_PROVIDER`` env var).
+      3. Legacy ``KMS_PROVIDER`` env var.
+      4. ``"local"`` (software AES-256-GCM, env-var master key).
 
     Returns:
         A configured KMSProvider instance.
@@ -409,7 +459,15 @@ def get_kms_provider(provider_name: Optional[str] = None) -> KMSProvider:
     if _provider_instance is not None and provider_name is None:
         return _provider_instance
 
-    name = (provider_name or os.environ.get("KMS_PROVIDER", "local")).lower()
+    name = provider_name
+    if name is None:
+        try:
+            from src.config import get_settings
+
+            name = get_settings().kms_provider
+        except Exception:
+            name = os.environ.get("KMS_PROVIDER", "local")
+    name = (name or "local").lower()
     cls = _PROVIDERS.get(name)
     if cls is None:
         raise ValueError(f"Unknown KMS provider: {name!r}. Available: {', '.join(_PROVIDERS.keys())}")
@@ -419,3 +477,9 @@ def get_kms_provider(provider_name: Optional[str] = None) -> KMSProvider:
         _provider_instance = instance
     logger.info("KMS provider initialized: %s", name)
     return instance
+
+
+def reset_kms_provider() -> None:
+    """Reset the cached singleton. Tests use this between configuration changes."""
+    global _provider_instance
+    _provider_instance = None
