@@ -216,6 +216,43 @@ def pop_link_scopes(link_token: str) -> Optional[str]:
         return _mem_link_scopes.pop(link_token, None)
 
 
+# ── Refresh schedule (deferred) ─────────────────────────────────────────────
+# Stored at /create_link, consumed at /submit_credentials so a refresh job can
+# be registered as soon as the access_token is minted.
+
+_mem_link_refresh_schedules: Dict[str, str] = {}
+
+
+def set_link_refresh_schedule(link_token: str, schedule_json: str) -> None:
+    """Store a deferred refresh-schedule directive keyed on link_token."""
+    r = _redis()
+    if r:
+        r.set(
+            f"plaidify:link_refresh:{link_token}",
+            schedule_json,
+            ex=LINK_SCOPE_TTL,
+        )
+    else:
+        if len(_mem_link_refresh_schedules) > _MAX_MEM_LINK_SCOPES:
+            excess = len(_mem_link_refresh_schedules) - _MAX_MEM_LINK_SCOPES
+            for key in list(_mem_link_refresh_schedules)[:excess]:
+                del _mem_link_refresh_schedules[key]
+        _mem_link_refresh_schedules[link_token] = schedule_json
+
+
+def pop_link_refresh_schedule(link_token: str) -> Optional[str]:
+    """Get and remove the deferred refresh-schedule for a link token."""
+    r = _redis()
+    if r:
+        key = f"plaidify:link_refresh:{link_token}"
+        val = r.get(key)
+        if val:
+            r.delete(key)
+        return val
+    else:
+        return _mem_link_refresh_schedules.pop(link_token, None)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Link Launch Bootstrap Store
 # ══════════════════════════════════════════════════════════════════════════════

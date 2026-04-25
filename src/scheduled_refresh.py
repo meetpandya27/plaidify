@@ -29,6 +29,52 @@ from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger("plaidify.scheduler")
 
 
+# ── Schedule formats ─────────────────────────────────────────────────────────
+
+SCHEDULE_FORMAT_INTERVAL = "interval"
+SCHEDULE_FORMAT_HOURLY = "hourly"
+SCHEDULE_FORMAT_DAILY = "daily"
+SCHEDULE_FORMAT_WEEKLY = "weekly"
+
+SCHEDULE_FORMATS = (
+    SCHEDULE_FORMAT_INTERVAL,
+    SCHEDULE_FORMAT_HOURLY,
+    SCHEDULE_FORMAT_DAILY,
+    SCHEDULE_FORMAT_WEEKLY,
+)
+
+_PRESET_INTERVAL_SECONDS = {
+    SCHEDULE_FORMAT_HOURLY: 3600,
+    SCHEDULE_FORMAT_DAILY: 86400,
+    SCHEDULE_FORMAT_WEEKLY: 604800,
+}
+
+MIN_INTERVAL_SECONDS = 300  # 5 minutes
+
+
+def resolve_schedule(
+    schedule_format: Optional[str] = None,
+    interval_seconds: Optional[int] = None,
+) -> tuple[str, int]:
+    """Normalize a (format, interval) pair.
+
+    Returns ``(schedule_format, interval_seconds)`` where the interval reflects
+    the chosen preset. Raises ``ValueError`` for unknown formats or sub-minimum
+    intervals.
+    """
+    fmt = (schedule_format or SCHEDULE_FORMAT_INTERVAL).lower()
+    if fmt not in SCHEDULE_FORMATS:
+        raise ValueError(
+            f"Unknown schedule format '{schedule_format}'. "
+            f"Supported: {', '.join(SCHEDULE_FORMATS)}."
+        )
+    if fmt in _PRESET_INTERVAL_SECONDS:
+        return fmt, _PRESET_INTERVAL_SECONDS[fmt]
+    if interval_seconds is None:
+        raise ValueError("interval_seconds is required when schedule_format is 'interval'.")
+    return SCHEDULE_FORMAT_INTERVAL, int(interval_seconds)
+
+
 @dataclass
 class RefreshJob:
     """A single scheduled refresh job."""
@@ -36,6 +82,7 @@ class RefreshJob:
     access_token: str
     user_id: int
     interval_seconds: int
+    schedule_format: str = SCHEDULE_FORMAT_INTERVAL
     last_refreshed: Optional[datetime] = None
     last_error: Optional[str] = None
     consecutive_failures: int = 0
@@ -85,33 +132,82 @@ class RefreshScheduler:
         access_token: str,
         user_id: int,
         interval_seconds: Optional[int] = None,
+        schedule_format: Optional[str] = None,
     ) -> RefreshJob:
         """Register or update a refresh job for an access token.
 
         Args:
             access_token: The access token to periodically refresh.
             user_id: Owner of the token (used for auth in fetch).
-            interval_seconds: Override the default interval for this job.
+            interval_seconds: Override the default interval for this job (used
+                when ``schedule_format`` is ``'interval'`` or omitted).
+            schedule_format: One of ``interval``/``hourly``/``daily``/``weekly``.
+                Presets ignore ``interval_seconds`` and use canonical values.
 
         Returns:
             The created or updated RefreshJob.
         """
+        fmt, resolved_interval = resolve_schedule(
+            schedule_format=schedule_format,
+            interval_seconds=interval_seconds or self._default_interval,
+        )
         if access_token in self._jobs:
             job = self._jobs[access_token]
-            job.interval_seconds = interval_seconds or self._default_interval
+            job.interval_seconds = resolved_interval
+            job.schedule_format = fmt
             job.enabled = True
             job.consecutive_failures = 0
-            logger.info("Updated refresh job for %s (interval=%ds)", access_token[:12], job.interval_seconds)
+            logger.info(
+                "Updated refresh job for %s (format=%s, interval=%ds)",
+                access_token[:12], fmt, job.interval_seconds,
+            )
         else:
             job = RefreshJob(
                 access_token=access_token,
                 user_id=user_id,
-                interval_seconds=interval_seconds or self._default_interval,
+                interval_seconds=resolved_interval,
+                schedule_format=fmt,
             )
             self._jobs[access_token] = job
-            logger.info("Scheduled refresh for %s (interval=%ds)", access_token[:12], job.interval_seconds)
+            logger.info(
+                "Scheduled refresh for %s (format=%s, interval=%ds)",
+                access_token[:12], fmt, job.interval_seconds,
+            )
         self._persist_job(job)
         return job
+
+    def update(
+        self,
+        access_token: str,
+        interval_seconds: Optional[int] = None,
+        schedule_format: Optional[str] = None,
+        enabled: Optional[bool] = None,
+    ) -> Optional[RefreshJob]:
+        """Update an existing refresh job in place.
+
+        Returns the updated job, or ``None`` if no job exists for the token.
+        Raises ``ValueError`` for invalid formats / intervals.
+        """
+        job = self._jobs.get(access_token)
+        if job is None:
+            return None
+        if schedule_format is not None or interval_seconds is not None:
+            fmt, resolved_interval = resolve_schedule(
+                schedule_format=schedule_format or job.schedule_format,
+                interval_seconds=interval_seconds or job.interval_seconds,
+            )
+            job.schedule_format = fmt
+            job.interval_seconds = resolved_interval
+        if enabled is not None:
+            job.enabled = bool(enabled)
+            if enabled:
+                job.consecutive_failures = 0
+        self._persist_job(job)
+        return job
+
+    def jobs_for_user(self, user_id: int) -> list[RefreshJob]:
+        """Return all scheduled jobs owned by ``user_id``."""
+        return [job for job in self._jobs.values() if job.user_id == user_id]
 
     def unschedule(self, access_token: str) -> bool:
         """Remove a refresh job.
@@ -132,6 +228,7 @@ class RefreshScheduler:
             token: {
                 "user_id": job.user_id,
                 "interval_seconds": job.interval_seconds,
+                "schedule_format": job.schedule_format,
                 "enabled": job.enabled,
                 "last_refreshed": job.last_refreshed.isoformat() if job.last_refreshed else None,
                 "last_error": job.last_error,
@@ -240,6 +337,18 @@ class RefreshScheduler:
                         token_short,
                         job.consecutive_failures,
                     )
+                    if self._webhook:
+                        try:
+                            await self._webhook(
+                                job.access_token,
+                                job.user_id,
+                                {"__refresh_failed__": True, "error": str(exc),
+                                 "consecutive_failures": job.consecutive_failures},
+                            )
+                        except Exception:
+                            logger.exception(
+                                "REFRESH_FAILED webhook callback failed for %s", token_short,
+                            )
             finally:
                 self._persist_job(job)
 
@@ -258,6 +367,7 @@ class RefreshScheduler:
                         access_token=row.access_token,
                         user_id=row.user_id,
                         interval_seconds=row.interval_seconds,
+                        schedule_format=getattr(row, "schedule_format", None) or SCHEDULE_FORMAT_INTERVAL,
                         last_refreshed=row.last_refreshed,
                         last_error=row.last_error,
                         consecutive_failures=row.consecutive_failures,
@@ -281,12 +391,14 @@ class RefreshScheduler:
                 row = db.query(ScheduledRefreshJob).filter_by(access_token=job.access_token).first()
                 if row:
                     row.interval_seconds = job.interval_seconds
+                    if hasattr(row, "schedule_format"):
+                        row.schedule_format = job.schedule_format
                     row.enabled = job.enabled
                     row.last_refreshed = job.last_refreshed
                     row.last_error = job.last_error
                     row.consecutive_failures = job.consecutive_failures
                 else:
-                    row = ScheduledRefreshJob(
+                    kwargs = dict(
                         access_token=job.access_token,
                         user_id=job.user_id,
                         interval_seconds=job.interval_seconds,
@@ -295,6 +407,9 @@ class RefreshScheduler:
                         last_error=job.last_error,
                         consecutive_failures=job.consecutive_failures,
                     )
+                    if hasattr(ScheduledRefreshJob, "schedule_format"):
+                        kwargs["schedule_format"] = job.schedule_format
+                    row = ScheduledRefreshJob(**kwargs)
                     db.add(row)
                 db.commit()
             finally:
