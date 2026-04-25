@@ -47,6 +47,29 @@ class Settings(BaseSettings):
         description="Previous encryption key (base64url). Set during rotation so old DEKs can still be unwrapped.",
     )
 
+    # ── Key Management Service (KMS) ──────────────────────────
+    kms_provider: str = Field(
+        default="local",
+        description=(
+            "KMS backend used to wrap/unwrap data encryption keys. "
+            "One of: 'local' (env-var AES-256-GCM, default), "
+            "'aws' (AWS KMS), 'azure' (Azure Key Vault), "
+            "'vault' (HashiCorp Vault Transit)."
+        ),
+    )
+    kms_key_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider-specific key identifier. AWS: CMK ARN or alias. "
+            "Azure: key name (vault URL comes from KMS_AZURE_VAULT_URL). "
+            "Vault: transit key name."
+        ),
+    )
+    kms_region: Optional[str] = Field(
+        default=None,
+        description="Provider region (AWS only). Falls back to AWS_DEFAULT_REGION.",
+    )
+
     # ── JWT / Auth ────────────────────────────────────────────
     jwt_secret_key: str = Field(
         ...,  # Required — no default

@@ -103,35 +103,47 @@ def generate_dek() -> bytes:
 
 
 def wrap_dek(dek: bytes) -> str:
-    """Encrypt (wrap) a DEK with the master key using AES-256-GCM.
+    """Encrypt (wrap) a DEK with the configured KMS provider.
 
-    Returns a base64url-encoded string: nonce‖ciphertext‖tag.
+    Routes through ``src.kms.get_kms_provider().wrap_key_sync()`` so a
+    single configuration switch (``KMS_PROVIDER``) flips between local
+    AES-256-GCM, AWS KMS, Azure Key Vault, or HashiCorp Vault Transit
+    without touching call sites.
+
+    Returns an opaque base64url-encoded string for the local provider
+    (nonce‖ciphertext‖tag) or whatever opaque payload the configured
+    KMS provider produces.
     """
-    nonce = os.urandom(_GCM_NONCE_BYTES)
-    ct = _get_aesgcm().encrypt(nonce, dek, None)
-    return base64.urlsafe_b64encode(nonce + ct).decode("ascii")
+    from src.kms import get_kms_provider
+
+    return get_kms_provider().wrap_key_sync(dek)
 
 
 def unwrap_dek(wrapped_dek: str) -> bytes:
-    """Decrypt (unwrap) a DEK using the master key.
+    """Decrypt (unwrap) a DEK using the configured KMS provider.
 
-    Tries the current master key first. If that fails and a previous key
-    is configured (ENCRYPTION_KEY_PREVIOUS), falls back to it.
-
-    Returns the raw 32-byte DEK.
+    For the local provider, falls back to ``ENCRYPTION_KEY_PREVIOUS``
+    when the current master key fails (zero-downtime rotation). External
+    providers (AWS / Azure / Vault) handle versioning natively and do
+    not consult the env-var fallback.
     """
-    raw = base64.urlsafe_b64decode(wrapped_dek)
-    nonce = raw[:_GCM_NONCE_BYTES]
-    ct = raw[_GCM_NONCE_BYTES:]
+    from src.kms import LocalKMSProvider, get_kms_provider
+
+    provider = get_kms_provider()
     try:
-        return _get_aesgcm().decrypt(nonce, ct, None)
+        return provider.unwrap_key_sync(wrapped_dek)
     except Exception:
-        # Try previous master key if configured
+        if not isinstance(provider, LocalKMSProvider):
+            raise
+        # Local fallback: try previous master key (env-var rotation path).
         prev = settings.encryption_key_previous
-        if prev:
-            prev_bytes = base64.urlsafe_b64decode(prev.encode("ascii"))
-            return AESGCM(prev_bytes).decrypt(nonce, ct, None)
-        raise
+        if not prev:
+            raise
+        raw = base64.urlsafe_b64decode(wrapped_dek)
+        nonce = raw[:_GCM_NONCE_BYTES]
+        ct = raw[_GCM_NONCE_BYTES:]
+        prev_bytes = base64.urlsafe_b64decode(prev.encode("ascii"))
+        return AESGCM(prev_bytes).decrypt(nonce, ct, None)
 
 
 def create_user_dek() -> str:
