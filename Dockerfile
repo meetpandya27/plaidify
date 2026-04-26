@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ── Stage 1b: Frontend Builder ───────────────────────────────────────────────
-FROM node:20-slim AS frontend-builder
+FROM node:25-slim AS frontend-builder
 
 WORKDIR /frontend
 COPY frontend-next/package.json frontend-next/package-lock.json* frontend-next/tsconfig.json frontend-next/vite.config.ts ./
