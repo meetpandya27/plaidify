@@ -31,7 +31,7 @@ redis==5.2.1
 # ── Monitoring ────────────────────────────────────────────────────────────────
 prometheus-client==0.25.0
 prometheus-fastapi-instrumentator==7.0.2
-sentry-sdk[fastapi]==2.19.2
+sentry-sdk[fastapi]==2.58.0
 
 # ── Distributed Tracing (optional) ──────────────────────────────────────────
 opentelemetry-api==1.29.0
