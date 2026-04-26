@@ -12,7 +12,7 @@ alembic==1.18.4
 psycopg2-binary==2.9.11
 
 # ── Security ──────────────────────────────────────────────────────────────────
-cryptography==46.0.7
+cryptography==47.0.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.3.0
 PyJWT==2.12.1
