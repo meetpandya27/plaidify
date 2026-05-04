@@ -76,6 +76,7 @@ uvicorn src.main:app --reload
 
 ## Key Docs
 
+- [docs/SELF_HOST.md](docs/SELF_HOST.md) — fork-to-deployed Azure walkthrough for self-hosters
 - [docs/README.md](docs/README.md) for the technical architecture and configuration reference
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for production deployment and operations guidance
 - [docs/MOBILE_LINK_INTEGRATION.md](docs/MOBILE_LINK_INTEGRATION.md) for native mobile hosted-link integration
