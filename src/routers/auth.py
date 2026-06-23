@@ -305,9 +305,7 @@ def list_sessions(user: User = Depends(get_current_user), db: Session = Depends(
 
 
 @router.post("/sessions/revoke-all")
-def revoke_all_sessions(
-    request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def revoke_all_sessions(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Revoke all of the current user's refresh tokens (force logout everywhere)."""
     count = (
         db.query(RefreshToken)
