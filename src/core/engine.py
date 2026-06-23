@@ -56,6 +56,7 @@ from src.exceptions import (
     ReadOnlyPolicyViolationError,
 )
 from src.logging_config import get_logger
+from src.tracing import span
 
 logger = get_logger("engine")
 settings = get_settings()
@@ -636,17 +637,18 @@ async def _execute_blueprint(
         extraction_method = "none"
 
         if extraction_defs:
-            if blueprint.is_llm_adaptive:
-                extracted_data, extraction_method = await _extract_llm_adaptive(
-                    page=page,
-                    blueprint=blueprint,
-                    extraction_defs=extraction_defs,
-                    site=site,
-                )
-            else:
-                extractor = DataExtractor(page)
-                extracted_data = await extractor.extract(extraction_defs, site=site)
-                extraction_method = "css_selectors"
+            with span("engine.extract", **{"plaidify.site": site}):
+                if blueprint.is_llm_adaptive:
+                    extracted_data, extraction_method = await _extract_llm_adaptive(
+                        page=page,
+                        blueprint=blueprint,
+                        extraction_defs=extraction_defs,
+                        site=site,
+                    )
+                else:
+                    extractor = DataExtractor(page)
+                    extracted_data = await extractor.extract(extraction_defs, site=site)
+                    extraction_method = "css_selectors"
 
         # ── Step 4: Cleanup (logout) ──────────────────────────────────────────
         if blueprint.cleanup:

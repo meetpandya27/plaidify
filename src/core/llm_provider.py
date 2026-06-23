@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from src.config import get_settings
 from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError, retry_with_backoff
 from src.logging_config import get_logger
+from src.tracing import tracer
 
 logger = get_logger("llm_provider")
 
@@ -155,12 +156,17 @@ class BaseLLMProvider(ABC):
 
         response_format = {"type": "json_object"} if json_mode else None
 
-        response = await self._call(
-            messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            response_format=response_format,
-        )
+        with tracer.start_as_current_span("llm.extract") as _span:
+            _span.set_attribute("llm.provider", self.provider_name)
+            _span.set_attribute("llm.model", self.model)
+            response = await self._call(
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_format=response_format,
+            )
+            _span.set_attribute("llm.prompt_tokens", response.usage.prompt_tokens)
+            _span.set_attribute("llm.completion_tokens", response.usage.completion_tokens)
         logger.info(
             "LLM extraction complete: provider=%s model=%s prompt_tokens=%d completion_tokens=%d latency_ms=%.1f",
             self.provider_name,
