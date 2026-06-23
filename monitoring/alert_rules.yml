@@ -1,0 +1,76 @@
+groups:
+  - name: plaidify-availability
+    rules:
+      - alert: PlaidifyInstanceDown
+        expr: up{job="plaidify"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Plaidify instance is down ({{ $labels.instance }})"
+          description: "The Prometheus target for Plaidify has been unreachable for >2m."
+
+      - alert: PlaidifyTargetMissing
+        expr: absent(up{job="plaidify"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Plaidify scrape target is missing"
+          description: "No Plaidify target is being scraped. Check Prometheus service discovery / config."
+
+  - name: plaidify-traffic
+    rules:
+      - alert: PlaidifyHighErrorRate
+        # >5% of responses are 5xx over the last 5m.
+        expr: |
+          sum(rate(http_request_duration_seconds_count{job="plaidify",status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(http_request_duration_seconds_count{job="plaidify"}[5m])), 0.001)
+            > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate (>5%)"
+          description: "More than 5% of HTTP responses have been 5xx for >5m. Current value: {{ $value | humanizePercentage }}."
+
+      - alert: PlaidifyHighLatencyP95
+        # p95 request latency above 2s over 10m.
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="plaidify"}[5m])) by (le)
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency above 2s"
+          description: "95th-percentile request latency has exceeded 2s for >10m (current: {{ $value | humanize }}s)."
+
+  - name: plaidify-domain
+    rules:
+      - alert: PlaidifyExtractionFailureRate
+        # >20% of blueprint extractions failing over 15m.
+        expr: |
+          sum(rate(plaidify_blueprint_extractions_total{status="error"}[15m]))
+            /
+          clamp_min(sum(rate(plaidify_blueprint_extractions_total[15m])), 0.001)
+            > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Blueprint extraction failure rate >20%"
+          description: "More than 20% of extractions have failed for >15m. Check connectors, browser pool, and LLM provider health."
+
+      - alert: PlaidifyBrowserPoolSaturated
+        # Tune the threshold to your configured pool size (BROWSER_POOL_SIZE).
+        expr: plaidify_browser_pool_active_contexts >= 8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Browser pool saturated"
+          description: "Active browser contexts have stayed at/above the alert threshold for >10m; requests may be queuing. Consider scaling executors or raising the pool size."

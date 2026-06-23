@@ -1,0 +1,87 @@
+# Scheduled PostgreSQL backups for Plaidify on Kubernetes.
+#
+# Mirrors scripts/backup_db.sh (compressed pg_dump custom-format archives with
+# retention pruning) as an hourly CronJob writing to a PersistentVolume. Ship
+# the PV contents off-cluster (object storage) for real durability — see
+# docs/DISASTER_RECOVERY.md.
+#
+# Prerequisites:
+#   kubectl create secret generic plaidify-secrets \
+#     --from-literal=database-url='postgresql://user:pass@host:5432/plaidify'
+#
+# Apply:
+#   kubectl apply -f deploy/backup-cronjob.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plaidify-backups
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: plaidify-db-backup
+spec:
+  schedule: "0 * * * *" # hourly, on the hour (UTC)
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70 # postgres user in the alpine image
+            fsGroup: 70
+          containers:
+            - name: backup
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: plaidify-secrets
+                      key: database-url
+                - name: BACKUP_DIR
+                  value: /backups
+                - name: BACKUP_RETENTION
+                  value: "168" # keep ~7 days of hourly backups
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+                  FILE="${BACKUP_DIR}/plaidify-${STAMP}.dump"
+                  echo "Creating backup -> ${FILE}"
+                  pg_dump --format=custom --no-owner --no-privileges --file="${FILE}" "${DATABASE_URL}"
+                  echo "Backup complete ($(du -h "${FILE}" | cut -f1))."
+                  # Retention: keep newest ${BACKUP_RETENTION} archives.
+                  ls -1t "${BACKUP_DIR}"/plaidify-*.dump 2>/dev/null \
+                    | tail -n +$((BACKUP_RETENTION + 1)) \
+                    | xargs -r rm -f
+                  echo "Retention prune complete."
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: plaidify-backups
