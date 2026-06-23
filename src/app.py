@@ -42,6 +42,7 @@ from src.exceptions import PlaidifyError
 from src.logging_config import get_logger, setup_logging
 from src.routers import (
     access_jobs,
+    admin,
     agents,
     api_keys,
     audit,
@@ -135,7 +136,12 @@ def _bootstrap_user() -> None:
     try:
         existing = db.query(User).filter((User.username == username) | (User.email == email)).first()
         if existing:
-            logger.info("Bootstrap user already present; skipping creation")
+            if not existing.is_admin:
+                existing.is_admin = True
+                db.commit()
+                logger.info("Bootstrap user promoted to admin")
+            else:
+                logger.info("Bootstrap user already present; skipping creation")
             return
         db.add(
             User(
@@ -143,10 +149,11 @@ def _bootstrap_user() -> None:
                 email=email,
                 hashed_password=get_password_hash(password),
                 encrypted_dek=create_user_dek(),
+                is_admin=True,
             )
         )
         db.commit()
-        logger.info("Bootstrap user created", extra={"extra_data": {"username": username}})
+        logger.info("Bootstrap admin user created", extra={"extra_data": {"username": username}})
     except Exception as exc:  # pragma: no cover - bootstrap must not block startup
         logger.error(f"Bootstrap user creation failed: {exc}")
     finally:
@@ -476,6 +483,7 @@ for router in (
     registry.router,
     refresh.router,
     agents.router,
+    admin.router,
 ):
     app.include_router(router)
 
