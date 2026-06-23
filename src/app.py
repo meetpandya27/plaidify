@@ -55,6 +55,7 @@ from src.routers import (
     system,
     webhooks,
 )
+from src.tracing import init_tracing
 
 settings = get_settings()
 logger = get_logger("api")
@@ -252,6 +253,7 @@ async def lifespan(app: FastAPI):
 
     _validate_runtime_configuration()
     _initialize_sentry()
+    init_tracing(app, settings)
     init_db()
     _bootstrap_user()
 
