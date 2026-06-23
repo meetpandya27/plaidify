@@ -78,6 +78,21 @@ param postgresSkuTier string = 'Burstable'
 
 param postgresVersion string = '16'
 param postgresStorageSizeGB int = 32
+
+@allowed([
+  'Disabled'
+  'SameZone'
+  'ZoneRedundant'
+])
+@description('PostgreSQL high-availability mode. ZoneRedundant/SameZone require the GeneralPurpose or MemoryOptimized tier (not Burstable).')
+param postgresHighAvailabilityMode string = 'Disabled'
+
+@description('Standby availability zone used when postgresHighAvailabilityMode is ZoneRedundant (must differ from the primary zone 1).')
+param postgresStandbyAvailabilityZone string = '2'
+
+@description('Enable geo-redundant PostgreSQL backups for cross-region disaster recovery.')
+param postgresGeoRedundantBackup bool = false
+
 param postgresDatabaseName string = 'plaidify'
 param logAnalyticsRetentionInDays int = 30
 
@@ -183,12 +198,17 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
     availabilityZone: '1'
     backup: {
       backupRetentionDays: 7
-      geoRedundantBackup: 'Disabled'
+      geoRedundantBackup: postgresGeoRedundantBackup ? 'Enabled' : 'Disabled'
     }
     createMode: 'Create'
-    highAvailability: {
-      mode: 'Disabled'
-    }
+    highAvailability: postgresHighAvailabilityMode == 'ZoneRedundant'
+      ? {
+          mode: 'ZoneRedundant'
+          standbyAvailabilityZone: postgresStandbyAvailabilityZone
+        }
+      : {
+          mode: postgresHighAvailabilityMode
+        }
     network: {
       publicNetworkAccess: 'Enabled'
     }

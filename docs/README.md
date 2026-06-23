@@ -133,4 +133,6 @@ python -m playwright install chromium
 - [ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md) for executor isolation design
 - [RUNBOOK.md](RUNBOOK.md) for operational procedures
 - [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md) for backup, restore, and failover
+- [HIGH_AVAILABILITY.md](HIGH_AVAILABILITY.md) for HA and multi-region topology
+- [LOAD_TESTING.md](LOAD_TESTING.md) for load testing and capacity planning
 - [PRODUCT_PLAN.md](PRODUCT_PLAN.md) for roadmap context
