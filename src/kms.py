@@ -3,9 +3,9 @@ Key Management Service (KMS) abstraction layer for Plaidify.
 
 Provides a pluggable interface for key management operations:
 - **LocalKMSProvider**: Software-based AES-256-GCM (default, current behavior).
-- **AWSKMSProvider**: AWS KMS for key wrapping (stub — ready for implementation).
-- **AzureKMSProvider**: Azure Key Vault for key wrapping (stub — ready for implementation).
-- **HashiCorpVaultProvider**: HashiCorp Vault Transit backend (stub).
+- **AWSKMSProvider**: AWS KMS Customer Master Key for envelope key wrapping.
+- **AzureKeyVaultProvider**: Azure Key Vault key wrapping (RSA-OAEP-256).
+- **HashiCorpVaultProvider**: HashiCorp Vault Transit secrets engine.
 
 The abstraction enables SOC 2 compliance by allowing operators to plug in
 HSM-backed key storage without changing application code.
@@ -149,18 +149,19 @@ class LocalKMSProvider(KMSProvider):
             return {"provider": "local", "status": "unhealthy", "error": str(e)}
 
 
-# ── AWS KMS Provider (Stub) ──────────────────────────────────────────────────
+# ── AWS KMS Provider ─────────────────────────────────────────────────────────
 
 
 class AWSKMSProvider(KMSProvider):
     """AWS KMS provider for HSM-backed key management.
 
     Requires:
-        - ``pip install boto3``
-        - ``KMS_AWS_KEY_ID`` environment variable (CMK ARN or alias).
-        - AWS credentials configured (env vars, instance profile, etc.).
+        - ``pip install boto3`` (see requirements-kms.txt)
+        - ``KMS_KEY_ID`` (CMK ARN or alias; ``KMS_AWS_KEY_ID`` also accepted).
+        - AWS credentials configured (env vars, instance profile, SSO, etc.).
 
-    This is a stub implementation. Uncomment and configure for production use.
+    Keys are wrapped/unwrapped directly by KMS (Encrypt/Decrypt) so plaintext
+    DEKs never persist. See docs/KMS_INTEGRATION.md for setup and migration.
     """
 
     def __init__(self, key_id: Optional[str] = None, region: Optional[str] = None) -> None:
@@ -236,7 +237,7 @@ class AWSKMSProvider(KMSProvider):
             return {"provider": "aws-kms", "status": "unhealthy", "error": str(e)}
 
 
-# ── Azure Key Vault Provider (Stub) ──────────────────────────────────────────
+# ── Azure Key Vault Provider ─────────────────────────────────────────────────
 
 
 class AzureKeyVaultProvider(KMSProvider):
@@ -329,7 +330,7 @@ class AzureKeyVaultProvider(KMSProvider):
             return {"provider": "azure-keyvault", "status": "unhealthy", "error": str(e)}
 
 
-# ── HashiCorp Vault Provider (Stub) ──────────────────────────────────────────
+# ── HashiCorp Vault Provider ─────────────────────────────────────────────────
 
 
 class HashiCorpVaultProvider(KMSProvider):

@@ -1,0 +1,22 @@
+# Optional KMS provider SDKs for Plaidify.
+#
+# Install only the one matching your KMS_PROVIDER. These are intentionally kept
+# out of the core requirements.txt so the base image stays lean and the
+# security audit (pip-audit on requirements.txt) isn't gated on cloud SDKs.
+#
+#   pip install -r requirements-kms.txt          # all providers
+#   pip install boto3                            # AWS only
+#   pip install azure-keyvault-keys azure-identity  # Azure only
+#   pip install hvac                             # HashiCorp Vault only
+#
+# See docs/KMS_INTEGRATION.md for configuration.
+
+# AWS KMS (KMS_PROVIDER=aws)
+boto3>=1.34
+
+# Azure Key Vault (KMS_PROVIDER=azure)
+azure-keyvault-keys>=4.9
+azure-identity>=1.17
+
+# HashiCorp Vault Transit (KMS_PROVIDER=vault)
+hvac>=2.1
