@@ -277,12 +277,14 @@ async def disconnect():
 
 
 @router.post("/mfa/submit")
-async def mfa_submit(session_id: str, code: str):
+@limiter.limit(settings.rate_limit_mfa)
+async def mfa_submit(request: Request, session_id: str, code: str):
     """
     Submit an MFA code for a pending session.
 
     After a connection returns status 'mfa_required', the client retrieves
-    the code from the user and submits it here.
+    the code from the user and submits it here. Rate-limited per IP to deter
+    brute-forcing short numeric codes.
     """
     result = await submit_mfa_code(session_id, code)
     return result

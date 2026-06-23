@@ -28,6 +28,7 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from src import metrics
 from src.config import get_settings
 from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
 from src.logging_config import get_logger
@@ -267,6 +268,7 @@ class BrowserPool:
                 "Context acquired",
                 extra={"extra_data": {"session_id": session_id, "pool_size": len(self._contexts)}},
             )
+            metrics.set_browser_pool_active(len(self._contexts))
 
             return pooled
 
@@ -295,6 +297,7 @@ class BrowserPool:
             "Context released",
             extra={"extra_data": {"session_id": session_id, "pool_size": len(self._contexts)}},
         )
+        metrics.set_browser_pool_active(len(self._contexts))
 
     @property
     def active_count(self) -> int:

@@ -85,6 +85,28 @@ class Settings(BaseSettings):
         description="JWT refresh token expiry in minutes.",
     )
 
+    # ── Registration & Bootstrap ──────────────────────────────
+    registration_enabled: bool = Field(
+        default=True,
+        description=(
+            "Allow public self-registration via POST /auth/register. "
+            "Recommended to disable in production and provision accounts via the "
+            "bootstrap settings below."
+        ),
+    )
+    bootstrap_user_username: Optional[str] = Field(
+        default=None,
+        description="If set with email + password, create this user on startup (idempotent).",
+    )
+    bootstrap_user_email: Optional[str] = Field(
+        default=None,
+        description="Email for the bootstrap user. Required alongside the username/password.",
+    )
+    bootstrap_user_password: Optional[str] = Field(
+        default=None,
+        description="Password for the bootstrap user. Provide via secret store / env, not source control.",
+    )
+
     # ── Server ────────────────────────────────────────────────
     app_name: str = Field(default="Plaidify", description="Application name.")
     app_version: str = Field(default="0.3.0b1", description="Application version.")
@@ -159,6 +181,10 @@ class Settings(BaseSettings):
     rate_limit_connect: str = Field(
         default="10/minute",
         description="Rate limit for /connect endpoint. Format: 'N/period'.",
+    )
+    rate_limit_mfa: str = Field(
+        default="5/minute",
+        description="Rate limit for POST /mfa/submit to deter MFA code brute-force. Format: 'N/period'.",
     )
     rate_limit_default: str = Field(
         default="60/minute",
