@@ -57,6 +57,10 @@ limiter = Limiter(
     default_limits=[settings.rate_limit_default] if settings.rate_limit_enabled else [],
     enabled=settings.rate_limit_enabled,
     storage_uri=settings.redis_url if _limiter_storage else "memory://",
+    # Fail open: if the rate-limit backend (Redis) is unreachable at request
+    # time, allow the request rather than returning 500. Availability over a
+    # transient throttling gap; the outage is still surfaced via /health.
+    swallow_errors=True,
 )
 
 # ── Password Hashing ─────────────────────────────────────────────────────────

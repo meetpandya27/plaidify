@@ -21,9 +21,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from src.config import get_settings
+from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError, retry_with_backoff
 from src.logging_config import get_logger
 
 logger = get_logger("llm_provider")
+
+_settings = get_settings()
+_llm_breaker = CircuitBreaker(
+    "llm",
+    failure_threshold=_settings.llm_circuit_failure_threshold,
+    reset_timeout=_settings.llm_circuit_reset_seconds,
+)
 
 # ── Data Classes ──────────────────────────────────────────────────────────────
 
@@ -422,14 +431,48 @@ class FallbackChain(BaseLLMProvider):
         temperature: Optional[float] = None,
         response_format: Optional[Dict[str, str]] = None,
     ) -> LLMResponse:
+        async def _run_chain() -> LLMResponse:
+            return await self._call_chain(
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_format=response_format,
+            )
+
+        # Fail fast when the whole LLM subsystem is degraded instead of paying
+        # the full timeout on every request.
+        try:
+            return await _llm_breaker.call(_run_chain)
+        except CircuitBreakerOpenError as e:
+            raise LLMProviderError(str(e)) from e
+
+    async def _call_chain(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        max_tokens: Optional[int],
+        temperature: Optional[float],
+        response_format: Optional[Dict[str, str]],
+    ) -> LLMResponse:
         last_error: Optional[Exception] = None
         for provider in self.providers:
-            try:
+
+            async def _attempt(provider: BaseLLMProvider = provider) -> LLMResponse:
                 return await provider._call(
                     messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     response_format=response_format,
+                )
+
+            try:
+                # Retry only genuinely transient (rate-limit) errors, honouring
+                # any retry-after hint, with bounded exponential backoff.
+                return await retry_with_backoff(
+                    _attempt,
+                    retries=_settings.llm_retry_max_attempts,
+                    retry_on=(LLMRateLimitError,),
+                    delay_for=lambda e: getattr(e, "retry_after", None),
                 )
             except LLMAuthError:
                 raise  # Don't retry auth errors
