@@ -111,6 +111,18 @@
   color: var(--plaidify-color-fg-muted);
 }
 
+.institution-item__badge {
+  justify-self: end;
+  font-size: var(--plaidify-font-size-xs);
+  font-weight: var(--plaidify-font-weight-semibold);
+  color: var(--organization-primary, #4f46e5);
+  background: var(--organization-secondary, #eef2ff);
+  border: 1px solid var(--organization-primary, #c7d2fe);
+  border-radius: 999px;
+  padding: 2px 10px;
+  letter-spacing: 0.03em;
+}
+
 .credentials-header {
   display: flex;
   align-items: center;

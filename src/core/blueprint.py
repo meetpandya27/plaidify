@@ -529,3 +529,29 @@ def load_blueprint_from_dict(data: dict) -> BlueprintV2:
         return convert_v1_to_v2(data)
 
     return BlueprintV2.model_validate(data)
+
+
+# Tags that hide a connector from every public discovery surface.
+HIDDEN_CONNECTOR_TAGS = frozenset({"internal", "fixture"})
+# Tags that mark a connector as a bundled sandbox/demo — discoverable only
+# when demo mode is enabled.
+SANDBOX_CONNECTOR_TAGS = frozenset({"sandbox", "demo"})
+
+
+def blueprint_is_discoverable(tags: Optional[List[str]], *, demo_mode: bool = False) -> bool:
+    """Return whether a connector with these tags should appear on public
+    discovery surfaces (``/blueprints``, ``/blueprints/{site}``, the picker
+    catalog).
+
+    Rules:
+    - Connectors tagged ``internal`` or ``fixture`` are never discoverable.
+    - Connectors tagged ``sandbox`` or ``demo`` are discoverable only when
+      ``demo_mode`` is enabled.
+    - All other connectors are discoverable.
+    """
+    tag_set = {str(t).lower() for t in (tags or [])}
+    if tag_set & HIDDEN_CONNECTOR_TAGS:
+        return False
+    if tag_set & SANDBOX_CONNECTOR_TAGS and not demo_mode:
+        return False
+    return True

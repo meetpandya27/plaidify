@@ -632,7 +632,9 @@ export function App(props: AppProps = {}) {
                   </span>
                 )}
                 <span className="institution-item__name">{organization.name}</span>
-                {organization.category_label ? (
+                {organization.is_sandbox ? (
+                  <span className="institution-item__badge">Sandbox</span>
+                ) : organization.category_label ? (
                   <span className="institution-item__category">
                     {organization.category_label}
                   </span>

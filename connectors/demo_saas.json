@@ -1,0 +1,63 @@
+{
+  "schema_version": "2.0",
+  "name": "CloudMail (Sandbox)",
+  "domain": "127.0.0.1:8797",
+  "tags": ["sandbox", "demo", "saas", "productivity"],
+  "auth": {
+    "type": "form",
+    "steps": [
+      { "action": "goto", "url": "http://127.0.0.1:8797/login" },
+      { "action": "fill", "selector": "#user", "value": "{{username}}" },
+      { "action": "fill", "selector": "#pass", "value": "{{password}}" },
+      { "action": "click", "selector": "#submit-login", "wait_for_navigation": true },
+      { "action": "wait", "selector": "#workspace", "timeout": 10000 }
+    ]
+  },
+  "extract": {
+    "display_name": { "selector": "#display-name", "type": "text" },
+    "primary_email": { "selector": "#primary-email", "type": "email" },
+    "plan_tier": { "selector": "#plan-tier", "type": "text" },
+    "seat_count": { "selector": "#seat-count", "type": "text" },
+    "storage_used": { "selector": "#storage-used", "type": "text" },
+    "storage_total": { "selector": "#storage-total", "type": "text" },
+    "sign_in_activity": {
+      "selector": ".activity-row",
+      "type": "list",
+      "fields": {
+        "when": { "selector": ".act-when", "type": "text" },
+        "device": { "selector": ".act-device", "type": "text" },
+        "location": { "selector": ".act-location", "type": "text" },
+        "status": { "selector": ".act-status", "type": "text" }
+      }
+    }
+  },
+  "credential_schema": {
+    "submit_label": "Sign in to CloudMail",
+    "fields": [
+      {
+        "id": "username",
+        "label": "Username",
+        "type": "text",
+        "autocomplete": "username",
+        "placeholder": "demo_saas",
+        "help_text": "Sandbox login: demo_saas (no MFA)",
+        "required": true
+      },
+      {
+        "id": "password",
+        "label": "Password",
+        "type": "password",
+        "autocomplete": "current-password",
+        "placeholder": "demo_pass",
+        "secret": true,
+        "reveal": true,
+        "required": true
+      }
+    ]
+  },
+  "cleanup": [
+    { "action": "click", "selector": "#logout" }
+  ],
+  "rate_limit": { "max_requests_per_hour": 600, "min_interval_seconds": 1 },
+  "health_check": { "url": "http://127.0.0.1:8797/health", "expected_status": 200 }
+}
