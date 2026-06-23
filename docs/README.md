@@ -135,4 +135,6 @@ python -m playwright install chromium
 - [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md) for backup, restore, and failover
 - [HIGH_AVAILABILITY.md](HIGH_AVAILABILITY.md) for HA and multi-region topology
 - [LOAD_TESTING.md](LOAD_TESTING.md) for load testing and capacity planning
+- [COMPLIANCE.md](COMPLIANCE.md) for the SOC 2 / ISO 27001 controls matrix
+- [THREAT_MODEL.md](THREAT_MODEL.md) for the STRIDE threat model
 - [PRODUCT_PLAN.md](PRODUCT_PLAN.md) for roadmap context
