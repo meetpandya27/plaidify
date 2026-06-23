@@ -191,6 +191,28 @@ class Settings(BaseSettings):
         description="Default rate limit for all other endpoints. Format: 'N/period'.",
     )
 
+    # ── Resilience ────────────────────────────────────────────
+    llm_circuit_failure_threshold: int = Field(
+        default=5,
+        description="Consecutive LLM failures before the LLM circuit breaker opens (fail-fast).",
+    )
+    llm_circuit_reset_seconds: float = Field(
+        default=30.0,
+        description="Seconds the LLM circuit stays open before allowing a trial call.",
+    )
+    llm_retry_max_attempts: int = Field(
+        default=2,
+        description="Extra retry attempts (exponential backoff) for transient LLM rate-limit errors.",
+    )
+    browser_circuit_failure_threshold: int = Field(
+        default=5,
+        description="Consecutive browser-launch failures before the browser circuit breaker opens.",
+    )
+    browser_circuit_reset_seconds: float = Field(
+        default=30.0,
+        description="Seconds the browser circuit stays open before allowing a trial launch.",
+    )
+
     # ── Redis ─────────────────────────────────────────────────
     redis_url: Optional[str] = Field(
         default=None,

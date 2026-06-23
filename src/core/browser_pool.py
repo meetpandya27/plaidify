@@ -30,10 +30,18 @@ from playwright.async_api import (
 
 from src import metrics
 from src.config import get_settings
+from src.core.circuit_breaker import CircuitBreaker
 from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
 from src.logging_config import get_logger
 
 logger = get_logger("browser_pool")
+
+_bp_settings = get_settings()
+_browser_breaker = CircuitBreaker(
+    "browser",
+    failure_threshold=_bp_settings.browser_circuit_failure_threshold,
+    reset_timeout=_bp_settings.browser_circuit_reset_seconds,
+)
 
 # ── Stealth Profiles ─────────────────────────────────────────────────────────
 
@@ -153,15 +161,20 @@ class BrowserPool:
         )
 
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ],
-        )
+
+        async def _launch() -> Browser:
+            return await self._playwright.chromium.launch(
+                headless=self._headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
+            )
+
+        # Fail fast if browser launches keep failing (e.g. resource exhaustion).
+        self._browser = await _browser_breaker.call(_launch)
         self._running = True
 
         # Start background cleanup of idle contexts
