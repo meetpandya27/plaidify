@@ -681,3 +681,42 @@ class ScheduledRefreshJob(Base):
     last_error = Column(Text, nullable=True)
     consecutive_failures = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+def delete_user_data(db: "Session", user_id: int) -> dict:
+    """Erase all data owned by a user (GDPR right-to-erasure).
+
+    Rows are deleted child-first so foreign-key constraints are satisfied on
+    databases that enforce them (PostgreSQL); SQLite does not require ordering
+    but follows the same path. Audit-log entries are intentionally NOT removed:
+    they carry no direct credential PII and are retained for compliance
+    (``AuditLog.user_id`` has no foreign key, so the user row can be deleted
+    without orphaning the immutable hash chain).
+
+    This function does not commit — the caller owns the transaction so the
+    final user-row deletion is atomic with the cascade.
+
+    Returns:
+        Mapping of table name to the number of rows deleted (omits zero counts).
+    """
+    targets = [
+        (ConsentGrant, ConsentGrant.user_id == user_id),
+        (ConsentRequest, ConsentRequest.user_id == user_id),
+        (PublicToken, PublicToken.user_id == user_id),
+        (ScheduledRefreshJob, ScheduledRefreshJob.user_id == user_id),
+        (AccessToken, AccessToken.user_id == user_id),
+        (Link, Link.user_id == user_id),
+        (Webhook, Webhook.user_id == user_id),
+        (RefreshToken, RefreshToken.user_id == user_id),
+        (PasswordResetToken, PasswordResetToken.user_id == user_id),
+        (Agent, Agent.owner_id == user_id),
+        (ApiKey, ApiKey.user_id == user_id),
+        (BlueprintRecord, BlueprintRecord.published_by == user_id),
+        (AccessJob, AccessJob.user_id == user_id),
+    ]
+    summary: dict[str, int] = {}
+    for model, condition in targets:
+        count = db.query(model).filter(condition).delete(synchronize_session=False)
+        if count:
+            summary[model.__tablename__] = count
+    return summary

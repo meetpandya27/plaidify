@@ -115,6 +115,16 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(..., max_length=256)
 
 
+class DeleteAccountRequest(BaseModel):
+    """Request body for DELETE /auth/me (GDPR account erasure)."""
+
+    password: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Current password — required to confirm deletion for password-based accounts.",
+    )
+
+
 class OAuth2LoginRequest(BaseModel):
     """Request body for POST /auth/oauth2."""
 

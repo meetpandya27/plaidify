@@ -298,8 +298,12 @@ async def lifespan(app: FastAPI):
     try:
         redis_client = _get_redis()
         if redis_client is not None:
-            redis_client.close()
+            # Close off the event loop with a timeout so a hung socket can't
+            # stall shutdown indefinitely.
+            await asyncio.wait_for(asyncio.to_thread(redis_client.close), timeout=5)
             logger.info("Redis connection closed")
+    except asyncio.TimeoutError:
+        logger.warning("Redis connection close timed out; continuing shutdown")
     except Exception:
         pass
 

@@ -132,4 +132,5 @@ python -m playwright install chromium
 - [MOBILE_LINK_INTEGRATION.md](MOBILE_LINK_INTEGRATION.md) for native hosted-link embedding
 - [ISOLATED_ACCESS_RUNTIME.md](ISOLATED_ACCESS_RUNTIME.md) for executor isolation design
 - [RUNBOOK.md](RUNBOOK.md) for operational procedures
+- [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md) for backup, restore, and failover
 - [PRODUCT_PLAN.md](PRODUCT_PLAN.md) for roadmap context
