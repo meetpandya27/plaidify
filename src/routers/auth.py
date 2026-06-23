@@ -275,3 +275,51 @@ def refresh_tokens(request: Request, body: RefreshTokenRequest, db: Session = De
     db.commit()
 
     return issue_token_pair(token_record.user_id, db)
+
+
+@router.get("/sessions")
+def list_sessions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List the current user's active (non-revoked, unexpired) refresh-token sessions."""
+    now = datetime.now(timezone.utc)
+    tokens = (
+        db.query(RefreshToken)
+        .filter(
+            RefreshToken.user_id == user.id,
+            RefreshToken.revoked == False,  # noqa: E712
+            RefreshToken.expires_at > now,
+        )
+        .order_by(RefreshToken.created_at.desc())
+        .all()
+    )
+    return {
+        "sessions": [
+            {
+                "id": t.id,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+            }
+            for t in tokens
+        ],
+        "count": len(tokens),
+    }
+
+
+@router.post("/sessions/revoke-all")
+def revoke_all_sessions(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Revoke all of the current user's refresh tokens (force logout everywhere)."""
+    count = (
+        db.query(RefreshToken)
+        .filter(RefreshToken.user_id == user.id, RefreshToken.revoked == False)  # noqa: E712
+        .update({RefreshToken.revoked: True}, synchronize_session=False)
+    )
+    db.commit()
+    record_audit_event(
+        db,
+        "auth",
+        "revoke_all_sessions",
+        user_id=user.id,
+        metadata={"revoked_count": count},
+        ip_address=request.client.host if request.client else None,
+    )
+    logger.info("All sessions revoked", extra={"extra_data": {"user_id": user.id, "count": count}})
+    return {"status": "revoked", "count": count}

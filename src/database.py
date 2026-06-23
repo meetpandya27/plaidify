@@ -405,6 +405,7 @@ class User(Base):
     oauth_provider = Column(String, nullable=True)  # e.g., 'google', 'github'
     oauth_sub = Column(String, nullable=True)  # Provider's user ID
     is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     # Envelope encryption: per-user DEK wrapped by master key (base64url)
     encrypted_dek = Column(Text, nullable=True)

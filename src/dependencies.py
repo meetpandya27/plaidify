@@ -233,6 +233,16 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 
+def get_admin_user(user: User = Depends(get_current_user)) -> User:
+    """FastAPI dependency: require the current user to be an administrator."""
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
+        )
+    return user
+
+
 def get_current_user_or_api_key(request: Request, db: Session = Depends(get_db)) -> User:
     """FastAPI dependency: authenticate via JWT Bearer token OR X-API-Key header."""
     # Check for API key first
