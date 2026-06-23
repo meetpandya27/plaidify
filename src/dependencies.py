@@ -61,6 +61,20 @@ limiter = Limiter(
 
 # ── Password Hashing ─────────────────────────────────────────────────────────
 
+# passlib 1.7.4 reads ``bcrypt.__about__.__version__`` which bcrypt 4.x removed,
+# producing a spurious "(trapped) error reading bcrypt version" warning on first
+# hash. Shim the attribute so passlib reads the real version (hashing works
+# either way; this only silences the false-alarm log).
+try:
+    import bcrypt as _bcrypt
+
+    if not hasattr(_bcrypt, "__about__"):
+        import types as _types
+
+        _bcrypt.__about__ = _types.SimpleNamespace(__version__=getattr(_bcrypt, "__version__", "unknown"))
+except Exception:  # pragma: no cover - never block over a logging shim
+    pass
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12, bcrypt__ident="2b")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 

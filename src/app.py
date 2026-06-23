@@ -107,6 +107,50 @@ def _validate_runtime_configuration() -> None:
 
     redis_client.ping()
 
+    if settings.registration_enabled:
+        logger.warning(
+            "Public self-registration is ENABLED in production. Set REGISTRATION_ENABLED=false "
+            "and provision accounts via BOOTSTRAP_USER_* to reduce abuse surface."
+        )
+
+
+def _bootstrap_user() -> None:
+    """Create the configured bootstrap user if it doesn't already exist.
+
+    Lets operators provision the first account in production without enabling
+    open registration or manipulating the database directly. Idempotent: a
+    no-op when the user already exists or the bootstrap settings are unset.
+    """
+    username = settings.bootstrap_user_username
+    email = settings.bootstrap_user_email
+    password = settings.bootstrap_user_password
+    if not (username and email and password):
+        return
+
+    from src.database import User, create_user_dek
+    from src.dependencies import get_password_hash
+
+    db = next(get_db())
+    try:
+        existing = db.query(User).filter((User.username == username) | (User.email == email)).first()
+        if existing:
+            logger.info("Bootstrap user already present; skipping creation")
+            return
+        db.add(
+            User(
+                username=username,
+                email=email,
+                hashed_password=get_password_hash(password),
+                encrypted_dek=create_user_dek(),
+            )
+        )
+        db.commit()
+        logger.info("Bootstrap user created", extra={"extra_data": {"username": username}})
+    except Exception as exc:  # pragma: no cover - bootstrap must not block startup
+        logger.error(f"Bootstrap user creation failed: {exc}")
+    finally:
+        db.close()
+
 
 async def _cleanup_expired_tokens() -> None:
     """Periodically purge expired and revoked refresh tokens."""
@@ -209,6 +253,7 @@ async def lifespan(app: FastAPI):
     _validate_runtime_configuration()
     _initialize_sentry()
     init_db()
+    _bootstrap_user()
 
     logger.info("Browser engine ready (Playwright, lazy-start)")
 
@@ -264,30 +309,17 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 try:
-    from prometheus_client import Counter, Gauge
     from prometheus_fastapi_instrumentator import Instrumentator
 
     Instrumentator().instrument(app).expose(app, endpoint="/metrics")
-    browser_pool_active = Gauge(
-        "plaidify_browser_pool_active_contexts",
-        "Number of active browser contexts in the pool",
-    )
-    extraction_total = Counter(
-        "plaidify_blueprint_extractions_total",
-        "Total blueprint data extractions",
-        ["site", "status"],
-    )
-    mfa_challenges_total = Counter(
-        "plaidify_mfa_challenges_total",
-        "Total MFA challenges encountered",
-        ["mfa_type"],
-    )
+    # Importing the metrics module registers the custom collectors (browser
+    # pool gauge, extraction + MFA counters) so they appear at /metrics. The
+    # engine and browser pool record into them via src.metrics recorders.
+    import src.metrics  # noqa: F401
+
     logger.info("Prometheus metrics enabled at /metrics")
 except ImportError:
     logger.warning("prometheus-fastapi-instrumentator not installed, /metrics endpoint disabled")
-    browser_pool_active = None
-    extraction_total = None
-    mfa_challenges_total = None
 
 
 _cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]

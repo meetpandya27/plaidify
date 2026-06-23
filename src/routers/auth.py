@@ -41,6 +41,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @limiter.limit("3/minute")
 def register_user(request: Request, body: UserRegisterRequest, db: Session = Depends(get_db)):
     """Register a new user account."""
+    if not settings.registration_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Self-registration is disabled. Contact an administrator for access.",
+        )
     existing = db.query(User).filter((User.username == body.username) | (User.email == body.email)).first()
     if existing:
         raise HTTPException(status_code=400, detail="Username or email already registered")

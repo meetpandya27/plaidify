@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, Union
 from urllib.parse import urlparse
 
+from src import metrics
 from src.config import get_settings
 from src.core.blueprint import (
     BlueprintV2,
@@ -682,6 +683,7 @@ async def _execute_blueprint(
                 for item in pooled.downloads
             ]
 
+        metrics.record_extraction(site, "success")
         return {
             "status": "connected",
             "data": extracted_data,
@@ -700,6 +702,7 @@ async def _execute_blueprint(
     except PlaidifyError:
         raise
     except Exception as e:
+        metrics.record_extraction(site, "error")
         logger.error(
             "Unexpected engine error",
             extra={"extra_data": {"site": site, "error": str(e)}},
@@ -753,6 +756,7 @@ async def _handle_mfa(
         "MFA detected",
         extra={"extra_data": {"site": site, "type": mfa_config.type.value}},
     )
+    metrics.record_mfa_challenge(mfa_config.type.value)
 
     mfa_manager = get_mfa_manager()
     metadata: Dict[str, Any] = {"mfa_type": mfa_config.type.value}
