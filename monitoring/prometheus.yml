@@ -1,0 +1,33 @@
+# Prometheus scrape + alerting config for Plaidify.
+#
+# Targets the app's built-in /metrics endpoint (enabled by
+# prometheus-fastapi-instrumentator). Service names assume the
+# docker-compose.monitoring.yml stack; adjust targets for your environment.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: plaidify
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+# Wire Alertmanager here when you run one (left commented so Prometheus starts
+# cleanly without it).
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: plaidify
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["plaidify:8000"]
+        labels:
+          service: plaidify
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

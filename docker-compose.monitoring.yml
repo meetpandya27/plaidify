@@ -1,0 +1,61 @@
+# Observability stack for Plaidify: Prometheus + Grafana, pre-provisioned with a
+# datasource, the overview dashboard, and alert rules.
+#
+# Prometheus scrapes the app's /metrics endpoint. The app runs in its own
+# compose project, so this stack attaches to that project's network. Set
+# PLAIDIFY_NETWORK to the app network name if it isn't the default
+# (`docker network ls` to find it, usually "<project>_default").
+#
+# Usage:
+#   docker compose -f docker-compose.production.yml up -d
+#   PLAIDIFY_NETWORK=plaidify_default docker compose -f docker-compose.monitoring.yml up -d
+#   # Grafana: http://localhost:3000  (admin / ${GRAFANA_ADMIN_PASSWORD:-admin})
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - default
+      - plaidify
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - default
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: plaidify-monitoring
+  # The app's network (from docker-compose.production.yml). Override the name
+  # with PLAIDIFY_NETWORK if your compose project name differs.
+  plaidify:
+    external: true
+    name: ${PLAIDIFY_NETWORK:-plaidify_default}
