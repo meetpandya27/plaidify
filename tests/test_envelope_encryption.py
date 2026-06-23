@@ -226,8 +226,8 @@ class TestRegistrationCreatesDEK:
         finally:
             db.close()
 
-    def test_oauth2_disabled_returns_501(self, client):
-        """OAuth2 endpoint is disabled until real provider validation is implemented."""
+    def test_oauth2_disabled_returns_403(self, client):
+        """OAuth2 social login is disabled by default (OAUTH_ENABLED=false)."""
         response = client.post(
             "/auth/oauth2",
             json={
@@ -235,7 +235,7 @@ class TestRegistrationCreatesDEK:
                 "oauth_token": "fake-google-token-dek-test",
             },
         )
-        assert response.status_code == 501
+        assert response.status_code == 403
 
 
 class TestLazyDEKMigration:

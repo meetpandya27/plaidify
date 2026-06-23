@@ -39,6 +39,7 @@ from src.models import (
     UserProfileResponse,
     UserRegisterRequest,
 )
+from src.oauth_providers import OAuthVerificationError, verify_oauth_token
 
 settings = get_settings()
 logger = get_logger("api.auth")
@@ -212,21 +213,103 @@ def delete_account(
     return {"status": "deleted", "user_id": user_id, "removed": removed}
 
 
+def _unique_username(db: Session, base: str | None) -> str:
+    """Return a username derived from ``base`` that is unique in the users table."""
+    base = (base or "user").strip() or "user"
+    candidate = base
+    while db.query(User).filter(User.username == candidate).first() is not None:
+        candidate = f"{base}-{secrets.token_hex(3)}"
+    return candidate
+
+
 @router.post("/oauth2", response_model=TokenResponse)
 @limiter.limit(settings.rate_limit_auth)
 def oauth2_login(request: Request, body: OAuth2LoginRequest, db: Session = Depends(get_db)):
-    """
-    OAuth2 login endpoint (Google, GitHub, etc.).
+    """Authenticate with an external OAuth2 provider (Google, GitHub).
 
-    Disabled until real provider token verification is implemented.
-    To enable, implement provider-specific token validation (e.g. verify
-    Google ID tokens via Google's tokeninfo endpoint, GitHub tokens via
-    GitHub's /user API, etc.) and replace the guard below.
+    The client completes the provider's own OAuth flow, then posts the resulting
+    access/ID token here. Plaidify verifies the token server-side against the
+    provider, then issues its own JWT pair. A verified provider email is
+    required; first-time logins auto-provision an account when
+    ``OAUTH_AUTO_REGISTER`` is enabled.
     """
-    raise HTTPException(
-        status_code=501,
-        detail="OAuth2 login is not yet implemented. Configure provider-specific token verification before enabling.",
+    if not settings.oauth_enabled:
+        raise HTTPException(status_code=403, detail="OAuth login is disabled.")
+
+    provider = (body.provider or "").lower()
+    allowed = [p.strip().lower() for p in settings.oauth_allowed_providers.split(",") if p.strip()]
+    if provider not in allowed:
+        raise HTTPException(status_code=400, detail=f"Unsupported OAuth provider: {body.provider!r}")
+
+    ip_address = request.client.host if request.client else None
+
+    try:
+        identity = verify_oauth_token(provider, body.oauth_token, settings)
+    except OAuthVerificationError as exc:
+        record_audit_event(
+            db,
+            "auth",
+            "oauth_login_failed",
+            metadata={"provider": provider, "reason": str(exc)},
+            ip_address=ip_address,
+        )
+        raise HTTPException(status_code=401, detail="OAuth token verification failed.") from exc
+
+    if not identity.email or not identity.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="A verified email from the provider is required to sign in.",
+        )
+
+    # 1) Match by provider identity (stable subject).
+    user = db.query(User).filter(User.oauth_provider == provider, User.oauth_sub == identity.subject).first()
+    # 2) Otherwise link to an existing account with the same verified email.
+    if not user:
+        user = db.query(User).filter(User.email == identity.email).first()
+        if user and not user.oauth_sub:
+            user.oauth_provider = provider
+            user.oauth_sub = identity.subject
+            db.commit()
+    # 3) Otherwise auto-provision a new account.
+    if not user:
+        if not settings.oauth_auto_register:
+            raise HTTPException(status_code=403, detail="No account is linked to this identity.")
+        user = User(
+            username=_unique_username(db, identity.username or identity.email.split("@", 1)[0]),
+            email=identity.email,
+            hashed_password=None,
+            oauth_provider=provider,
+            oauth_sub=identity.subject,
+            encrypted_dek=create_user_dek(),
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        record_audit_event(
+            db,
+            "auth",
+            "oauth_register",
+            user_id=user.id,
+            metadata={"provider": provider},
+            ip_address=ip_address,
+        )
+        logger.info("OAuth user registered", extra={"extra_data": {"user_id": user.id, "provider": provider}})
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is disabled.")
+
+    ensure_user_dek(user, db)
+    record_audit_event(
+        db,
+        "auth",
+        "oauth_login",
+        user_id=user.id,
+        metadata={"provider": provider},
+        ip_address=ip_address,
     )
+    logger.info("OAuth login", extra={"extra_data": {"user_id": user.id, "provider": provider}})
+    return issue_token_pair(user.id, db)
 
 
 @router.post("/forgot-password")

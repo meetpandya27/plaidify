@@ -156,9 +156,9 @@ class TestProfile:
 
 
 class TestOAuth2:
-    """Tests for POST /auth/oauth2 (currently disabled — returns 501)."""
+    """Tests for POST /auth/oauth2 (disabled by default — returns 403)."""
 
-    def test_oauth2_login_returns_not_implemented(self, client):
+    def test_oauth2_disabled_by_default_returns_403(self, client):
         response = client.post(
             "/auth/oauth2",
             json={
@@ -166,8 +166,8 @@ class TestOAuth2:
                 "oauth_token": "google-token-abc12345",
             },
         )
-        assert response.status_code == 501
-        assert "not yet implemented" in response.json()["detail"].lower()
+        assert response.status_code == 403
+        assert "disabled" in response.json()["detail"].lower()
 
 
 class TestAccountLockout:

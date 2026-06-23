@@ -47,8 +47,8 @@ class TestTokenResponseIncludesRefresh:
         assert "refresh_token" in data
         assert len(data["refresh_token"]) > 20
 
-    def test_oauth2_disabled_returns_501(self, client):
-        """OAuth2 is disabled until real provider validation is implemented."""
+    def test_oauth2_disabled_returns_403(self, client):
+        """OAuth2 social login is disabled by default (OAUTH_ENABLED=false)."""
         response = client.post(
             "/auth/oauth2",
             json={
@@ -56,7 +56,7 @@ class TestTokenResponseIncludesRefresh:
                 "oauth_token": "fake-google-token-12345678",
             },
         )
-        assert response.status_code == 501
+        assert response.status_code == 403
 
 
 class TestRefreshEndpoint:

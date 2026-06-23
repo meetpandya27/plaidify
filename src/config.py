@@ -85,6 +85,28 @@ class Settings(BaseSettings):
         description="JWT refresh token expiry in minutes.",
     )
 
+    # ── OAuth2 Social Login ───────────────────────────────────
+    oauth_enabled: bool = Field(
+        default=False,
+        description="Enable POST /auth/oauth2 social login (Google, GitHub).",
+    )
+    oauth_allowed_providers: str = Field(
+        default="google,github",
+        description="Comma-separated list of enabled OAuth providers.",
+    )
+    oauth_google_client_id: Optional[str] = Field(
+        default=None,
+        description="Google OAuth client id. When set, provider tokens are audience-checked against it.",
+    )
+    oauth_github_client_id: Optional[str] = Field(
+        default=None,
+        description="GitHub OAuth app client id (informational; GitHub tokens are app-scoped).",
+    )
+    oauth_auto_register: bool = Field(
+        default=True,
+        description="Auto-create a Plaidify account on first successful OAuth login with a verified email.",
+    )
+
     # ── Registration & Bootstrap ──────────────────────────────
     registration_enabled: bool = Field(
         default=True,
