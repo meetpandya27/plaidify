@@ -2,6 +2,7 @@
 System endpoints: root, health, status, blueprint discovery, blueprint generation.
 """
 
+import asyncio
 import secrets
 import uuid
 
@@ -19,6 +20,11 @@ from src.organization_catalog import get_organization_by_id, get_organization_su
 
 settings = get_settings()
 logger = get_logger("api.system")
+
+# Per-dependency timeout for /health/detailed probes so a single stuck backend
+# (hung Playwright launch, unreachable Redis socket, slow KMS) can't block the
+# health endpoint and cascade into load-balancer timeouts.
+_HEALTH_CHECK_TIMEOUT = 5.0
 
 router = APIRouter(tags=["system"])
 
@@ -88,27 +94,49 @@ async def health_detailed(
     except Exception:
         checks["database"] = "error"
 
-    # Browser pool check
+    # Browser pool check (bounded so a stuck Playwright launch can't hang the probe)
     try:
-        await get_browser_pool()
+        await asyncio.wait_for(get_browser_pool(), timeout=_HEALTH_CHECK_TIMEOUT)
         checks["browser_pool"] = "ok"
+    except asyncio.TimeoutError:
+        checks["browser_pool"] = "timeout"
     except Exception:
         checks["browser_pool"] = "unavailable"
 
-    # Redis check
+    # Redis check (ping off the event loop with a timeout so a hung socket
+    # can't block the worker thread)
     try:
         from src.crypto import _get_redis
 
         r = _get_redis()
         if r is not None:
-            r.ping()
+            await asyncio.wait_for(asyncio.to_thread(r.ping), timeout=_HEALTH_CHECK_TIMEOUT)
             checks["redis"] = "ok"
         else:
             checks["redis"] = "not_configured"
+    except asyncio.TimeoutError:
+        checks["redis"] = "timeout"
     except Exception:
         checks["redis"] = "error"
 
-    has_errors = any(v == "error" for v in checks.values())
+    # KMS check (verifies the configured provider can wrap/unwrap credentials)
+    try:
+        from src.kms import get_kms_provider
+
+        kms_result = await asyncio.wait_for(get_kms_provider().health_check(), timeout=_HEALTH_CHECK_TIMEOUT)
+        kms_status = kms_result.get("status", "unknown")
+        checks["kms"] = "ok" if kms_status == "healthy" else kms_status
+    except asyncio.TimeoutError:
+        checks["kms"] = "timeout"
+    except Exception:
+        checks["kms"] = "error"
+
+    # DB, Redis, and KMS are required to serve credential traffic; their failure
+    # (or a probe timeout) marks the service degraded (503). Browser-pool
+    # unavailability is non-fatal because the pool starts lazily on first use.
+    error_states = {"error", "unhealthy", "degraded", "timeout"}
+    critical_checks = ("database", "redis", "kms")
+    has_errors = any(checks.get(name) in error_states for name in critical_checks)
     overall = "degraded" if has_errors else "healthy"
     status_code = 503 if has_errors else 200
 

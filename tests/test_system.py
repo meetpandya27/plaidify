@@ -44,6 +44,19 @@ class TestSystemEndpoints:
         assert data["checks"]["browser_pool"] == "ok"
         browser_pool.assert_awaited_once()
 
+    def test_detailed_health_reports_kms(self, client):
+        """KMS provider round-trip is probed and reported healthy by default."""
+        browser_pool = AsyncMock(return_value=object())
+
+        with (
+            patch("src.routers.system.settings.health_check_token", None),
+            patch("src.routers.system.get_browser_pool", new=browser_pool),
+        ):
+            response = client.get("/health/detailed")
+
+        assert response.status_code == 200
+        assert response.json()["checks"]["kms"] == "ok"
+
     def test_detailed_health_requires_valid_token_when_configured(self, client):
         browser_pool = AsyncMock(return_value=object())
 

@@ -13,7 +13,15 @@ from sqlalchemy.orm import Session
 from src.audit import record_audit_event
 from src.auth_utils import issue_token_pair
 from src.config import get_settings
-from src.database import PasswordResetToken, RefreshToken, User, create_user_dek, ensure_user_dek, get_db
+from src.database import (
+    PasswordResetToken,
+    RefreshToken,
+    User,
+    create_user_dek,
+    delete_user_data,
+    ensure_user_dek,
+    get_db,
+)
 from src.dependencies import (
     get_current_user,
     get_password_hash,
@@ -22,6 +30,7 @@ from src.dependencies import (
 )
 from src.logging_config import get_logger
 from src.models import (
+    DeleteAccountRequest,
     ForgotPasswordRequest,
     OAuth2LoginRequest,
     RefreshTokenRequest,
@@ -155,6 +164,52 @@ def get_profile(user: User = Depends(get_current_user)):
         email=user.email,
         is_active=user.is_active,
     )
+
+
+@router.delete("/me")
+def delete_account(
+    request: Request,
+    body: DeleteAccountRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Permanently delete the authenticated user's account and all associated data.
+
+    Implements the GDPR right to erasure. Password-based accounts must confirm
+    intent by supplying their current password. All credentials, tokens, links,
+    consents, API keys, agents, and refresh/scheduled jobs are erased;
+    tamper-evident audit-log entries are retained (they hold no credential PII)
+    so the immutable hash chain stays intact for compliance.
+    """
+    if user.hashed_password:
+        if not body.password or not verify_password(body.password, user.hashed_password):
+            raise HTTPException(
+                status_code=403,
+                detail="Password confirmation is required to delete your account.",
+            )
+
+    user_id = user.id
+    ip_address = request.client.host if request.client else None
+
+    removed = delete_user_data(db, user_id)
+    db.delete(user)
+    db.commit()
+
+    # Recorded after the deletion commits so the trail reflects a completed
+    # erasure. AuditLog has no FK to users, so referencing the old id is safe.
+    record_audit_event(
+        db,
+        "auth",
+        "account_deleted",
+        user_id=user_id,
+        metadata={"removed": removed},
+        ip_address=ip_address,
+    )
+    logger.info(
+        "Account deleted",
+        extra={"extra_data": {"user_id": user_id, "removed": removed}},
+    )
+    return {"status": "deleted", "user_id": user_id, "removed": removed}
 
 
 @router.post("/oauth2", response_model=TokenResponse)
