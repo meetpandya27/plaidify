@@ -132,6 +132,21 @@ class Settings(BaseSettings):
         description="Path to the directory containing connector blueprints.",
     )
 
+    # ── Demo / Sandbox ────────────────────────────────────────
+    demo_mode: bool = Field(
+        default=False,
+        description=(
+            "Enable the bundled sandbox: surfaces connectors tagged 'sandbox'/'demo' "
+            "on discovery surfaces (/blueprints, picker catalog) so the full "
+            "connect → MFA → extract loop can be exercised end-to-end without a "
+            "real site. Keep disabled in production."
+        ),
+    )
+    demo_portal_url: str = Field(
+        default="http://127.0.0.1:8799",
+        description="Base URL of the bundled demo portal target site used by sandbox connectors.",
+    )
+
     # ── Rate Limiting ─────────────────────────────────────────
     rate_limit_enabled: bool = Field(
         default=True,

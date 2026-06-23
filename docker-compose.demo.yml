@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Plaidify Sandbox — one-command containerized demo.
+#
+#   docker compose -f docker-compose.demo.yml up --build
+#   open http://localhost:8000/link        # hosted Link UI (pick a Sandbox site)
+#   open http://localhost:8000/docs        # API docs
+#
+# Everything runs in a single container: the Plaidify API plus three bundled
+# demo target sites (GreenGrid utility · Acme Bank · CloudMail). DEMO_MODE makes
+# the sandbox connectors discoverable. This is for local evaluation only — never
+# expose it as a production deployment.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  plaidify-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Override the production entrypoint/command with the sandbox runner, which
+    # starts every demo portal + the API in one process tree (so the connectors'
+    # 127.0.0.1 target URLs resolve inside the container).
+    entrypoint: ["python"]
+    command: ["scripts/demo.py", "--serve", "--api-host", "0.0.0.0", "--api-port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LOG_FORMAT: text
+    restart: "no"

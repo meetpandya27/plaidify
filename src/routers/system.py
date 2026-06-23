@@ -190,7 +190,7 @@ async def list_blueprints():
     """
     from pathlib import Path
 
-    from src.core.blueprint import load_blueprint
+    from src.core.blueprint import blueprint_is_discoverable, load_blueprint
 
     connectors_path = Path(settings.connectors_dir).resolve()
     blueprints = []
@@ -200,7 +200,7 @@ async def list_blueprints():
             try:
                 bp = load_blueprint(f)
                 tags = bp.tags or []
-                if "internal" in tags or "fixture" in tags:
+                if not blueprint_is_discoverable(tags, demo_mode=settings.demo_mode):
                     continue
                 blueprints.append(
                     {
@@ -368,7 +368,7 @@ async def get_blueprint_info(site: str):
     import re as _re
     from pathlib import Path
 
-    from src.core.blueprint import load_blueprint
+    from src.core.blueprint import blueprint_is_discoverable, load_blueprint
 
     # Validate site name to prevent path traversal
     if not _re.match(r"^[a-zA-Z0-9_-]+$", site):
@@ -384,7 +384,7 @@ async def get_blueprint_info(site: str):
         raise HTTPException(status_code=404, detail=f"Blueprint not found: {site}")
 
     bp = load_blueprint(blueprint_path)
-    if "internal" in (bp.tags or []) or "fixture" in (bp.tags or []):
+    if not blueprint_is_discoverable(bp.tags, demo_mode=settings.demo_mode):
         raise HTTPException(status_code=404, detail=f"Blueprint not found: {site}")
     return {
         "name": bp.name,

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import get_settings
-from src.core.blueprint import load_blueprint
+from src.core.blueprint import blueprint_is_discoverable, load_blueprint
 from src.logging_config import get_logger
 
 settings = get_settings()
@@ -444,7 +444,9 @@ def _load_connector_templates() -> dict[str, dict[str, Any]]:
             continue
 
         tags = blueprint.tags or []
-        if "internal" in tags or "fixture" in tags:
+        # Sandbox/demo connectors must never back the synthetic directory; they
+        # surface as explicit entries via _demo_catalog_entries() instead.
+        if not blueprint_is_discoverable(tags, demo_mode=False):
             continue
 
         templates[path.stem] = {
@@ -484,17 +486,107 @@ def _serialize(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in entry.items() if key != "search_text"}
 
 
+_DEMO_SITE_META: tuple[tuple[str, dict[str, Any]], ...] = (
+    (
+        "demo_utility",
+        {
+            "category": "utility",
+            "label": "Utilities",
+            "primary": "#0b8f73",
+            "secondary": "#e7f4ec",
+            "accent": "#f2c14e",
+            "auth_style": "username_password",
+        },
+    ),
+    (
+        "demo_bank",
+        {
+            "category": "finance",
+            "label": "Finance",
+            "primary": "#0a2540",
+            "secondary": "#e6efff",
+            "accent": "#635bff",
+            "auth_style": "email_password",
+        },
+    ),
+    (
+        "demo_saas",
+        {
+            "category": "saas",
+            "label": "Productivity",
+            "primary": "#4f46e5",
+            "secondary": "#eef2ff",
+            "accent": "#22d3ee",
+            "auth_style": "username_password",
+        },
+    ),
+)
+
+
+def _demo_catalog_entries() -> list[dict[str, Any]]:
+    """Explicit hosted-Link picker entries for the bundled sandbox connectors.
+
+    Only surfaced when ``settings.demo_mode`` is enabled. These map directly to
+    the demo_* connectors and their target portals under src/demo/.
+    """
+    connectors_path = Path(settings.connectors_dir).resolve()
+    entries: list[dict[str, Any]] = []
+    for site, meta in _DEMO_SITE_META:
+        path = connectors_path / f"{site}.json"
+        if not path.is_file():
+            continue
+        try:
+            bp = load_blueprint(path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to load demo connector %s: %s", site, exc)
+            continue
+        monogram = _monogram(bp.name)
+        entries.append(
+            {
+                "organization_id": f"sandbox-{site.replace('_', '-')}",
+                "name": bp.name,
+                "brand": bp.name,
+                "category": meta["category"],
+                "category_label": meta["label"],
+                "country": "Sandbox",
+                "country_code": "US",
+                "region": "Sandbox",
+                "region_code": "SB",
+                "service_area": "Plaidify Sandbox",
+                "site": site,
+                "template_name": bp.name,
+                "template_domain": bp.domain,
+                "has_mfa": bp.mfa is not None,
+                "supported": True,
+                "read_only": True,
+                "is_sandbox": True,
+                "logo_url": _logo_data_url(monogram, meta["primary"], meta["secondary"]),
+                "logo_monogram": monogram,
+                "primary_color": meta["primary"],
+                "secondary_color": meta["secondary"],
+                "accent_color": meta["accent"],
+                "hint_copy": "Sandbox connector — use the demo credentials shown on the sign-in page.",
+                "auth_style": meta["auth_style"],
+                "credential_schema": bp.credential_schema or _default_credential_schema(meta["auth_style"]),
+                "mfa_schema": bp.mfa_schema or _default_mfa_schema(),
+                "search_text": " ".join([bp.name, "sandbox", "demo", meta["label"], site]).lower(),
+            }
+        )
+    return entries
+
+
 @lru_cache(maxsize=1)
 def get_organization_catalog() -> tuple[dict[str, Any], ...]:
     templates = _load_connector_templates()
+    demo_entries = list(_demo_catalog_entries()) if settings.demo_mode else []
     if not templates:
-        return tuple()
+        return tuple(demo_entries)
 
     countries = (
         ("US", "United States", _US_REGIONS),
         ("CA", "Canada", _CANADA_REGIONS),
     )
-    catalog: list[dict[str, Any]] = []
+    catalog: list[dict[str, Any]] = list(demo_entries)
 
     for country_code, country_name, regions in countries:
         for spec in _CATEGORY_SPECS:
@@ -693,6 +785,7 @@ def search_organizations(
         filtered = sorted(
             catalog,
             key=lambda entry: (
+                not entry.get("is_sandbox", False),
                 entry["country_code"] != "US",
                 entry["category"],
                 entry["region"],

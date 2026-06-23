@@ -1,0 +1,194 @@
+{
+  "schema_version": "2.0",
+  "name": "GreenGrid Energy (Sandbox)",
+  "domain": "127.0.0.1:8799",
+  "tags": ["sandbox", "demo", "utility", "energy"],
+  "auth": {
+    "type": "form",
+    "steps": [
+      {
+        "action": "goto",
+        "url": "http://127.0.0.1:8799/login"
+      },
+      {
+        "action": "fill",
+        "selector": "#username",
+        "value": "{{username}}"
+      },
+      {
+        "action": "fill",
+        "selector": "#password",
+        "value": "{{password}}"
+      },
+      {
+        "action": "click",
+        "selector": "#login-btn",
+        "wait_for_navigation": true
+      },
+      {
+        "action": "wait",
+        "selector": "#dashboard, #otp-input",
+        "timeout": 10000
+      }
+    ]
+  },
+  "mfa": {
+    "detection": {
+      "selector": "#otp-input",
+      "timeout": 3000
+    },
+    "type": "otp_input",
+    "handler": "user_prompt",
+    "input_selector": "#otp-input",
+    "submit_selector": "#otp-submit"
+  },
+  "extract": {
+    "current_bill": {
+      "selector": "#current-bill",
+      "type": "currency",
+      "transform": "strip_dollar_sign"
+    },
+    "usage_kwh": {
+      "selector": "#usage-kwh",
+      "type": "text"
+    },
+    "account_number": {
+      "selector": "#account-number",
+      "type": "text",
+      "sensitive": true
+    },
+    "account_status": {
+      "selector": "#account-status",
+      "type": "text"
+    },
+    "service_address": {
+      "selector": "#service-address",
+      "type": "text"
+    },
+    "plan_name": {
+      "selector": "#plan-name",
+      "type": "text"
+    },
+    "meter_id": {
+      "selector": "#meter-id",
+      "type": "text"
+    },
+    "next_read_date": {
+      "selector": "#next-read-date",
+      "type": "date"
+    },
+    "customer_name": {
+      "selector": "#customer-name",
+      "type": "text"
+    },
+    "customer_email": {
+      "selector": "#customer-email",
+      "type": "email"
+    },
+    "usage_history": {
+      "selector": ".usage-row",
+      "type": "list",
+      "fields": {
+        "month": {
+          "selector": ".usage-month",
+          "type": "text"
+        },
+        "kwh": {
+          "selector": ".usage-kwh-val",
+          "type": "number",
+          "transform": "strip_commas"
+        },
+        "cost": {
+          "selector": ".usage-cost",
+          "type": "currency",
+          "transform": "strip_dollar_sign"
+        },
+        "avg_temp": {
+          "selector": ".usage-temp",
+          "type": "text"
+        }
+      }
+    },
+    "payments": {
+      "selector": ".payment-row",
+      "type": "list",
+      "fields": {
+        "date": {
+          "selector": ".payment-date",
+          "type": "date"
+        },
+        "description": {
+          "selector": ".payment-desc",
+          "type": "text"
+        },
+        "amount": {
+          "selector": ".payment-amount",
+          "type": "currency",
+          "transform": "strip_dollar_sign"
+        },
+        "status": {
+          "selector": ".payment-status",
+          "type": "text"
+        }
+      }
+    }
+  },
+  "credential_schema": {
+    "submit_label": "Connect to GreenGrid",
+    "fields": [
+      {
+        "id": "username",
+        "label": "Username",
+        "type": "text",
+        "autocomplete": "username",
+        "placeholder": "demo_user or demo_mfa",
+        "help_text": "Sandbox logins: demo_user (no MFA) or demo_mfa (MFA required).",
+        "required": true
+      },
+      {
+        "id": "password",
+        "label": "Password",
+        "type": "password",
+        "autocomplete": "current-password",
+        "placeholder": "demo_pass",
+        "secret": true,
+        "reveal": true,
+        "required": true
+      }
+    ]
+  },
+  "mfa_schema": {
+    "otp_input": {
+      "title": "Enter your verification code",
+      "help_text": "This is a sandbox. Use code 123456.",
+      "submit_label": "Verify",
+      "fields": [
+        {
+          "id": "code",
+          "label": "Verification Code",
+          "type": "text",
+          "inputmode": "numeric",
+          "placeholder": "123456",
+          "pattern": "[0-9]{6}",
+          "min_length": 6,
+          "max_length": 6,
+          "required": true
+        }
+      ]
+    }
+  },
+  "cleanup": [
+    {
+      "action": "click",
+      "selector": "#logout-btn"
+    }
+  ],
+  "rate_limit": {
+    "max_requests_per_hour": 600,
+    "min_interval_seconds": 1
+  },
+  "health_check": {
+    "url": "http://127.0.0.1:8799/health",
+    "expected_status": 200
+  }
+}

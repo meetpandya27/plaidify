@@ -74,6 +74,7 @@ export interface Organization {
   readonly auth_style?: OrganizationAuthStyle;
   readonly credential_schema?: CredentialSchema;
   readonly mfa_schema?: MfaSchema;
+  readonly is_sandbox?: boolean;
 }
 
 export interface OrganizationSearchResponse {

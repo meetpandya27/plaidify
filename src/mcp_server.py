@@ -45,7 +45,11 @@ mcp = FastMCP(
         "2. connect_site(site, username, password) — direct extraction\n"
         "   OR connect_utility_account(site) → user opens link → check_connection_status()\n"
         "3. For scoped access: request_consent() before fetch_data()\n"
-        "4. If MFA required: submit_mfa(session_id, code)"
+        "4. If MFA required: submit_mfa(session_id, code)\n\n"
+        "Sandbox: when the server runs with DEMO_MODE=true, list_available_sites() "
+        "returns connectable demo sites — demo_utility (OTP, code 123456), "
+        "demo_bank (security question, answer 'plaidify'), and demo_saas (no MFA). "
+        "Demo credentials are shown on each site's sign-in page."
     ),
 )
 

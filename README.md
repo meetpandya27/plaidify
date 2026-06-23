@@ -40,6 +40,23 @@ Operationally, Plaidify is a FastAPI service with modular routers, Redis-backed 
 
 ## Quick Start
 
+### Try the full flow in one command
+
+Run a complete, self-contained journey — register, connect, MFA, and structured
+extraction — against a bundled demo portal. No external site, API keys, or setup
+required:
+
+```bash
+python scripts/demo.py
+```
+
+This spins up a demo target site plus the Plaidify API, then drives the whole
+stack (auth → connector execution → headless browser → MFA → typed data). Use
+`--no-mfa` for the no-MFA path, or `--base-url https://your-plaidify` to smoke-test
+an existing deployment (set `DEMO_MODE=true` on that server). The bundled
+`demo_utility` connector is only discoverable when `DEMO_MODE=true`, so it never
+leaks into production discovery.
+
 ### Docker Compose
 
 ```bash

@@ -1,0 +1,88 @@
+{
+  "schema_version": "2.0",
+  "name": "Acme Bank (Sandbox)",
+  "domain": "127.0.0.1:8798",
+  "tags": ["sandbox", "demo", "finance", "banking"],
+  "auth": {
+    "type": "form",
+    "steps": [
+      { "action": "goto", "url": "http://127.0.0.1:8798/login" },
+      { "action": "fill", "selector": "#email", "value": "{{username}}" },
+      { "action": "fill", "selector": "#passcode", "value": "{{password}}" },
+      { "action": "click", "selector": "#signin", "wait_for_navigation": true },
+      { "action": "wait", "selector": "#accounts-page, #security-answer", "timeout": 10000 }
+    ]
+  },
+  "mfa": {
+    "detection": { "selector": "#security-answer", "timeout": 3000 },
+    "type": "security_question",
+    "handler": "user_prompt",
+    "question_selector": "#mfa-question",
+    "input_selector": "#security-answer",
+    "submit_selector": "#verify-btn"
+  },
+  "extract": {
+    "account_holder": { "selector": "#account-holder", "type": "text" },
+    "holder_email": { "selector": "#holder-email", "type": "email" },
+    "member_since": { "selector": "#member-since", "type": "text" },
+    "checking_balance": { "selector": "#checking-balance", "type": "text" },
+    "checking_number": { "selector": "#checking-number", "type": "text", "sensitive": true },
+    "savings_balance": { "selector": "#savings-balance", "type": "text" },
+    "savings_number": { "selector": "#savings-number", "type": "text", "sensitive": true },
+    "transactions": {
+      "selector": ".txn-row",
+      "type": "list",
+      "fields": {
+        "date": { "selector": ".txn-date", "type": "date" },
+        "merchant": { "selector": ".txn-merchant", "type": "text" },
+        "category": { "selector": ".txn-category", "type": "text" },
+        "amount": { "selector": ".txn-amount", "type": "text" }
+      }
+    }
+  },
+  "credential_schema": {
+    "submit_label": "Sign in to Acme Bank",
+    "fields": [
+      {
+        "id": "username",
+        "label": "Email address",
+        "type": "email",
+        "autocomplete": "username",
+        "placeholder": "demo@acme.test",
+        "help_text": "Sandbox login: demo@acme.test",
+        "required": true
+      },
+      {
+        "id": "password",
+        "label": "Password",
+        "type": "password",
+        "autocomplete": "current-password",
+        "placeholder": "demo_pass",
+        "secret": true,
+        "reveal": true,
+        "required": true
+      }
+    ]
+  },
+  "mfa_schema": {
+    "security_question": {
+      "title": "Answer your security question",
+      "help_text": "Sandbox security answer: plaidify",
+      "submit_label": "Verify",
+      "fields": [
+        {
+          "id": "code",
+          "label": "Security answer",
+          "type": "text",
+          "placeholder": "plaidify",
+          "required": true
+        }
+      ]
+    }
+  },
+  "cleanup": [
+    { "action": "click", "selector": "#signout" }
+  ],
+  "rate_limit": { "max_requests_per_hour": 600, "min_interval_seconds": 1 },
+  "health_check": { "url": "http://127.0.0.1:8798/health", "expected_status": 200 }
+}
