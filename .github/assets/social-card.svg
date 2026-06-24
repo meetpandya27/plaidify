@@ -1,0 +1,59 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Plaidify - the open-source gateway to authenticated web data">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A0E1F"/>
+      <stop offset="0.5" stop-color="#121A3A"/>
+      <stop offset="1" stop-color="#0A0E1F"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="560" y1="78" x2="720" y2="222" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6E9BFF"/>
+      <stop offset="1" stop-color="#3CE0CD"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.28" r="0.55">
+      <stop offset="0" stop-color="#3E5BC0" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#3E5BC0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- symmetric connection hub -->
+  <g stroke="url(#accent)" stroke-width="3" opacity="0.95">
+    <line x1="640" y1="150" x2="712" y2="150"/>
+    <line x1="640" y1="150" x2="676" y2="212"/>
+    <line x1="640" y1="150" x2="604" y2="212"/>
+    <line x1="640" y1="150" x2="568" y2="150"/>
+    <line x1="640" y1="150" x2="604" y2="88"/>
+    <line x1="640" y1="150" x2="676" y2="88"/>
+  </g>
+  <g fill="#1B2547" stroke="url(#accent)" stroke-width="3">
+    <circle cx="712" cy="150" r="13"/>
+    <circle cx="676" cy="212" r="13"/>
+    <circle cx="604" cy="212" r="13"/>
+    <circle cx="568" cy="150" r="13"/>
+    <circle cx="604" cy="88" r="13"/>
+    <circle cx="676" cy="88" r="13"/>
+  </g>
+  <circle cx="640" cy="150" r="22" fill="#1B2547" stroke="url(#accent)" stroke-width="4"/>
+  <circle cx="640" cy="150" r="10" fill="#3CE0CD"/>
+
+  <!-- wordmark -->
+  <text x="640" y="350" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="124" font-weight="800" fill="#FFFFFF" letter-spacing="-3">Plaidify<tspan fill="#6E9BFF">.</tspan></text>
+
+  <!-- tagline -->
+  <text x="640" y="412" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="32" font-weight="500" fill="#A9B6E0">The open-source gateway to authenticated web data.</text>
+
+  <!-- surface pills (centered) -->
+  <g font-family="SFMono-Regular, Consolas, Menlo, monospace" font-size="19" font-weight="600">
+    <rect x="400" y="452" width="132" height="42" rx="21" fill="#1B2547" stroke="#33407A"/>
+    <text x="466" y="479" fill="#B7C4EC" text-anchor="middle">REST API</text>
+    <rect x="544" y="452" width="166" height="42" rx="21" fill="#1B2547" stroke="#33407A"/>
+    <text x="627" y="479" fill="#B7C4EC" text-anchor="middle">Hosted Link</text>
+    <rect x="722" y="452" width="158" height="42" rx="21" fill="#1B2547" stroke="#33407A"/>
+    <text x="801" y="479" fill="#B7C4EC" text-anchor="middle">MCP Agents</text>
+  </g>
+
+  <!-- footer -->
+  <text x="640" y="566" text-anchor="middle" font-family="SFMono-Regular, Consolas, Menlo, monospace" font-size="20" fill="#7C89B8">Open source · MIT · github.com/meetpandya27/plaidify</text>
+</svg>
