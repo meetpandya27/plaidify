@@ -6,6 +6,7 @@ the client, which encrypts credentials before transmission. The server holds
 the private key — either in Redis (multi-worker) or in-memory (single-worker dev).
 """
 
+import hashlib
 import threading
 import time
 from typing import Optional, Tuple
@@ -16,6 +17,18 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from src.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def token_fingerprint(value: Optional[str]) -> str:
+    """Short, non-reversible label for a bearer value (token, secret) in logs.
+
+    Returns ``sha256:<first 12 hex chars>`` — enough to correlate log lines
+    about the same token, useless for replaying it. Never log the value itself.
+    """
+    if not value:
+        return "none"
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
 
 # TTL for ephemeral keys (seconds). Keys older than this are purged.
 _KEY_TTL_SECONDS = 600  # 10 minutes
@@ -119,7 +132,10 @@ def generate_keypair(link_token: str) -> str:
                 _KEY_TTL_SECONDS,
                 _serialize_private_key(private_key),
             )
-            logger.debug("Ephemeral keypair stored in Redis", extra={"extra_data": {"link_token": link_token}})
+            logger.debug(
+                "Ephemeral keypair stored in Redis",
+                extra={"extra_data": {"link_token": token_fingerprint(link_token)}},
+            )
             return public_pem
         except Exception as e:
             logger.warning(f"Redis write failed, falling back to in-memory: {e}")
@@ -128,7 +144,10 @@ def generate_keypair(link_token: str) -> str:
     with _lock:
         _key_store[link_token] = (private_key, time.monotonic())
 
-    logger.debug("Ephemeral keypair generated (in-memory)", extra={"extra_data": {"link_token": link_token}})
+    logger.debug(
+        "Ephemeral keypair generated (in-memory)",
+        extra={"extra_data": {"link_token": token_fingerprint(link_token)}},
+    )
     return public_pem
 
 
@@ -210,7 +229,7 @@ def destroy_session_key(link_token: str) -> None:
 
     with _lock:
         _key_store.pop(link_token, None)
-    logger.debug("Ephemeral key destroyed", extra={"extra_data": {"link_token": link_token}})
+    logger.debug("Ephemeral key destroyed", extra={"extra_data": {"link_token": token_fingerprint(link_token)}})
 
 
 def cleanup_expired_keys() -> int:

@@ -1,0 +1,18 @@
+# CodeQL configuration for .github/workflows/ci.yml.
+#
+# Test code is left out of security analysis: its assertions (for example
+# `assert "https://partner-a.example.com" in csp`) read as URL "sanitization"
+# to the py/incomplete-url-substring-sanitization query, and none of it ships.
+name: plaidify-codeql
+
+queries:
+  - uses: security-extended
+
+paths-ignore:
+  - tests
+  - sdk/tests
+  - sdk-js/tests
+  - frontend-next/src/**/*.test.ts
+  - frontend-next/src/**/*.test.tsx
+  - "**/node_modules"
+  - frontend-next/dist

@@ -8,8 +8,77 @@ Supports two formats:
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlencode
+
+# Query parameters whose values must never reach a log line: site credentials,
+# MFA codes and sessions, link/access/consent tokens, and OAuth callback values.
+_SENSITIVE_QUERY_KEYS = frozenset(
+    {
+        "username",
+        "password",
+        "encrypted_username",
+        "encrypted_password",
+        "code",
+        "session_id",
+        "token",
+        "link_token",
+        "public_token",
+        "access_token",
+        "refresh_token",
+        "consent_token",
+        "state",
+    }
+)
+
+
+# Routes whose path segment is itself a bearer credential: access and link
+# tokens, consent tokens, MFA sessions, and job ids (anonymous jobs are read by
+# id alone). Static siblings (/link/sessions/bootstrap, /consent/request) stay.
+_SECRET_PATH_SEGMENTS = (
+    re.compile(r"^(/(?:access_jobs|links|tokens|link/events|encryption/public_key|mfa/status|refresh/schedule)/)[^/]+"),
+    re.compile(r"^(/link/sessions/)(?!(?:bootstrap|public)$)[^/]+"),
+    re.compile(r"^(/consent/)(?!request$)[^/]+$"),
+)
+
+
+def redact_path(path: str) -> str:
+    """Blank credentials carried in the path itself (e.g. ``DELETE /tokens/{token}``)."""
+    for pattern in _SECRET_PATH_SEGMENTS:
+        path, count = pattern.subn(r"\1REDACTED", path, count=1)
+        if count:
+            break
+    return path
+
+
+def redact_query(path: str) -> str:
+    """Blank the values of sensitive query parameters in a request path."""
+    base, sep, query = path.partition("?")
+    if not sep:
+        return path
+    pairs = [
+        (key, "REDACTED" if key.lower() in _SENSITIVE_QUERY_KEYS else value)
+        for key, value in parse_qsl(query, keep_blank_values=True)
+    ]
+    return f"{base}?{urlencode(pairs)}"
+
+
+class AccessLogRedactFilter(logging.Filter):
+    """Redacts secrets from uvicorn access lines.
+
+    uvicorn logs ``(client, method, path_with_query, http_version, status)``,
+    and gunicorn's UvicornWorker re-enables that logger at INFO in every
+    worker, so filtering the record is the only reliable place to do it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            base, sep, query = args[2].partition("?")
+            record.args = args[:2] + (redact_query(redact_path(base) + sep + query),) + args[3:]
+        return True
 
 
 class JSONFormatter(logging.Formatter):
@@ -91,7 +160,10 @@ def setup_logging(level: str = "INFO", log_format: str = "json") -> None:
     root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
     # Silence noisy third-party loggers
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.setLevel(logging.WARNING)
+    if not any(isinstance(f, AccessLogRedactFilter) for f in access_logger.filters):
+        access_logger.addFilter(AccessLogRedactFilter())
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 

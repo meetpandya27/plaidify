@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.36.177.2456",
-      "templateHash": "1196368548119266529"
+      "templateHash": "15426634977059070909"
     }
   },
   "parameters": {
@@ -91,7 +91,17 @@
     },
     "deployApplication": {
       "type": "bool",
-      "defaultValue": true
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the API and access-executor Container Apps (the workflow sets this after migrations succeed)."
+      }
+    },
+    "deployMigrationJob": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the migration Container Apps Job with containerImage (the workflow runs it before deploying the apps)."
+      }
     },
     "containerImage": {
       "type": "string",
@@ -133,6 +143,13 @@
       "type": "int",
       "defaultValue": 2
     },
+    "accessExecutorProbes": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Startup and liveness probes on the executor's own /health (ACCESS_WORKER_METRICS_PORT), so a hung worker is restarted. Needs an image whose worker serves that endpoint (src/access_job_worker.py starting src.metrics.start_worker_metrics_server)."
+      }
+    },
     "migrationJobCpu": {
       "type": "string",
       "defaultValue": "0.5"
@@ -145,11 +162,39 @@
       "type": "int",
       "defaultValue": 1800
     },
+    "gunicornWorkers": {
+      "type": "int",
+      "defaultValue": 2,
+      "metadata": {
+        "description": "Gunicorn workers per API replica (GUNICORN_WORKERS)."
+      }
+    },
+    "dbPoolSize": {
+      "type": "int",
+      "defaultValue": 2,
+      "metadata": {
+        "description": "SQLAlchemy pool size per process (DB_POOL_SIZE)."
+      }
+    },
+    "dbMaxOverflow": {
+      "type": "int",
+      "defaultValue": 2,
+      "metadata": {
+        "description": "SQLAlchemy overflow connections per process (DB_MAX_OVERFLOW)."
+      }
+    },
     "postgresAdminLogin": {
       "type": "securestring"
     },
     "postgresAdminPassword": {
       "type": "securestring"
+    },
+    "appDatabaseRole": {
+      "type": "string",
+      "defaultValue": "plaidify_app",
+      "metadata": {
+        "description": "Login role the API and the executor use: DML only on the application tables, created and granted by the migration job. The server admin is used by migrations alone."
+      }
     },
     "postgresSkuName": {
       "type": "string",
@@ -208,12 +253,15 @@
     },
     "redisSkuName": {
       "type": "string",
-      "defaultValue": "Basic",
+      "defaultValue": "Standard",
       "allowedValues": [
         "Basic",
         "Standard",
         "Premium"
-      ]
+      ],
+      "metadata": {
+        "description": "Standard or Premium: queued access jobs, link sessions and MFA state live in Redis, and Basic is a single node without replication or an SLA."
+      }
     },
     "redisSkuFamily": {
       "type": "string",
@@ -221,7 +269,7 @@
     },
     "redisSkuCapacity": {
       "type": "int",
-      "defaultValue": 0
+      "defaultValue": 1
     },
     "enableLlmApiKeySecret": {
       "type": "bool",
@@ -230,6 +278,146 @@
     "enableHealthCheckTokenSecret": {
       "type": "bool",
       "defaultValue": false
+    },
+    "enableAuditHmacKeyPreviousSecret": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Pass the audit-hmac-key-previous Key Vault secret as AUDIT_HMAC_KEY_PREVIOUS while the audit key is being rotated (docs/RUNBOOK.md). The workflow sets it while the GitHub variable AZURE_AUDIT_HMAC_KEY_ROTATING is true."
+      }
+    },
+    "smtpHost": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "SMTP server for password-reset mail. Empty: no reset mail is sent."
+      }
+    },
+    "smtpPort": {
+      "type": "int",
+      "defaultValue": 587,
+      "metadata": {
+        "description": "SMTP port (587 for STARTTLS)."
+      }
+    },
+    "smtpUsername": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "SMTP login user. Empty: no login."
+      }
+    },
+    "smtpFrom": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "From address of password-reset mail. Required with smtpHost."
+      }
+    },
+    "passwordResetUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The app page reset emails link to, e.g. https://app.example.com/reset?token={token}. Empty: the email carries the one-time code."
+      }
+    },
+    "enableSmtpPasswordSecret": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Pass the smtp-password Key Vault secret as SMTP_PASSWORD."
+      }
+    },
+    "bootstrapUserUsername": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Administrator the API creates at startup when no account holds this username or email (with bootstrapUserEmail and the bootstrap-user-password secret). Production has self-registration off, so this is how the first account is made."
+      }
+    },
+    "bootstrapUserEmail": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Email of the bootstrap administrator."
+      }
+    },
+    "enableBootstrapUserPasswordSecret": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Pass the bootstrap-user-password Key Vault secret as BOOTSTRAP_USER_PASSWORD. Needs bootstrapUserUsername and bootstrapUserEmail."
+      }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.40.0.0/16",
+      "metadata": {
+        "description": "Address space of the virtual network."
+      }
+    },
+    "containerAppsSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.40.0.0/23",
+      "metadata": {
+        "description": "Subnet of the Container Apps environment (workload profiles; /27 minimum, /23 leaves room to scale)."
+      }
+    },
+    "postgresSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.40.2.0/28",
+      "metadata": {
+        "description": "Subnet delegated to PostgreSQL Flexible Server."
+      }
+    },
+    "privateEndpointSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.40.3.0/27",
+      "metadata": {
+        "description": "Subnet for private endpoints (Redis)."
+      }
+    },
+    "containerAppsZoneRedundant": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Spread the Container Apps environment across availability zones (run minReplicas >= 2 to benefit)."
+      }
+    },
+    "forwardedAllowIps": {
+      "type": "string",
+      "defaultValue": "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10",
+      "metadata": {
+        "description": "Peers the API trusts to set X-Forwarded-For / X-Forwarded-Proto (gunicorn FORWARDED_ALLOW_IPS). The API is reachable only through the environment ingress, whose proxies use private addresses; without this the HTTPS redirect loops and every client shares the ingress address for rate limiting."
+      }
+    },
+    "browserChromiumSandbox": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Run Chromium with its sandbox (BROWSER_CHROMIUM_SANDBOX). If the executor logs \"No usable sandbox\" on this platform, set false; see docs/AZURE_DEPLOYMENT.md for the trade-off."
+      }
+    },
+    "deployPrincipalObjectId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Object ID of the service principal the deployment workflow signs in as. It gets Key Vault Secrets Officer on this vault to write the runtime secrets. Empty skips the assignment."
+      }
+    },
+    "keyVaultGeneration": {
+      "type": "string",
+      "defaultValue": "",
+      "maxLength": 2,
+      "metadata": {
+        "description": "Suffix of the Key Vault name. A deleted vault keeps its name for the soft-delete retention period: recover it (az keyvault recover) or change this to create a new one."
+      }
+    },
+    "keyVaultSoftDeleteRetentionInDays": {
+      "type": "int",
+      "defaultValue": 90,
+      "minValue": 7,
+      "maxValue": 90
     }
   },
   "variables": {
@@ -238,22 +426,30 @@
     "uniqueSuffix": "[uniqueString(resourceGroup().id, variables('shortSeed'))]",
     "resourceStem": "[take(format('{0}{1}', variables('shortSeed'), variables('uniqueSuffix')), 18)]",
     "logAnalyticsName": "[format('{0}log', variables('resourceStem'))]",
+    "vnetName": "[format('{0}vnet', variables('resourceStem'))]",
     "containerEnvironmentName": "[format('{0}env', variables('resourceStem'))]",
     "containerAppName": "[format('{0}app', variables('resourceStem'))]",
     "accessExecutorAppName": "[format('{0}exec', variables('resourceStem'))]",
     "migrationJobName": "[format('{0}migrate', variables('resourceStem'))]",
     "identityName": "[format('{0}id', variables('resourceStem'))]",
-    "keyVaultName": "[take(format('{0}kv', variables('resourceStem')), 24)]",
+    "keyVaultName": "[take(format('{0}kv{1}', variables('resourceStem'), parameters('keyVaultGeneration')), 24)]",
     "registryName": "[take(format('{0}acr', variables('resourceStem')), 50)]",
     "postgresServerName": "[take(format('{0}pg', variables('resourceStem')), 63)]",
     "redisName": "[take(format('{0}redis', variables('resourceStem')), 63)]",
+    "containerAppsSubnetName": "container-apps",
+    "postgresSubnetName": "postgres",
+    "privateEndpointSubnetName": "private-endpoints",
+    "workerMetricsPort": 9101,
+    "acrPullRoleId": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
+    "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6",
+    "keyVaultSecretsOfficerRoleId": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7",
     "tags": {
       "app": "Plaidify",
       "environment": "[parameters('environmentName')]",
       "managedBy": "bicep",
       "repoVisibility": "public"
     },
-    "baseEnvironmentVariables": [
+    "commonEnvironmentVariables": [
       {
         "name": "APP_NAME",
         "value": "[parameters('appName')]"
@@ -275,26 +471,6 @@
         "value": "[parameters('logFormat')]"
       },
       {
-        "name": "CORS_ORIGINS",
-        "value": "[parameters('corsOrigins')]"
-      },
-      {
-        "name": "ENFORCE_HTTPS",
-        "value": "[string(parameters('enforceHttps'))]"
-      },
-      {
-        "name": "LLM_PROVIDER",
-        "value": "[parameters('llmProvider')]"
-      },
-      {
-        "name": "DATABASE_URL",
-        "secretRef": "database-url"
-      },
-      {
-        "name": "REDIS_URL",
-        "secretRef": "redis-url"
-      },
-      {
         "name": "ENCRYPTION_KEY",
         "secretRef": "encryption-key"
       },
@@ -303,9 +479,12 @@
         "secretRef": "jwt-secret-key"
       }
     ],
-    "optionalEnvironmentVariables": "[concat(if(not(empty(parameters('llmModel'))), createArray(createObject('name', 'LLM_MODEL', 'value', parameters('llmModel'))), createArray()), if(parameters('enableLlmApiKeySecret'), createArray(createObject('name', 'LLM_API_KEY', 'secretRef', 'llm-api-key')), createArray()), if(parameters('enableHealthCheckTokenSecret'), createArray(createObject('name', 'HEALTH_CHECK_TOKEN', 'secretRef', 'health-check-token')), createArray()))]",
-    "webEnvironmentVariables": "[concat(variables('baseEnvironmentVariables'), variables('optionalEnvironmentVariables'), createArray(createObject('name', 'ACCESS_JOB_EXECUTION_MODE', 'value', 'redis-worker')))]",
-    "executorEnvironmentVariables": "[concat(variables('baseEnvironmentVariables'), variables('optionalEnvironmentVariables'), createArray(createObject('name', 'ACCESS_JOB_EXECUTION_MODE', 'value', 'redis-worker'), createObject('name', 'ACCESS_JOB_WORKER_CONCURRENCY', 'value', string(parameters('accessJobWorkerConcurrency')))))]"
+    "runtimeEnvironmentVariables": "[concat(variables('commonEnvironmentVariables'), createArray(createObject('name', 'CORS_ORIGINS', 'value', parameters('corsOrigins')), createObject('name', 'ENFORCE_HTTPS', 'value', string(parameters('enforceHttps'))), createObject('name', 'LLM_PROVIDER', 'value', parameters('llmProvider')), createObject('name', 'DATABASE_URL', 'secretRef', 'database-url'), createObject('name', 'REDIS_URL', 'secretRef', 'redis-url'), createObject('name', 'DB_POOL_SIZE', 'value', string(parameters('dbPoolSize'))), createObject('name', 'DB_MAX_OVERFLOW', 'value', string(parameters('dbMaxOverflow'))), createObject('name', 'ACCESS_JOB_EXECUTION_MODE', 'value', 'redis-worker'), createObject('name', 'BROWSER_CHROMIUM_SANDBOX', 'value', string(parameters('browserChromiumSandbox'))), createObject('name', 'AUDIT_HMAC_KEY', 'secretRef', 'audit-hmac-key')))]",
+    "optionalEnvironmentVariables": "[concat(if(not(empty(parameters('llmModel'))), createArray(createObject('name', 'LLM_MODEL', 'value', parameters('llmModel'))), createArray()), if(parameters('enableLlmApiKeySecret'), createArray(createObject('name', 'LLM_API_KEY', 'secretRef', 'llm-api-key')), createArray()), if(parameters('enableHealthCheckTokenSecret'), createArray(createObject('name', 'HEALTH_CHECK_TOKEN', 'secretRef', 'health-check-token')), createArray()), if(parameters('enableAuditHmacKeyPreviousSecret'), createArray(createObject('name', 'AUDIT_HMAC_KEY_PREVIOUS', 'secretRef', 'audit-hmac-key-previous')), createArray()))]",
+    "webOnlyEnvironmentVariables": "[concat(createArray(createObject('name', 'LINK_LAUNCH_SECRET', 'secretRef', 'link-launch-secret'), createObject('name', 'METRICS_TOKEN', 'secretRef', 'metrics-token')), if(not(empty(parameters('smtpHost'))), createArray(createObject('name', 'SMTP_HOST', 'value', parameters('smtpHost')), createObject('name', 'SMTP_PORT', 'value', string(parameters('smtpPort'))), createObject('name', 'SMTP_FROM', 'value', parameters('smtpFrom'))), createArray()), if(not(empty(parameters('smtpUsername'))), createArray(createObject('name', 'SMTP_USERNAME', 'value', parameters('smtpUsername'))), createArray()), if(parameters('enableSmtpPasswordSecret'), createArray(createObject('name', 'SMTP_PASSWORD', 'secretRef', 'smtp-password')), createArray()), if(not(empty(parameters('passwordResetUrl'))), createArray(createObject('name', 'PASSWORD_RESET_URL', 'value', parameters('passwordResetUrl'))), createArray()), if(parameters('enableBootstrapUserPasswordSecret'), createArray(createObject('name', 'BOOTSTRAP_USER_USERNAME', 'value', parameters('bootstrapUserUsername')), createObject('name', 'BOOTSTRAP_USER_EMAIL', 'value', parameters('bootstrapUserEmail')), createObject('name', 'BOOTSTRAP_USER_PASSWORD', 'secretRef', 'bootstrap-user-password')), createArray()))]",
+    "webEnvironmentVariables": "[concat(variables('runtimeEnvironmentVariables'), variables('optionalEnvironmentVariables'), variables('webOnlyEnvironmentVariables'), createArray(createObject('name', 'GUNICORN_WORKERS', 'value', string(parameters('gunicornWorkers'))), createObject('name', 'FORWARDED_ALLOW_IPS', 'value', parameters('forwardedAllowIps'))))]",
+    "executorEnvironmentVariables": "[concat(variables('runtimeEnvironmentVariables'), variables('optionalEnvironmentVariables'), createArray(createObject('name', 'ACCESS_JOB_WORKER_CONCURRENCY', 'value', string(parameters('accessJobWorkerConcurrency'))), createObject('name', 'ACCESS_WORKER_METRICS_PORT', 'value', string(variables('workerMetricsPort')))))]",
+    "migrationEnvironmentVariables": "[concat(variables('commonEnvironmentVariables'), createArray(createObject('name', 'DATABASE_URL', 'secretRef', 'database-admin-url'), createObject('name', 'APP_DB_ROLE', 'value', parameters('appDatabaseRole')), createObject('name', 'APP_DB_PASSWORD', 'secretRef', 'database-app-password')))]"
   },
   "resources": [
     {
@@ -331,6 +510,105 @@
       "tags": "[variables('tags')]"
     },
     {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[parameters('vnetAddressPrefix')]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('containerAppsSubnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('containerAppsSubnetPrefix')]",
+              "delegations": [
+                {
+                  "name": "Microsoft.App.environments",
+                  "properties": {
+                    "serviceName": "Microsoft.App/environments"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "[variables('postgresSubnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('postgresSubnetPrefix')]",
+              "delegations": [
+                {
+                  "name": "Microsoft.DBforPostgreSQL.flexibleServers",
+                  "properties": {
+                    "serviceName": "Microsoft.DBforPostgreSQL/flexibleServers"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "[variables('privateEndpointSubnetName')]",
+            "properties": {
+              "addressPrefix": "[parameters('privateEndpointSubnetPrefix')]",
+              "privateEndpointNetworkPolicies": "Disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}.private.postgres.database.azure.com', variables('postgresServerName'))]",
+      "location": "global",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', format('{0}.private.postgres.database.azure.com', variables('postgresServerName')), format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', variables('postgresServerName')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "privatelink.redis.cache.windows.net",
+      "location": "global",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', 'privatelink.redis.cache.windows.net', format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.redis.cache.windows.net')]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
       "type": "Microsoft.KeyVault/vaults",
       "apiVersion": "2023-07-01",
       "name": "[variables('keyVaultName')]",
@@ -344,7 +622,7 @@
         "enabledForTemplateDeployment": false,
         "enablePurgeProtection": true,
         "publicNetworkAccess": "Enabled",
-        "softDeleteRetentionInDays": 90,
+        "softDeleteRetentionInDays": "[parameters('keyVaultSoftDeleteRetentionInDays')]",
         "sku": {
           "family": "A",
           "name": "standard"
@@ -386,14 +664,21 @@
         "createMode": "Create",
         "highAvailability": "[if(equals(parameters('postgresHighAvailabilityMode'), 'ZoneRedundant'), createObject('mode', 'ZoneRedundant', 'standbyAvailabilityZone', parameters('postgresStandbyAvailabilityZone')), createObject('mode', parameters('postgresHighAvailabilityMode')))]",
         "network": {
-          "publicNetworkAccess": "Enabled"
+          "delegatedSubnetResourceId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), variables('postgresSubnetName'))]",
+          "privateDnsZoneArmResourceId": "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', variables('postgresServerName')))]",
+          "publicNetworkAccess": "Disabled"
         },
         "storage": {
           "autoGrow": "Enabled",
           "storageSizeGB": "[parameters('postgresStorageSizeGB')]"
         },
         "version": "[parameters('postgresVersion')]"
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', variables('postgresServerName')))]",
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', format('{0}.private.postgres.database.azure.com', variables('postgresServerName')), format('{0}-link', variables('vnetName')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
     },
     {
       "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
@@ -402,18 +687,6 @@
       "properties": {
         "charset": "UTF8",
         "collation": "en_US.utf8"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresServerName'))]"
-      ]
-    },
-    {
-      "type": "Microsoft.DBforPostgreSQL/flexibleServers/firewallRules",
-      "apiVersion": "2024-08-01",
-      "name": "[format('{0}/{1}', variables('postgresServerName'), 'AllowAzureServices')]",
-      "properties": {
-        "startIpAddress": "0.0.0.0",
-        "endIpAddress": "0.0.0.0"
       },
       "dependsOn": [
         "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', variables('postgresServerName'))]"
@@ -433,18 +706,65 @@
         },
         "enableNonSslPort": false,
         "minimumTlsVersion": "1.2",
-        "publicNetworkAccess": "Enabled"
+        "publicNetworkAccess": "Disabled"
       }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-pe', variables('redisName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "subnet": {
+          "id": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), variables('privateEndpointSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "redis",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Cache/redis', variables('redisName'))]",
+              "groupIds": [
+                "redisCache"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cache/redis', variables('redisName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}-pe', variables('redisName')), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "redis",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.redis.cache.windows.net')]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.redis.cache.windows.net')]",
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', 'privatelink.redis.cache.windows.net', format('{0}-link', variables('vnetName')))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe', variables('redisName')))]"
+      ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[format('Microsoft.ContainerRegistry/registries/{0}', variables('registryName'))]",
-      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), variables('identityName'), '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), variables('identityName'), variables('acrPullRoleId'))]",
       "properties": {
         "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').principalId]",
         "principalType": "ServicePrincipal",
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]"
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]"
       },
       "dependsOn": [
         "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
@@ -455,11 +775,11 @@
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[format('Microsoft.KeyVault/vaults/{0}', variables('keyVaultName'))]",
-      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('identityName'), '4633458b-17de-408a-b874-0445c86b69e6')]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('identityName'), variables('keyVaultSecretsUserRoleId'))]",
       "properties": {
         "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').principalId]",
         "principalType": "ServicePrincipal",
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]"
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsUserRoleId'))]"
       },
       "dependsOn": [
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
@@ -467,8 +787,23 @@
       ]
     },
     {
+      "condition": "[not(empty(parameters('deployPrincipalObjectId')))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.KeyVault/vaults/{0}', variables('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), parameters('deployPrincipalObjectId'), variables('keyVaultSecretsOfficerRoleId'))]",
+      "properties": {
+        "principalId": "[parameters('deployPrincipalObjectId')]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsOfficerRoleId'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+      ]
+    },
+    {
       "type": "Microsoft.App/managedEnvironments",
-      "apiVersion": "2023-05-01",
+      "apiVersion": "2024-03-01",
       "name": "[variables('containerEnvironmentName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
@@ -477,18 +812,30 @@
           "destination": "log-analytics",
           "logAnalyticsConfiguration": {
             "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName')), '2023-09-01').customerId]",
-            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName')), '2020-08-01').primarySharedKey]"
+            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName')), '2023-09-01').primarySharedKey]"
           }
-        }
+        },
+        "vnetConfiguration": {
+          "infrastructureSubnetId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), variables('containerAppsSubnetName'))]",
+          "internal": false
+        },
+        "workloadProfiles": [
+          {
+            "name": "Consumption",
+            "workloadProfileType": "Consumption"
+          }
+        ],
+        "zoneRedundant": "[parameters('containerAppsZoneRedundant')]"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
       ]
     },
     {
       "condition": "[parameters('deployApplication')]",
       "type": "Microsoft.App/containerApps",
-      "apiVersion": "2023-05-01",
+      "apiVersion": "2024-03-01",
       "name": "[variables('containerAppName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
@@ -500,6 +847,7 @@
       },
       "properties": {
         "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('containerEnvironmentName'))]",
+        "workloadProfileName": "Consumption",
         "configuration": {
           "activeRevisionsMode": "Single",
           "ingress": {
@@ -520,7 +868,7 @@
               "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
             }
           ],
-          "secrets": "[concat(createArray(createObject('name', 'database-url', 'keyVaultUrl', format('{0}secrets/database-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'redis-url', 'keyVaultUrl', format('{0}secrets/redis-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'encryption-key', 'keyVaultUrl', format('{0}secrets/encryption-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'jwt-secret-key', 'keyVaultUrl', format('{0}secrets/jwt-secret-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), concat(if(parameters('enableLlmApiKeySecret'), createArray(createObject('name', 'llm-api-key', 'keyVaultUrl', format('{0}secrets/llm-api-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray()), if(parameters('enableHealthCheckTokenSecret'), createArray(createObject('name', 'health-check-token', 'keyVaultUrl', format('{0}secrets/health-check-token', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray())))]"
+          "secrets": "[concat(createArray(createObject('name', 'database-url', 'keyVaultUrl', format('{0}secrets/database-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'redis-url', 'keyVaultUrl', format('{0}secrets/redis-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'encryption-key', 'keyVaultUrl', format('{0}secrets/encryption-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'jwt-secret-key', 'keyVaultUrl', format('{0}secrets/jwt-secret-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'audit-hmac-key', 'keyVaultUrl', format('{0}secrets/audit-hmac-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), concat(if(parameters('enableLlmApiKeySecret'), createArray(createObject('name', 'llm-api-key', 'keyVaultUrl', format('{0}secrets/llm-api-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray()), if(parameters('enableHealthCheckTokenSecret'), createArray(createObject('name', 'health-check-token', 'keyVaultUrl', format('{0}secrets/health-check-token', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray()), if(parameters('enableAuditHmacKeyPreviousSecret'), createArray(createObject('name', 'audit-hmac-key-previous', 'keyVaultUrl', format('{0}secrets/audit-hmac-key-previous', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray())), concat(createArray(createObject('name', 'link-launch-secret', 'keyVaultUrl', format('{0}secrets/link-launch-secret', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'metrics-token', 'keyVaultUrl', format('{0}secrets/metrics-token', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), if(parameters('enableSmtpPasswordSecret'), createArray(createObject('name', 'smtp-password', 'keyVaultUrl', format('{0}secrets/smtp-password', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray()), if(parameters('enableBootstrapUserPasswordSecret'), createArray(createObject('name', 'bootstrap-user-password', 'keyVaultUrl', format('{0}secrets/bootstrap-user-password', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray())))]"
         },
         "template": {
           "containers": [
@@ -530,13 +878,22 @@
               "env": "[variables('webEnvironmentVariables')]",
               "probes": [
                 {
+                  "type": "Startup",
+                  "httpGet": {
+                    "path": "/health",
+                    "port": 8000
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 24
+                },
+                {
                   "type": "Liveness",
                   "httpGet": {
                     "path": "/health",
                     "port": 8000
                   },
-                  "initialDelaySeconds": 30,
-                  "periodSeconds": 15
+                  "periodSeconds": 15,
+                  "failureThreshold": 3
                 },
                 {
                   "type": "Readiness",
@@ -544,8 +901,8 @@
                     "path": "/health",
                     "port": 8000
                   },
-                  "initialDelaySeconds": 10,
-                  "periodSeconds": 10
+                  "periodSeconds": 10,
+                  "failureThreshold": 3
                 }
               ],
               "resources": {
@@ -554,6 +911,7 @@
               }
             }
           ],
+          "terminationGracePeriodSeconds": 45,
           "scale": {
             "minReplicas": "[parameters('minReplicas')]",
             "maxReplicas": "[parameters('maxReplicas')]"
@@ -562,20 +920,19 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
-        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), variables('identityName'), '7f951dda-4ed3-4680-a7ca-43fe172d538d'))]",
+        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), variables('identityName'), variables('acrPullRoleId')))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', variables('containerEnvironmentName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
-        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('identityName'), '4633458b-17de-408a-b874-0445c86b69e6'))]",
+        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('identityName'), variables('keyVaultSecretsUserRoleId')))]",
         "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/databases', variables('postgresServerName'), parameters('postgresDatabaseName'))]",
-        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/firewallRules', variables('postgresServerName'), 'AllowAzureServices')]",
-        "[resourceId('Microsoft.Cache/redis', variables('redisName'))]"
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-pe', variables('redisName')), 'default')]"
       ]
     },
     {
       "condition": "[parameters('deployApplication')]",
       "type": "Microsoft.App/containerApps",
-      "apiVersion": "2023-05-01",
+      "apiVersion": "2024-03-01",
       "name": "[variables('accessExecutorAppName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
@@ -587,6 +944,7 @@
       },
       "properties": {
         "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('containerEnvironmentName'))]",
+        "workloadProfileName": "Consumption",
         "configuration": {
           "activeRevisionsMode": "Single",
           "registries": [
@@ -595,21 +953,20 @@
               "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
             }
           ],
-          "secrets": "[concat(createArray(createObject('name', 'database-url', 'keyVaultUrl', format('{0}secrets/database-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'redis-url', 'keyVaultUrl', format('{0}secrets/redis-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'encryption-key', 'keyVaultUrl', format('{0}secrets/encryption-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'jwt-secret-key', 'keyVaultUrl', format('{0}secrets/jwt-secret-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), concat(if(parameters('enableLlmApiKeySecret'), createArray(createObject('name', 'llm-api-key', 'keyVaultUrl', format('{0}secrets/llm-api-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray()), if(parameters('enableHealthCheckTokenSecret'), createArray(createObject('name', 'health-check-token', 'keyVaultUrl', format('{0}secrets/health-check-token', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray())))]"
+          "secrets": "[concat(createArray(createObject('name', 'database-url', 'keyVaultUrl', format('{0}secrets/database-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'redis-url', 'keyVaultUrl', format('{0}secrets/redis-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'encryption-key', 'keyVaultUrl', format('{0}secrets/encryption-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'jwt-secret-key', 'keyVaultUrl', format('{0}secrets/jwt-secret-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'audit-hmac-key', 'keyVaultUrl', format('{0}secrets/audit-hmac-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), concat(if(parameters('enableLlmApiKeySecret'), createArray(createObject('name', 'llm-api-key', 'keyVaultUrl', format('{0}secrets/llm-api-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray()), if(parameters('enableHealthCheckTokenSecret'), createArray(createObject('name', 'health-check-token', 'keyVaultUrl', format('{0}secrets/health-check-token', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray()), if(parameters('enableAuditHmacKeyPreviousSecret'), createArray(createObject('name', 'audit-hmac-key-previous', 'keyVaultUrl', format('{0}secrets/audit-hmac-key-previous', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray())))]"
         },
         "template": {
           "containers": [
             {
               "name": "access-executor",
               "image": "[parameters('containerImage')]",
-              "command": [
-                "python"
-              ],
               "args": [
+                "python",
                 "-m",
                 "src.access_job_worker"
               ],
               "env": "[variables('executorEnvironmentVariables')]",
+              "probes": "[if(parameters('accessExecutorProbes'), createArray(createObject('type', 'Startup', 'httpGet', createObject('path', '/health', 'port', variables('workerMetricsPort')), 'periodSeconds', 5, 'failureThreshold', 24), createObject('type', 'Liveness', 'httpGet', createObject('path', '/health', 'port', variables('workerMetricsPort')), 'periodSeconds', 30, 'failureThreshold', 3)), createArray())]",
               "resources": {
                 "cpu": "[json(parameters('accessExecutorContainerCpu'))]",
                 "memory": "[parameters('accessExecutorContainerMemory')]"
@@ -625,20 +982,19 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
-        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), variables('identityName'), '7f951dda-4ed3-4680-a7ca-43fe172d538d'))]",
+        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), variables('identityName'), variables('acrPullRoleId')))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', variables('containerEnvironmentName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
-        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('identityName'), '4633458b-17de-408a-b874-0445c86b69e6'))]",
+        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('identityName'), variables('keyVaultSecretsUserRoleId')))]",
         "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/databases', variables('postgresServerName'), parameters('postgresDatabaseName'))]",
-        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/firewallRules', variables('postgresServerName'), 'AllowAzureServices')]",
-        "[resourceId('Microsoft.Cache/redis', variables('redisName'))]"
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-pe', variables('redisName')), 'default')]"
       ]
     },
     {
-      "condition": "[parameters('deployApplication')]",
+      "condition": "[parameters('deployMigrationJob')]",
       "type": "Microsoft.App/jobs",
-      "apiVersion": "2023-05-01",
+      "apiVersion": "2024-03-01",
       "name": "[variables('migrationJobName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
@@ -650,6 +1006,7 @@
       },
       "properties": {
         "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('containerEnvironmentName'))]",
+        "workloadProfileName": "Consumption",
         "configuration": {
           "triggerType": "Manual",
           "replicaTimeout": "[parameters('migrationReplicaTimeout')]",
@@ -664,21 +1021,40 @@
               "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
             }
           ],
-          "secrets": "[concat(createArray(createObject('name', 'database-url', 'keyVaultUrl', format('{0}secrets/database-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'redis-url', 'keyVaultUrl', format('{0}secrets/redis-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'encryption-key', 'keyVaultUrl', format('{0}secrets/encryption-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))), createObject('name', 'jwt-secret-key', 'keyVaultUrl', format('{0}secrets/jwt-secret-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), concat(if(parameters('enableLlmApiKeySecret'), createArray(createObject('name', 'llm-api-key', 'keyVaultUrl', format('{0}secrets/llm-api-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray()), if(parameters('enableHealthCheckTokenSecret'), createArray(createObject('name', 'health-check-token', 'keyVaultUrl', format('{0}secrets/health-check-token', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))), createArray())))]"
+          "secrets": [
+            {
+              "name": "database-admin-url",
+              "keyVaultUrl": "[format('{0}secrets/database-admin-url', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri)]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+            },
+            {
+              "name": "database-app-password",
+              "keyVaultUrl": "[format('{0}secrets/database-app-password', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri)]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+            },
+            {
+              "name": "encryption-key",
+              "keyVaultUrl": "[format('{0}secrets/encryption-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri)]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+            },
+            {
+              "name": "jwt-secret-key",
+              "keyVaultUrl": "[format('{0}secrets/jwt-secret-key', reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri)]",
+              "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+            }
+          ]
         },
         "template": {
           "containers": [
             {
               "name": "db-migrate",
               "image": "[parameters('containerImage')]",
-              "command": [
-                "alembic"
-              ],
               "args": [
-                "upgrade",
-                "head"
+                "sh",
+                "-c",
+                "alembic upgrade head && python scripts/provision_app_db_role.py"
               ],
-              "env": "[concat(variables('baseEnvironmentVariables'), variables('optionalEnvironmentVariables'))]",
+              "env": "[variables('migrationEnvironmentVariables')]",
               "resources": {
                 "cpu": "[json(parameters('migrationJobCpu'))]",
                 "memory": "[parameters('migrationJobMemory')]"
@@ -689,14 +1065,12 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.ContainerRegistry/registries', variables('registryName'))]",
-        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), variables('identityName'), '7f951dda-4ed3-4680-a7ca-43fe172d538d'))]",
+        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', variables('registryName')), variables('identityName'), variables('acrPullRoleId')))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', variables('containerEnvironmentName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
-        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('identityName'), '4633458b-17de-408a-b874-0445c86b69e6'))]",
-        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/databases', variables('postgresServerName'), parameters('postgresDatabaseName'))]",
-        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/firewallRules', variables('postgresServerName'), 'AllowAzureServices')]",
-        "[resourceId('Microsoft.Cache/redis', variables('redisName'))]"
+        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('identityName'), variables('keyVaultSecretsUserRoleId')))]",
+        "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/databases', variables('postgresServerName'), parameters('postgresDatabaseName'))]"
       ]
     }
   ],
@@ -741,6 +1115,10 @@
       "type": "string",
       "value": "[parameters('postgresDatabaseName')]"
     },
+    "appDatabaseRole": {
+      "type": "string",
+      "value": "[parameters('appDatabaseRole')]"
+    },
     "redisName": {
       "type": "string",
       "value": "[variables('redisName')]"
@@ -752,6 +1130,10 @@
     "redisSslPort": {
       "type": "int",
       "value": "[reference(resourceId('Microsoft.Cache/redis', variables('redisName')), '2024-11-01').sslPort]"
+    },
+    "vnetName": {
+      "type": "string",
+      "value": "[variables('vnetName')]"
     }
   }
 }

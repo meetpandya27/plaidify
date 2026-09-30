@@ -26,11 +26,14 @@ echo "  Spawn rate: $RATE users/sec"
 echo "  Duration:   $TIME"
 echo ""
 
-# Check that the server is reachable
-if ! curl -sf "$HOST/health" > /dev/null 2>&1; then
-    echo "ERROR: Server at $HOST is not reachable. Start it first."
-    exit 1
-fi
+# Check that the server is reachable and answers /health itself (a redirect
+# here means every request of the test would be redirected too).
+status="$(curl -s -o /dev/null -w '%{http_code}' "$HOST/health" 2>/dev/null || true)"
+case "$status" in
+    200) ;;
+    3??) echo "ERROR: $HOST/health redirects (HTTP $status). Use the https:// URL, or check FORWARDED_ALLOW_IPS behind a proxy."; exit 1 ;;
+    *)   echo "ERROR: Server at $HOST is not reachable (HTTP ${status:-none}). Start it first."; exit 1 ;;
+esac
 
 exec locust \
     -f tests/load/locustfile.py \

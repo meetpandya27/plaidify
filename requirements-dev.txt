@@ -1,17 +1,19 @@
-# Development and testing dependencies
-# Install with: pip install -r requirements-dev.txt
+# Development and testing dependencies.
+# CI installs the hash-locked requirements-dev.lock (see requirements.txt for
+# how to regenerate it); `pip install -r requirements-dev.txt` also works for a
+# quick local setup.
 
 -r requirements.txt
 
 # ── Testing ──────────────────────────────────────────────────────────────────
-pytest==8.3.5
-pytest-asyncio==0.26.0
-pytest-cov==7.0.0
-playwright==1.58.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
 respx==0.23.1
 
 # ── Load Testing ─────────────────────────────────────────────────────────────
 locust==2.32.6
 
 # ── Linting ──────────────────────────────────────────────────────────────────
+# Keep in step with .pre-commit-config.yaml and the CI lint job.
 ruff==0.14.6

@@ -105,7 +105,7 @@ describe("LinkApi", () => {
     expect((caught as ApiError).message).toBe("bad token");
   });
 
-  it("builds the /mfa/submit URL with query params", async () => {
+  it("sends the /mfa/submit code in a JSON body, not the URL", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValue(okResponse({ status: "connected" }));
@@ -118,10 +118,9 @@ describe("LinkApi", () => {
     await api.submitMfa({ sessionId: "sess-1", code: "123 456" });
 
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(
-      "https://api.plaidify.test/mfa/submit?session_id=sess-1&code=123+456",
-    );
+    expect(url).toBe("https://api.plaidify.test/mfa/submit");
     expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ session_id: "sess-1", code: "123 456" });
   });
 });
 
@@ -149,6 +148,37 @@ describe("encryptCredentials", () => {
 });
 
 describe("pollLinkSession", () => {
+  it("waits past the MFA challenge that was just answered", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(okResponse({ status: "mfa_required", session_id: "access-1" }))
+      .mockResolvedValueOnce(okResponse({ status: "connecting", session_id: "access-1" }))
+      .mockResolvedValueOnce(okResponse({ status: "completed", public_token: "public-2" }));
+
+    const api = new LinkApi({ serverUrl: "https://api.plaidify.test", linkToken: "tok", fetchImpl });
+    const result = await pollLinkSession({
+      api,
+      answeredMfaSessionId: "access-1",
+      sleep: async () => undefined,
+    });
+    expect(result.status).toBe("completed");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("still surfaces a new MFA challenge after an answer", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(okResponse({ status: "mfa_required", session_id: "access-2" }));
+
+    const api = new LinkApi({ serverUrl: "https://api.plaidify.test", linkToken: "tok", fetchImpl });
+    const result = await pollLinkSession({
+      api,
+      answeredMfaSessionId: "access-1",
+      sleep: async () => undefined,
+    });
+    expect(result).toMatchObject({ status: "mfa_required", session_id: "access-2" });
+  });
+
   it("returns immediately on a terminal status", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

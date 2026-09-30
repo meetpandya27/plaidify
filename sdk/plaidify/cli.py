@@ -3,7 +3,7 @@ Plaidify CLI — command-line interface for Plaidify.
 
 Usage:
     plaidify serve                        # Start the Plaidify API server
-    plaidify connect <site> -u <user> -p <pass>
+    plaidify connect <site> -u <user>     # Prompts for the site password
     plaidify blueprint list               # List available blueprints
     plaidify blueprint info <site>        # Show blueprint details
     plaidify blueprint validate <file>    # Validate a blueprint JSON file
@@ -24,6 +24,7 @@ from typing import Optional
 import click
 
 from plaidify import __version__
+from plaidify.config import API_KEY_PREFIX, auth_headers
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ from plaidify import __version__
 
 def _run_async(coro):
     """Run an async coroutine from sync Click context."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _get_client(server_url: str, api_key: Optional[str] = None):
@@ -42,12 +43,44 @@ def _get_client(server_url: str, api_key: Optional[str] = None):
 
 
 def _find_project_root() -> Path:
-    """Walk up from CWD looking for a Plaidify project root."""
+    """Walk up from CWD to the Plaidify server checkout (the dir holding src/main.py).
+
+    Only the server entrypoint counts: any pyproject.toml would also match
+    the SDK's own directory, which cannot run the server.
+    """
     cwd = Path.cwd()
     for d in [cwd, *cwd.parents]:
-        if (d / "src" / "main.py").exists() or (d / "pyproject.toml").exists():
+        if (d / "src" / "main.py").is_file():
             return d
-    return cwd
+    raise click.ClickException(
+        "Not inside a Plaidify server checkout (no src/main.py here or in any parent directory)."
+    )
+
+
+def _read_secret(prompt: str, from_stdin: bool, *, err: bool = False) -> str:
+    """A password: from stdin when piped in, else a hidden prompt (on stderr with ``err``).
+
+    Never a command-line argument, which lands in shell history and is
+    visible to every local user through the process list.
+    """
+    if from_stdin:
+        value = sys.stdin.readline().rstrip("\r\n")
+        if not value:
+            raise click.UsageError("--password-stdin was given but stdin was empty.")
+        return value
+    return click.prompt(prompt, hide_input=True, err=err)
+
+
+def _user_token(ctx: click.Context, needs: str) -> str:
+    """The user access token that the audit endpoints take; they refuse API keys."""
+    credential = ctx.obj["api_key"]
+    if not credential or credential.startswith(API_KEY_PREFIX):
+        _echo_error(
+            f"This command needs {needs}, not an API key. Sign in with: "
+            'export PLAIDIFY_API_KEY="$(plaidify login -u <username>)"'
+        )
+        sys.exit(1)
+    return credential
 
 
 def _echo_json(data: dict, pretty: bool = True):
@@ -79,10 +112,15 @@ def _echo_warn(msg: str):
 
 @click.group()
 @click.version_option(__version__, prog_name="plaidify")
-@click.option("--server", "-s", envvar="PLAIDIFY_SERVER_URL", default="http://localhost:8000",
-              help="Plaidify server URL.")
-@click.option("--api-key", envvar="PLAIDIFY_API_KEY", default=None,
-              help="JWT token or API key for authenticated endpoints.")
+@click.option(
+    "--server", "-s", envvar="PLAIDIFY_SERVER_URL", default="http://localhost:8000", help="Plaidify server URL."
+)
+@click.option(
+    "--api-key",
+    envvar="PLAIDIFY_API_KEY",
+    default=None,
+    help="API key (pk_...) or user access token; prefer the PLAIDIFY_API_KEY variable.",
+)
 @click.pass_context
 def cli(ctx: click.Context, server: str, api_key: Optional[str]):
     """Plaidify — The open-source API for authenticated web data."""
@@ -121,22 +159,28 @@ def health(ctx: click.Context):
 @cli.command()
 @click.argument("site")
 @click.option("-u", "--username", required=True, help="Username for the target site.")
-@click.option("-p", "--password", required=True, help="Password for the target site.")
+@click.option("--password-stdin", is_flag=True, help="Read the site password from stdin instead of prompting for it.")
 @click.option("--fields", default=None, help="Comma-separated list of fields to extract.")
 @click.option("--json-output", "-j", is_flag=True, help="Output raw JSON instead of formatted.")
 @click.pass_context
-def connect(ctx: click.Context, site: str, username: str, password: str,
-            fields: Optional[str], json_output: bool):
+def connect(
+    ctx: click.Context, site: str, username: str, password_stdin: bool, fields: Optional[str], json_output: bool
+):
     """Connect to a site and extract data.
 
+    The site password is prompted for (hidden), or read from stdin with
+    --password-stdin; it is never taken as a command-line argument.
+
     Example:
-        plaidify connect hydro_one -u your_username -p your_password
+        plaidify connect hydro_one -u your_username
     """
+    password = _read_secret("  Site password", password_stdin)
     client = _get_client(ctx.obj["server"], ctx.obj["api_key"])
     extract_fields = [f.strip() for f in fields.split(",")] if fields else None
 
     async def _connect():
         try:
+
             async def mfa_prompt(challenge):
                 """Interactive MFA handler for CLI."""
                 click.echo()
@@ -291,8 +335,17 @@ def blueprint_validate(filepath: str):
         errors.append("Missing 'auth' section (authentication steps)")
     elif isinstance(auth, list):
         valid_actions = {
-            "goto", "fill", "click", "wait", "screenshot", "extract",
-            "conditional", "scroll", "select", "iframe", "wait_for_navigation",
+            "goto",
+            "fill",
+            "click",
+            "wait",
+            "screenshot",
+            "extract",
+            "conditional",
+            "scroll",
+            "select",
+            "iframe",
+            "wait_for_navigation",
             "execute_js",
         }
         for i, step in enumerate(auth):
@@ -308,8 +361,16 @@ def blueprint_validate(filepath: str):
         errors.append("Missing 'extract' section (data extraction fields)")
     elif isinstance(extract, dict):
         valid_types = {
-            "text", "currency", "date", "number", "email", "phone",
-            "list", "table", "boolean", "sensitive",
+            "text",
+            "currency",
+            "date",
+            "number",
+            "email",
+            "phone",
+            "list",
+            "table",
+            "boolean",
+            "sensitive",
         }
         for fname, fdef in extract.items():
             if isinstance(fdef, dict):
@@ -343,18 +404,18 @@ def blueprint_validate(filepath: str):
 @blueprint.command("test")
 @click.argument("filepath", type=click.Path(exists=True))
 @click.option("-u", "--username", required=True, help="Username for the target site.")
-@click.option("-p", "--password", required=True, help="Password for the target site.")
+@click.option("--password-stdin", is_flag=True, help="Read the site password from stdin instead of prompting for it.")
 @click.option("--fields", default=None, help="Comma-separated list of fields to extract.")
 @click.pass_context
-def blueprint_test(ctx: click.Context, filepath: str, username: str, password: str,
-                   fields: Optional[str]):
+def blueprint_test(ctx: click.Context, filepath: str, username: str, password_stdin: bool, fields: Optional[str]):
     """Test a blueprint against a live site.
 
     Runs the full connection flow and shows the extracted data.
 
     Example:
-        plaidify blueprint test ./connectors/your_site.json -u your_username -p your_password
+        plaidify blueprint test ./connectors/your_site.json -u your_username
     """
+    password = _read_secret("  Site password", password_stdin)
     path = Path(filepath)
     site = path.stem
     extract_fields = [f.strip() for f in fields.split(",")] if fields else None
@@ -364,7 +425,7 @@ def blueprint_test(ctx: click.Context, filepath: str, username: str, password: s
     async def _test():
         try:
             _echo_info(f"Testing blueprint: {site}")
-            _echo_info(f"Connecting...")
+            _echo_info("Connecting...")
 
             start = time.time()
             result = await client.connect(
@@ -420,8 +481,7 @@ def registry():
 @click.option("--tag", "-t", default=None, help="Filter by tag.")
 @click.option("--tier", default=None, help="Filter by quality tier (community/tested/certified).")
 @click.pass_context
-def registry_search(ctx: click.Context, query: Optional[str], tag: Optional[str],
-                    tier: Optional[str]):
+def registry_search(ctx: click.Context, query: Optional[str], tag: Optional[str], tier: Optional[str]):
     """Search the blueprint registry.
 
     Example:
@@ -556,10 +616,13 @@ def registry_publish(ctx: click.Context, filepath: str, description: str):
     async def _publish():
         try:
             _echo_info(f"Publishing {path.name}...")
-            r = await client._http.post("/registry/publish", json={
-                "blueprint": blueprint_data,
-                "description": description,
-            })
+            r = await client._http.post(
+                "/registry/publish",
+                json={
+                    "blueprint": blueprint_data,
+                    "description": description,
+                },
+            )
             if r.status_code == 422:
                 _echo_error(f"Validation error: {r.json().get('detail', r.text)}")
                 sys.exit(1)
@@ -607,41 +670,91 @@ def serve(host: str, port: int, do_reload: bool):
     click.echo()
 
     cmd = [
-        sys.executable, "-m", "uvicorn", "src.main:app",
-        "--host", host, "--port", str(port),
-        "--log-level", "info",
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "src.main:app",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--log-level",
+        "info",
     ]
     if do_reload:
         cmd.extend(["--reload"])
 
+    # src.main and the server's relative paths (connectors/, .env) resolve
+    # against the checkout root, wherever the command was started from.
+    os.chdir(root)
     os.execvp(sys.executable, cmd)
+
+
+# ── plaidify login ───────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.option("-u", "--username", required=True, help="Your Plaidify username.")
+@click.option("--password-stdin", is_flag=True, help="Read the password from stdin instead of prompting for it.")
+@click.pass_context
+def login(ctx: click.Context, username: str, password_stdin: bool):
+    """Sign in and print an access token, and nothing else, to stdout.
+
+    The audit commands take a user's access token rather than an API key:
+
+        export PLAIDIFY_API_KEY="$(plaidify login -u admin)"
+        plaidify audit verify
+    """
+    password = _read_secret("  Password", password_stdin, err=True)
+
+    async def _login():
+        client = _get_client(ctx.obj["server"])
+        try:
+            return await client.login(username, password)
+        finally:
+            await client.close()
+
+    try:
+        token = _run_async(_login())
+    except Exception as e:  # noqa: BLE001 - the server's reason, never the password
+        _echo_error(f"Sign-in failed: {e}")
+        sys.exit(1)
+    click.echo(token.access_token)
 
 
 # ── plaidify rotate-key ──────────────────────────────────────────────────────
 
 
 @cli.command("rotate-key")
-@click.option("--old-key", required=True, envvar="ENCRYPTION_KEY_PREVIOUS",
-              help="Current (old) master encryption key (base64url).")
-@click.option("--new-key", required=True, envvar="ENCRYPTION_KEY",
-              help="New master encryption key (base64url).")
-@click.option("--re-encrypt", is_flag=True, default=False,
-              help="Also re-encrypt AccessToken credentials (not just DEK re-wrap).")
-@click.option("--batch-size", default=100, type=int,
-              help="Number of tokens per re-encryption batch.")
+@click.option(
+    "--old-key",
+    required=True,
+    envvar="ENCRYPTION_KEY_PREVIOUS",
+    help="Current (old) master encryption key (base64url).",
+)
+@click.option("--new-key", required=True, envvar="ENCRYPTION_KEY", help="New master encryption key (base64url).")
+@click.option(
+    "--re-encrypt",
+    is_flag=True,
+    default=False,
+    help="Also bring every other encrypted row (credentials, webhook secrets) to the current key version.",
+)
+@click.option("--batch-size", default=100, type=int, help="Rows per re-encryption batch.")
 def rotate_key(old_key: str, new_key: str, re_encrypt: bool, batch_size: int):
-    """Rotate the master encryption key.
+    """Re-key stored data after ENCRYPTION_KEY changes (local KMS provider).
 
-    Re-wraps all per-user DEKs from the old master key to the new one.
-    Optionally re-encrypts stored credentials and bumps key_version.
+    Re-wraps every per-user DEK from the old master key to the new one; with
+    --re-encrypt, also brings credentials and webhook secrets still under the
+    old key to the current key version.
 
-    Procedure:
-      1. Generate a new key:
+    Procedure (SECURITY.md, "Key Rotation Procedure"):
+      1. On every instance set ENCRYPTION_KEY_PREVIOUS to the current key,
+         ENCRYPTION_KEY to a new one, increment ENCRYPTION_KEY_VERSION, and
+         restart. A new key:
            python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
-      2. Run rotation:
-           plaidify rotate-key --old-key <CURRENT_KEY> --new-key <NEW_KEY> --re-encrypt
-      3. Update .env: set ENCRYPTION_KEY=<NEW_KEY>,
-           ENCRYPTION_KEY_PREVIOUS=<OLD_KEY>, bump ENCRYPTION_KEY_VERSION.
+      2. In that same environment:
+           plaidify rotate-key --re-encrypt
+      3. After ACCESS_JOB_PAYLOAD_TTL, remove ENCRYPTION_KEY_PREVIOUS and restart.
     """
     # Import server-side modules (requires src/ on path)
     root = _find_project_root()
@@ -665,25 +778,24 @@ def rotate_key(old_key: str, new_key: str, re_encrypt: bool, batch_size: int):
             dek_count = rotate_master_key(old_key, new_key, db)
             _echo_success(f"Re-wrapped {dek_count} DEK(s)")
 
-            # Step 2: Optionally re-encrypt AccessToken credentials
+            # Step 2: optionally bring the other encrypted rows to the current key version
             if re_encrypt:
-                _echo_info("Re-encrypting access token credentials...")
+                _echo_info("Bringing credentials and webhook secrets to the current key version...")
                 total = 0
                 while True:
                     count = re_encrypt_tokens(db, batch_size=batch_size)
                     total += count
                     if count < batch_size:
                         break
-                _echo_success(f"Re-encrypted {total} access token(s)")
+                _echo_success(f"Brought {total} row(s) to the current key version")
 
             click.echo(f"  {'─' * 45}")
             _echo_success("Key rotation complete!")
             click.echo()
-            _echo_info("Next steps:")
-            click.echo("    1. Set ENCRYPTION_KEY=<new key> in .env")
-            click.echo("    2. Set ENCRYPTION_KEY_PREVIOUS=<old key> in .env")
-            click.echo("    3. Increment ENCRYPTION_KEY_VERSION in .env")
-            click.echo("    4. Restart the server")
+            _echo_info("Next steps (if every instance already runs with the new ENCRYPTION_KEY):")
+            click.echo("    1. Wait ACCESS_JOB_PAYLOAD_TTL (default one hour) after that restart,")
+            click.echo("       so access jobs queued under the old key are gone")
+            click.echo("    2. Remove ENCRYPTION_KEY_PREVIOUS and restart")
             click.echo()
         finally:
             db.close()
@@ -713,20 +825,17 @@ def audit_verify(ctx: click.Context):
     import httpx
 
     server = ctx.obj["server"]
-    api_key = ctx.obj["api_key"]
-
-    if not api_key:
-        _echo_error("API key required. Use --api-key or set PLAIDIFY_API_KEY.")
-        sys.exit(1)
+    token = _user_token(ctx, "an administrator's access token")
 
     click.echo()
     _echo_info("Verifying audit log hash chain...")
 
     try:
+        # The whole table is read in one request.
         resp = httpx.get(
             f"{server}/audit/verify",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=30,
+            headers=auth_headers(token),
+            timeout=300,
         )
         if resp.status_code != 200:
             _echo_error(f"Server returned {resp.status_code}: {resp.text}")
@@ -736,15 +845,17 @@ def audit_verify(ctx: click.Context):
         total = result.get("total", 0)
         valid = result.get("valid", False)
         errors = result.get("errors", [])
+        error_count = result.get("error_count", len(errors))
 
         if valid:
             _echo_success(f"Audit chain verified — {total} entries, no tampering detected.")
         else:
-            _echo_error(f"Audit chain INVALID — {len(errors)} error(s) in {total} entries:")
+            _echo_error(f"Audit chain INVALID — {error_count} error(s) in {total} entries:")
             for err in errors[:10]:
-                click.echo(f"    Entry #{err['id']}: {err['error']}")
-            if len(errors) > 10:
-                click.echo(f"    ... and {len(errors) - 10} more")
+                where = f"Entry #{err['id']}" if err.get("id") is not None else "Chain head"
+                click.echo(f"    {where}: {err.get('error')}")
+            if error_count > 10:
+                click.echo(f"    ... and {error_count - 10} more")
             sys.exit(1)
         click.echo()
 
@@ -765,11 +876,7 @@ def audit_logs(ctx: click.Context, event_type: Optional[str], limit: int):
     import httpx
 
     server = ctx.obj["server"]
-    api_key = ctx.obj["api_key"]
-
-    if not api_key:
-        _echo_error("API key required. Use --api-key or set PLAIDIFY_API_KEY.")
-        sys.exit(1)
+    token = _user_token(ctx, "a user access token")
 
     params = {"limit": limit}
     if event_type:
@@ -778,7 +885,7 @@ def audit_logs(ctx: click.Context, event_type: Optional[str], limit: int):
     try:
         resp = httpx.get(
             f"{server}/audit/logs",
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=auth_headers(token),
             params=params,
             timeout=30,
         )

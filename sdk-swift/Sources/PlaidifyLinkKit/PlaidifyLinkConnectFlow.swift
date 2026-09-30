@@ -30,6 +30,8 @@ public struct PlaidifyLinkFlowState: Equatable {
     public var organization: PlaidifyOrganization?
     public var sessionID: String?
     public var mfaType: String?
+    /// What the provider asks for, e.g. the security question.
+    public var mfaPrompt: String?
     public var lastErrorCode: String?
     public var lastErrorMessage: String?
     public var publicToken: String?
@@ -40,6 +42,7 @@ public struct PlaidifyLinkFlowState: Equatable {
         organization: PlaidifyOrganization? = nil,
         sessionID: String? = nil,
         mfaType: String? = nil,
+        mfaPrompt: String? = nil,
         lastErrorCode: String? = nil,
         lastErrorMessage: String? = nil,
         publicToken: String? = nil,
@@ -49,6 +52,7 @@ public struct PlaidifyLinkFlowState: Equatable {
         self.organization = organization
         self.sessionID = sessionID
         self.mfaType = mfaType
+        self.mfaPrompt = mfaPrompt
         self.lastErrorCode = lastErrorCode
         self.lastErrorMessage = lastErrorMessage
         self.publicToken = publicToken
@@ -131,7 +135,8 @@ public final class PlaidifyLinkConnectFlow {
 
     private func handleConnectResponse(_ response: PlaidifyConnectResponse) {
         switch response.status {
-        case "completed":
+        // `/connect` says "connected"; the session status says "completed".
+        case "connected", "completed":
             state.step = .success
             state.publicToken = response.publicToken
             state.jobID = response.jobID
@@ -146,14 +151,16 @@ public final class PlaidifyLinkConnectFlow {
             state.step = .mfa
             state.sessionID = response.sessionID
             state.mfaType = response.mfaType
+            state.mfaPrompt = response.metadata?.message ?? response.message
             onEvent(.mfaRequired(type: response.mfaType ?? "otp", sessionID: response.sessionID))
             onEvent(.stepChanged(.mfa))
 
         case "error":
-            apply(.failed(code: nil, message: response.errorMessage ?? response.message ?? "Connection failed."))
+            apply(.failed(code: nil, message: response.error ?? response.message ?? "Connection failed."))
 
         default:
-            // pending / unknown: stay on connecting
+            // pending / mfa_submitted: still working — stay on connecting
+            // while the caller polls the session (PlaidifyLinkNativeSession).
             break
         }
     }

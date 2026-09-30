@@ -145,7 +145,11 @@ class LinkResult:
 
 @dataclass(frozen=True)
 class MFASubmitResult:
-    """Result of an MFA code submission."""
+    """Result of an MFA code submission.
+
+    ``status`` is ``"mfa_submitted"`` while the connection resumes, or
+    ``"error"`` (with ``error``) when the MFA session is unknown or expired.
+    """
 
     status: str
     message: Optional[str] = None
@@ -191,6 +195,9 @@ class LinkSession:
         status: Current session status.
         site: Selected site (if any).
         events: List of event names that have occurred.
+        public_token: One-time token to exchange for an access token, once
+            the session is ``completed``.
+        error_message: Why the session failed, when its status is ``error``.
     """
 
     link_token: str
@@ -200,6 +207,8 @@ class LinkSession:
     status: str = "awaiting_institution"
     site: Optional[str] = None
     events: List[str] = field(default_factory=list)
+    public_token: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -267,19 +276,21 @@ class ConsentRequest:
     """A consent request submitted for user approval.
 
     Attributes:
-        id: Unique consent request ID.
+        id: Consent request ID (``creq-...``) — pass it to approve/deny.
         access_token: The token consent is requested for.
         scopes: Requested data scopes.
         agent_name: Name of the requesting agent.
         status: ``pending``, ``approved``, or ``denied``.
+        duration_seconds: How long a grant would last.
         created_at: ISO timestamp.
     """
 
-    id: int
+    id: str
     access_token: str
     scopes: List[str]
     agent_name: str
     status: str = "pending"
+    duration_seconds: Optional[int] = None
     created_at: Optional[str] = None
 
 
@@ -310,8 +321,8 @@ class ApiKeyInfo:
         name: Display name.
         key_prefix: First characters of the key for identification.
         raw_key: Full key (only present when first created).
-        scopes: Comma-separated scopes.
-        is_active: Whether the key is active.
+        scopes: Scopes the key is limited to (None = every scope).
+        is_active: Whether the key is active (listings only show active keys).
         expires_at: ISO expiry timestamp.
         last_used_at: ISO timestamp of last use.
         created_at: ISO timestamp.
@@ -321,7 +332,7 @@ class ApiKeyInfo:
     name: str
     key_prefix: str = ""
     raw_key: Optional[str] = None
-    scopes: Optional[str] = None
+    scopes: Optional[List[str]] = None
     is_active: bool = True
     expires_at: Optional[str] = None
     last_used_at: Optional[str] = None

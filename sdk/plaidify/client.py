@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -29,13 +30,13 @@ import httpx
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes, serialization
 
-from plaidify.config import ClientConfig, DEFAULT_SERVER_URL
+from plaidify.config import ClientConfig, DEFAULT_SERVER_URL, auth_headers
 from plaidify.exceptions import (
-    AuthenticationError,
     BlueprintNotFoundError,
     ConnectionError,
     InvalidTokenError,
     MFARequiredError,
+    NotFoundError,
     PlaidifyError,
     RateLimitedError,
     ServerError,
@@ -71,8 +72,33 @@ from plaidify.models import (
 MFAHandler = Callable[[MFAChallenge], Awaitable[str]]
 
 
-def _raise_for_api_error(response: httpx.Response) -> None:
-    """Translate HTTP error responses into typed SDK exceptions."""
+def _error_detail(body: Any) -> str:
+    """The human-readable part of an error body.
+
+    FastAPI sends ``{"detail": str}`` or ``{"detail": [{"msg": ...}, ...]}``
+    for validation errors; Plaidify errors are ``{"error", "error_code"}``.
+    """
+    if not isinstance(body, dict):
+        return str(body)
+    detail = body.get("detail")
+    if isinstance(detail, list):
+        messages = [item.get("msg") if isinstance(item, dict) else str(item) for item in detail]
+        return "; ".join(str(m) for m in messages if m) or str(detail)
+    return str(detail or body.get("message") or body.get("error") or body)
+
+
+def _raise_for_api_error(
+    response: httpx.Response,
+    *,
+    not_found: Optional[Callable[[str], PlaidifyError]] = None,
+) -> None:
+    """Translate HTTP error responses into typed SDK exceptions.
+
+    Args:
+        response: The response to check.
+        not_found: Builds the exception for a 404 when the caller knows what
+            was missing (e.g. a blueprint); otherwise :class:`NotFoundError`.
+    """
     if response.is_success:
         return
 
@@ -82,21 +108,39 @@ def _raise_for_api_error(response: httpx.Response) -> None:
     except Exception:
         body = {"detail": response.text}
 
-    detail_msg = body.get("detail") or body.get("message") or body.get("error") or str(body)
+    detail_msg = _error_detail(body)
+    detail = body if isinstance(body, dict) else {"detail": body}
 
     if status == 401:
-        raise InvalidTokenError(message=str(detail_msg))
+        raise InvalidTokenError(message=detail_msg, detail=detail)
     if status == 404:
-        raise BlueprintNotFoundError(site=str(detail_msg))
+        if not_found is not None:
+            raise not_found(detail_msg)
+        raise NotFoundError(message=detail_msg, detail=detail)
     if status == 429:
-        retry_after = int(response.headers.get("Retry-After", "60"))
-        raise RateLimitedError(retry_after=retry_after)
+        try:
+            retry_after = int(response.headers.get("Retry-After", "60"))
+        except ValueError:
+            retry_after = 60
+        raise RateLimitedError(retry_after=retry_after, detail=detail)
     if status == 502:
-        raise ConnectionError(message=f"Connection failed: {detail_msg}")
+        raise ConnectionError(message=f"Connection failed: {detail_msg}", detail=detail)
     if status >= 500:
-        raise ServerError(message=f"Server error ({status}): {detail_msg}")
+        raise ServerError(message=f"Server error ({status}): {detail_msg}", detail=detail)
     # Generic fallback
-    raise PlaidifyError(message=str(detail_msg), status_code=status)
+    raise PlaidifyError(message=detail_msg, status_code=status, detail=detail)
+
+
+def _parse_scopes(raw: Any) -> Optional[List[str]]:
+    """API key scopes come back as the stored JSON text; return a list."""
+    if isinstance(raw, list):
+        return [str(scope) for scope in raw]
+    if isinstance(raw, str) and raw:
+        try:
+            return _parse_scopes(json.loads(raw))
+        except ValueError:
+            return None
+    return None
 
 
 class Plaidify:
@@ -104,10 +148,15 @@ class Plaidify:
 
     Args:
         server_url: Base URL of the Plaidify server (default ``http://localhost:8000``).
-        api_key: Optional JWT token or API key for authenticated endpoints.
+        api_key: Optional credential for authenticated endpoints. An API key
+            (``pk_...``) is sent as ``X-API-Key``; a user access token (JWT,
+            e.g. from :meth:`login`) as ``Authorization: Bearer``.
         timeout: Request timeout in seconds.
         max_retries: Number of retries on transient failures (5xx, network).
         headers: Extra headers to send on every request.
+        transport: Custom httpx transport (e.g. ``httpx.ASGITransport`` to
+            call an in-process app in tests). Replaces the default retrying
+            transport.
     """
 
     def __init__(
@@ -117,6 +166,7 @@ class Plaidify:
         timeout: float = 60.0,
         max_retries: int = 3,
         headers: Optional[Dict[str, str]] = None,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> None:
         self._config = ClientConfig(
             server_url=server_url.rstrip("/"),
@@ -125,6 +175,7 @@ class Plaidify:
             max_retries=max_retries,
             headers=headers or {},
         )
+        self._transport = transport
         self._client: Optional[httpx.AsyncClient] = None
 
     # ── Context manager ───────────────────────────────────────────────────────
@@ -144,7 +195,7 @@ class Plaidify:
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            transport = httpx.AsyncHTTPTransport(retries=self._config.max_retries)
+            transport = self._transport or httpx.AsyncHTTPTransport(retries=self._config.max_retries)
             self._client = httpx.AsyncClient(
                 base_url=self._config.server_url,
                 headers=self._config.base_headers(),
@@ -156,6 +207,14 @@ class Plaidify:
     @property
     def _http(self) -> httpx.AsyncClient:
         return self._ensure_client()
+
+    def _use_credential(self, credential: str) -> None:
+        """Authenticate later requests with ``credential`` (JWT or API key)."""
+        self._config.api_key = credential
+        client = self._ensure_client()
+        client.headers.pop("Authorization", None)
+        client.headers.pop("X-API-Key", None)
+        client.headers.update(auth_headers(credential))
 
     # ── Health ────────────────────────────────────────────────────────────────
 
@@ -223,7 +282,7 @@ class Plaidify:
             r = await self._http.get(f"/blueprints/{site}")
         except httpx.ConnectError as e:
             raise ConnectionError() from e
-        _raise_for_api_error(r)
+        _raise_for_api_error(r, not_found=lambda _detail: BlueprintNotFoundError(site=site))
         d = r.json()
         return BlueprintInfo(
             site=site,
@@ -245,6 +304,7 @@ class Plaidify:
         password: str,
         extract_fields: Optional[List[str]] = None,
         mfa_handler: Optional[MFAHandler] = None,
+        encrypt: bool = True,
     ) -> ConnectResult:
         """Connect to a site and extract data in one call.
 
@@ -259,6 +319,10 @@ class Plaidify:
             extract_fields: Limit extraction to specific fields (None = all).
             mfa_handler: Async callback ``(MFAChallenge) -> str`` that returns
                 the MFA code. Called automatically when MFA is triggered.
+            encrypt: Encrypt the credentials to a one-time server key
+                (``/encryption/session``) before sending them. If that key
+                cannot be obtained the call fails rather than quietly sending
+                plaintext; pass ``False`` to send them as plain JSON over TLS.
 
         Returns:
             ConnectResult with ``status`` and ``data``.
@@ -268,24 +332,28 @@ class Plaidify:
             AuthenticationError: Credentials were rejected.
             BlueprintNotFoundError: The site blueprint doesn't exist.
             ConnectionError: Server unreachable.
+            PlaidifyError: Encryption was requested but could not be set up.
         """
         payload: Dict[str, Any] = {"site": site}
 
-        # Attempt client-side encryption via ephemeral session
-        try:
-            enc_r = await self._http.post("/encryption/session")
-            if enc_r.is_success:
-                enc_data = enc_r.json()
-                pub_key_pem = enc_data["public_key"]
-                link_token = enc_data["link_token"]
-                payload["encrypted_username"] = self._rsa_encrypt(pub_key_pem, username)
-                payload["encrypted_password"] = self._rsa_encrypt(pub_key_pem, password)
-                payload["link_token"] = link_token
-            else:
-                payload["username"] = username
-                payload["password"] = password
-        except Exception:
-            # Fallback to plaintext if encryption endpoint unavailable
+        if encrypt:
+            try:
+                enc_r = await self._http.post("/encryption/session")
+            except httpx.ConnectError as e:
+                raise ConnectionError() from e
+            _raise_for_api_error(enc_r)
+            enc_data = enc_r.json()
+            pub_key_pem = enc_data.get("public_key")
+            link_token = enc_data.get("link_token")
+            if not pub_key_pem or not link_token:
+                raise PlaidifyError(
+                    message="The server did not return an encryption key; credentials were not sent.",
+                    status_code=enc_r.status_code,
+                )
+            payload["encrypted_username"] = self._rsa_encrypt(pub_key_pem, username)
+            payload["encrypted_password"] = self._rsa_encrypt(pub_key_pem, password)
+            payload["link_token"] = link_token
+        else:
             payload["username"] = username
             payload["password"] = password
 
@@ -296,7 +364,7 @@ class Plaidify:
             r = await self._http.post("/connect", json=payload)
         except httpx.ConnectError as e:
             raise ConnectionError() from e
-        _raise_for_api_error(r)
+        _raise_for_api_error(r, not_found=lambda _detail: BlueprintNotFoundError(site=site))
 
         result = self._parse_connect_response(r.json(), site)
 
@@ -318,12 +386,14 @@ class Plaidify:
                     message=mfa_result.error or "MFA submission failed.",
                     status_code=400,
                 )
-            if result.job_id:
-                return await self._resolve_connect_job(site, result.job_id, mfa_handler)
-            # Fallback for older servers that do not return job_id.
-            r2 = await self._http.post("/connect", json=payload)
-            _raise_for_api_error(r2)
-            result = self._parse_connect_response(r2.json(), site)
+            if not result.job_id:
+                # Replaying /connect would re-send credentials whose one-time
+                # key is already gone; without a job there is nothing to follow.
+                raise PlaidifyError(
+                    message="The server did not return a job_id to follow after MFA.",
+                    status_code=502,
+                )
+            return await self._resolve_connect_job(site, result.job_id, mfa_handler)
 
         # Raise if MFA required but no handler
         if result.mfa_required and not mfa_handler:
@@ -418,7 +488,7 @@ class Plaidify:
         try:
             r = await self._http.post(
                 "/mfa/submit",
-                params={"session_id": session_id, "code": code},
+                json={"session_id": session_id, "code": code},
             )
         except httpx.ConnectError as e:
             raise ConnectionError() from e
@@ -502,9 +572,10 @@ class Plaidify:
             LinkResult with both ``link_token`` and ``access_token``.
         """
         try:
+            # In the body, never the query string: URLs land in access logs.
             r = await self._http.post(
                 "/submit_credentials",
-                params={
+                json={
                     "link_token": link_token,
                     "username": username,
                     "password": password,
@@ -519,26 +590,29 @@ class Plaidify:
             access_token=d["access_token"],
         )
 
-    async def fetch_data(self, access_token: str) -> ConnectResult:
+    async def fetch_data(self, access_token: str, consent_token: Optional[str] = None) -> ConnectResult:
         """Fetch data using a previously created access token (step 3).
 
         Args:
             access_token: The token from :meth:`submit_credentials`.
+            consent_token: Optional consent grant limiting the returned fields.
 
         Returns:
             ConnectResult with extracted data.
         """
+        body: Dict[str, Any] = {"access_token": access_token}
+        if consent_token is not None:
+            body["consent_token"] = consent_token
         try:
-            r = await self._http.get(
-                "/fetch_data",
-                params={"access_token": access_token},
-            )
+            # POST with a JSON body: tokens in a query string land in access logs.
+            r = await self._http.post("/fetch_data", json=body)
         except httpx.ConnectError as e:
             raise ConnectionError() from e
         _raise_for_api_error(r)
         d = r.json()
         return ConnectResult(
             status=d.get("status", "connected"),
+            job_id=d.get("job_id"),
             data=d.get("data"),
             metadata=d.get("metadata"),
         )
@@ -567,8 +641,7 @@ class Plaidify:
         d = r.json()
         token = AuthToken(access_token=d["access_token"], token_type=d.get("token_type", "bearer"))
         # Auto-set for subsequent requests
-        self._config.api_key = token.access_token
-        self._ensure_client().headers["Authorization"] = f"Bearer {token.access_token}"
+        self._use_credential(token.access_token)
         return token
 
     async def login(self, username: str, password: str) -> AuthToken:
@@ -592,8 +665,7 @@ class Plaidify:
         _raise_for_api_error(r)
         d = r.json()
         token = AuthToken(access_token=d["access_token"], token_type=d.get("token_type", "bearer"))
-        self._config.api_key = token.access_token
-        self._ensure_client().headers["Authorization"] = f"Bearer {token.access_token}"
+        self._use_credential(token.access_token)
         return token
 
     async def me(self) -> UserProfile:
@@ -702,8 +774,12 @@ class Plaidify:
     ) -> WebhookRegistration:
         """Register a webhook URL for a link session.
 
-        The server will POST events (LINK_COMPLETE, LINK_ERROR, MFA_REQUIRED)
-        to the provided URL with an HMAC-SHA256 signature.
+        The server POSTs events (LINK_COMPLETE, LINK_ERROR, MFA_REQUIRED, ...)
+        to the URL with ``X-Plaidify-Delivery`` (the same id on every retry),
+        ``X-Plaidify-Timestamp`` (Unix seconds) and ``X-Plaidify-Signature``:
+        ``sha256=`` + hex HMAC-SHA256, keyed with ``secret``, of
+        ``f"{timestamp}." + raw_body``. Receivers recompute it and reject old
+        timestamps.
 
         Args:
             link_token: Token identifying the link session.
@@ -739,7 +815,8 @@ class Plaidify:
             interval: Seconds between polls (default 2).
 
         Returns:
-            LinkSession with final status.
+            LinkSession with final status: ``completed`` (with the
+            ``public_token`` to exchange), ``error``, ``expired`` or ``exited``.
 
         Raises:
             PlaidifyError: If the session times out.
@@ -753,12 +830,14 @@ class Plaidify:
             _raise_for_api_error(r)
             d = r.json()
             status = d.get("status", "unknown")
-            if status in ("completed", "error", "expired"):
+            if status in ("completed", "error", "expired", "exited"):
                 return LinkSession(
                     link_token=link_token,
                     status=status,
                     site=d.get("site"),
                     events=d.get("events", []),
+                    public_token=d.get("public_token"),
+                    error_message=d.get("error_message"),
                 )
             await asyncio.sleep(interval)
 
@@ -988,7 +1067,8 @@ class Plaidify:
             duration_seconds: How long the grant should last.
 
         Returns:
-            ConsentRequest with ``id`` and ``status``.
+            ConsentRequest whose ``id`` (the server's ``request_id``) is
+            passed to :meth:`approve_consent` / :meth:`deny_consent`.
         """
         try:
             r = await self._http.post(
@@ -1005,18 +1085,19 @@ class Plaidify:
         _raise_for_api_error(r)
         d = r.json()
         return ConsentRequest(
-            id=d["consent_request_id"],
+            id=d["request_id"],
             access_token=access_token,
-            scopes=scopes,
-            agent_name=agent_name,
-            status="pending",
+            scopes=d.get("scopes", scopes),
+            agent_name=d.get("agent_name", agent_name),
+            status=d.get("status", "pending"),
+            duration_seconds=d.get("duration_seconds", duration_seconds),
         )
 
-    async def approve_consent(self, consent_id: int) -> ConsentGrant:
+    async def approve_consent(self, consent_id: str) -> ConsentGrant:
         """Approve a pending consent request.
 
         Args:
-            consent_id: The consent request ID.
+            consent_id: The consent request ID (``ConsentRequest.id``).
 
         Returns:
             ConsentGrant with the ``consent_token``.
@@ -1033,11 +1114,11 @@ class Plaidify:
             expires_at=d.get("expires_at"),
         )
 
-    async def deny_consent(self, consent_id: int) -> Dict[str, str]:
+    async def deny_consent(self, consent_id: str) -> Dict[str, str]:
         """Deny a pending consent request.
 
         Args:
-            consent_id: The consent request ID.
+            consent_id: The consent request ID (``ConsentRequest.id``).
 
         Returns:
             Dict with ``detail``.
@@ -1060,7 +1141,8 @@ class Plaidify:
         except httpx.ConnectError as e:
             raise ConnectionError() from e
         _raise_for_api_error(r)
-        return r.json().get("grants", r.json() if isinstance(r.json(), list) else [])
+        d = r.json()
+        return d.get("grants", []) if isinstance(d, dict) else d
 
     async def revoke_consent(self, consent_token: str) -> Dict[str, str]:
         """Revoke an active consent grant.
@@ -1084,24 +1166,26 @@ class Plaidify:
         self,
         name: str,
         *,
-        scopes: Optional[str] = None,
-        expires_in_days: Optional[int] = None,
+        scopes: Optional[List[str]] = None,
+        expires_days: Optional[int] = None,
     ) -> ApiKeyInfo:
         """Create a new API key.
 
         Args:
             name: Display name for the key.
-            scopes: Comma-separated scope string.
-            expires_in_days: Number of days until expiry.
+            scopes: Scope strings the key is limited to (None = every scope).
+            expires_days: Number of days until expiry (None = never).
 
         Returns:
             ApiKeyInfo with ``raw_key`` (only returned once).
         """
+        if isinstance(scopes, str):
+            raise TypeError("scopes must be a list of scope strings, not a string.")
         body: Dict[str, Any] = {"name": name}
         if scopes is not None:
-            body["scopes"] = scopes
-        if expires_in_days is not None:
-            body["expires_in_days"] = expires_in_days
+            body["scopes"] = list(scopes)
+        if expires_days is not None:
+            body["expires_days"] = expires_days
         try:
             r = await self._http.post("/api-keys", json=body)
         except httpx.ConnectError as e:
@@ -1110,9 +1194,12 @@ class Plaidify:
         d = r.json()
         return ApiKeyInfo(
             id=d.get("id", ""),
-            name=name,
+            name=d.get("name", name),
             key_prefix=d.get("key_prefix", ""),
             raw_key=d.get("key"),
+            scopes=list(scopes) if scopes is not None else None,
+            expires_at=d.get("expires_at"),
+            created_at=d.get("created_at"),
         )
 
     async def list_api_keys(self) -> List[ApiKeyInfo]:
@@ -1126,13 +1213,14 @@ class Plaidify:
         except httpx.ConnectError as e:
             raise ConnectionError() from e
         _raise_for_api_error(r)
-        keys = r.json().get("keys", r.json() if isinstance(r.json(), list) else [])
+        # The server returns a bare list of active keys.
+        keys = r.json()
         return [
             ApiKeyInfo(
                 id=k.get("id", ""),
                 name=k.get("name", ""),
                 key_prefix=k.get("key_prefix", ""),
-                scopes=k.get("scopes"),
+                scopes=_parse_scopes(k.get("scopes")),
                 is_active=k.get("is_active", True),
                 expires_at=k.get("expires_at"),
                 last_used_at=k.get("last_used_at"),
@@ -1501,6 +1589,7 @@ class PlaidifySync:
         username: str,
         password: str,
         extract_fields: Optional[List[str]] = None,
+        encrypt: bool = True,
     ) -> ConnectResult:
         return self._run(
             self._async_client.connect(
@@ -1508,6 +1597,7 @@ class PlaidifySync:
                 username=username,
                 password=password,
                 extract_fields=extract_fields,
+                encrypt=encrypt,
             )
         )
 
@@ -1552,14 +1642,14 @@ class PlaidifySync:
     def mfa_status(self, session_id: str) -> MFAChallenge:
         return self._run(self._async_client.mfa_status(session_id))
 
-    def create_link(self, site: str) -> LinkResult:
-        return self._run(self._async_client.create_link(site))
+    def create_link(self, site: str, scopes: Optional[List[str]] = None) -> LinkResult:
+        return self._run(self._async_client.create_link(site, scopes))
 
     def submit_credentials(self, link_token: str, username: str, password: str) -> LinkResult:
         return self._run(self._async_client.submit_credentials(link_token, username, password))
 
-    def fetch_data(self, access_token: str) -> ConnectResult:
-        return self._run(self._async_client.fetch_data(access_token))
+    def fetch_data(self, access_token: str, consent_token: Optional[str] = None) -> ConnectResult:
+        return self._run(self._async_client.fetch_data(access_token, consent_token))
 
     def register(self, username: str, email: str, password: str) -> AuthToken:
         return self._run(self._async_client.register(username, email, password))
@@ -1598,9 +1688,7 @@ class PlaidifySync:
         timeout: float = 300.0,
         interval: float = 2.0,
     ) -> LinkSession:
-        return self._run(
-            self._async_client.poll_link_status(link_token, timeout=timeout, interval=interval)
-        )
+        return self._run(self._async_client.poll_link_status(link_token, timeout=timeout, interval=interval))
 
     # ── Agents ────────────────────────────────────────────────────────────────
 
@@ -1622,16 +1710,18 @@ class PlaidifySync:
     # ── Consent ───────────────────────────────────────────────────────────────
 
     def request_consent(
-        self, access_token: str, scopes: List[str], agent_name: str, duration_seconds: int = 3600,
+        self,
+        access_token: str,
+        scopes: List[str],
+        agent_name: str,
+        duration_seconds: int = 3600,
     ) -> ConsentRequest:
-        return self._run(
-            self._async_client.request_consent(access_token, scopes, agent_name, duration_seconds)
-        )
+        return self._run(self._async_client.request_consent(access_token, scopes, agent_name, duration_seconds))
 
-    def approve_consent(self, consent_id: int) -> ConsentGrant:
+    def approve_consent(self, consent_id: str) -> ConsentGrant:
         return self._run(self._async_client.approve_consent(consent_id))
 
-    def deny_consent(self, consent_id: int) -> Dict[str, str]:
+    def deny_consent(self, consent_id: str) -> Dict[str, str]:
         return self._run(self._async_client.deny_consent(consent_id))
 
     def list_consents(self) -> List[Dict[str, Any]]:

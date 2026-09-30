@@ -3,6 +3,22 @@ Tests for the Link Token flow: create_link → submit_credentials → fetch_data
 Also tests link/token management (list, delete).
 """
 
+import threading
+from datetime import timedelta
+from unittest.mock import patch
+
+from src.crypto import token_fingerprint
+from src.database import (
+    AccessToken,
+    AuditLog,
+    ConsentGrant,
+    Link,
+    PublicToken,
+    ScheduledRefreshJob,
+    utcnow,
+)
+from tests.conftest import TestSessionLocal
+
 
 class TestLinkTokenFlow:
     """Tests for the full multi-step link flow."""
@@ -22,7 +38,7 @@ class TestLinkTokenFlow:
         # Step 2: Submit credentials
         r2 = client.post(
             "/submit_credentials",
-            params={
+            json={
                 "link_token": link_token,
                 "username": "test_user",
                 "password": "secret123",
@@ -34,7 +50,7 @@ class TestLinkTokenFlow:
         assert access_token
 
         # Step 3: Fetch data — mocked engine returns stub data
-        r3 = client.get("/fetch_data", params={"access_token": access_token}, headers=auth_headers)
+        r3 = client.post("/fetch_data", json={"access_token": access_token}, headers=auth_headers)
         assert r3.status_code == 200
         data = r3.json()
         assert data["status"] == "connected"
@@ -46,7 +62,7 @@ class TestLinkTokenFlow:
     def test_submit_credentials_invalid_link(self, client, auth_headers):
         response = client.post(
             "/submit_credentials",
-            params={
+            json={
                 "link_token": "nonexistent-token",
                 "username": "user",
                 "password": "pass",
@@ -56,9 +72,9 @@ class TestLinkTokenFlow:
         assert response.status_code == 404
 
     def test_fetch_data_invalid_token(self, client, auth_headers):
-        response = client.get(
+        response = client.post(
             "/fetch_data",
-            params={
+            json={
                 "access_token": "nonexistent-token",
             },
             headers=auth_headers,
@@ -77,7 +93,7 @@ class TestInstructions:
 
         r2 = client.post(
             "/submit_credentials",
-            params={
+            json={
                 "link_token": link_token,
                 "username": "test_user",
                 "password": "secret123",
@@ -89,7 +105,7 @@ class TestInstructions:
         # Submit instructions — this should work
         r3 = client.post(
             "/submit_instructions",
-            params={
+            json={
                 "access_token": access_token,
                 "instructions": "Extract only active accounts",
             },
@@ -98,13 +114,13 @@ class TestInstructions:
         assert r3.status_code == 200
 
         # Fetch data — mocked engine returns stub data
-        r4 = client.get("/fetch_data", params={"access_token": access_token}, headers=auth_headers)
+        r4 = client.post("/fetch_data", json={"access_token": access_token}, headers=auth_headers)
         assert r4.status_code == 200
 
     def test_submit_instructions_invalid_token(self, client, auth_headers):
         response = client.post(
             "/submit_instructions",
-            params={
+            json={
                 "access_token": "invalid",
                 "instructions": "some instructions",
             },
@@ -151,7 +167,7 @@ class TestLinkManagement:
         link_token = r1.json()["link_token"]
         client.post(
             "/submit_credentials",
-            params={
+            json={
                 "link_token": link_token,
                 "username": "user",
                 "password": "pass",
@@ -167,7 +183,7 @@ class TestLinkManagement:
         link_token = r1.json()["link_token"]
         r2 = client.post(
             "/submit_credentials",
-            params={
+            json={
                 "link_token": link_token,
                 "username": "user",
                 "password": "pass",
@@ -214,7 +230,7 @@ class TestUserIsolation:
         link_token = r1.json()["link_token"]
         r2 = client.post(
             "/submit_credentials",
-            params={
+            json={
                 "link_token": link_token,
                 "username": "user",
                 "password": "pass",
@@ -224,9 +240,9 @@ class TestUserIsolation:
         access_token = r2.json()["access_token"]
 
         # User 2 tries to fetch user 1's data
-        response = client.get(
+        response = client.post(
             "/fetch_data",
-            params={
+            json={
                 "access_token": access_token,
             },
             headers=second_user_headers,
@@ -546,3 +562,265 @@ class TestHostedLinkFrontend:
             response = client.get("/link")
         assert response.status_code == 500
         assert any("frontend-next/dist/index.html is missing" in record.getMessage() for record in caplog.records)
+
+
+# ── Wave-2 API hardening ──────────────────────────────────────────────────────
+
+
+def _link(client, headers, site="internal_bank"):
+    resp = client.post("/create_link", params={"site": site}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["link_token"]
+
+
+def _token(client, headers, link_token):
+    resp = client.post(
+        "/submit_credentials",
+        json={"link_token": link_token, "username": "user", "password": "pass"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["access_token"]
+
+
+class TestSecretsStayOutOfUrls:
+    """SEC-02: credentials and tokens are read from JSON bodies only."""
+
+    def test_fetch_data_has_no_get_form(self, client, auth_headers):
+        access_token = _token(client, auth_headers, _link(client, auth_headers))
+        resp = client.get("/fetch_data", params={"access_token": access_token}, headers=auth_headers)
+        assert resp.status_code == 405
+
+    def test_query_string_credentials_are_not_read(self, client, auth_headers):
+        link_token = _link(client, auth_headers)
+        resp = client.post(
+            "/submit_credentials",
+            params={"link_token": link_token, "username": "user", "password": "pass"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 422
+        with TestSessionLocal() as db:
+            assert db.query(AccessToken).count() == 0
+
+    def test_query_string_token_is_not_read_by_fetch_data(self, client, auth_headers):
+        access_token = _token(client, auth_headers, _link(client, auth_headers))
+        resp = client.post("/fetch_data", params={"access_token": access_token}, headers=auth_headers)
+        assert resp.status_code == 422
+
+
+class TestApiKeysOnLinkEndpoints:
+    """JOB-12: /links, /tokens and /exchange/public_token accept API keys, with their site limits."""
+
+    def _agent_key(self, client, headers, sites):
+        return client.post("/agents", json={"name": "a", "allowed_sites": sites}, headers=headers).json()["api_key"]
+
+    def test_listings_follow_the_keys_sites(self, client, auth_headers):
+        allowed = _link(client, auth_headers, "internal_bank")
+        _token(client, auth_headers, allowed)
+        other = _link(client, auth_headers, "hydro_one")
+        _token(client, auth_headers, other)
+        key = {"X-API-Key": self._agent_key(client, auth_headers, ["internal_bank"])}
+
+        assert [entry["link_token"] for entry in client.get("/links", headers=key).json()] == [allowed]
+        assert [entry["link_token"] for entry in client.get("/tokens", headers=key).json()] == [allowed]
+        assert len(client.get("/links", headers=auth_headers).json()) == 2
+
+    def test_deletes_outside_the_keys_sites_are_refused(self, client, auth_headers):
+        other = _link(client, auth_headers, "hydro_one")
+        token = _token(client, auth_headers, other)
+        key = {"X-API-Key": self._agent_key(client, auth_headers, ["internal_bank"])}
+
+        assert client.delete(f"/tokens/{token}", headers=key).status_code == 403
+        assert client.delete(f"/links/{other}", headers=key).status_code == 403
+        assert client.delete(f"/links/{other}", headers=auth_headers).status_code == 200
+
+    def test_plain_api_key_manages_links(self, client, auth_headers):
+        key = {"X-API-Key": client.post("/api-keys", json={"name": "k"}, headers=auth_headers).json()["key"]}
+        link_token = _link(client, key)
+        assert client.get("/links", headers=key).json() == [{"link_token": link_token, "site": "internal_bank"}]
+        assert client.delete(f"/links/{link_token}", headers=key).status_code == 200
+
+
+class TestPagination:
+    def test_links_and_tokens_are_paginated(self, client, auth_headers):
+        links = [_link(client, auth_headers) for _ in range(3)]
+        for link_token in links:
+            _token(client, auth_headers, link_token)
+
+        page = client.get("/links", params={"limit": 2}, headers=auth_headers).json()
+        rest = client.get("/links", params={"limit": 2, "offset": 2}, headers=auth_headers).json()
+        assert len(page) == 2 and len(rest) == 1
+        assert {e["link_token"] for e in page + rest} == set(links)
+
+        tokens = client.get("/tokens", params={"limit": 1, "offset": 1}, headers=auth_headers).json()
+        assert len(tokens) == 1
+        assert client.get("/tokens", params={"limit": 500}, headers=auth_headers).status_code == 422
+        assert client.get("/links", params={"offset": -1}, headers=auth_headers).status_code == 422
+
+
+class TestDeletesUnscheduleRefresh:
+    """JOB-21: deleting a link, a token or an account drops its refresh job everywhere."""
+
+    def _schedule(self, access_token, user_id):
+        from src.routers.refresh import _get_refresh_scheduler
+
+        scheduler = _get_refresh_scheduler()
+        scheduler.schedule(access_token, user_id, interval_seconds=3600)
+        return scheduler
+
+    def _user_id(self, client, headers):
+        return client.get("/auth/me", headers=headers).json()["id"]
+
+    def test_deleting_a_token_unschedules_it(self, client, auth_headers):
+        access_token = _token(client, auth_headers, _link(client, auth_headers))
+        scheduler = self._schedule(access_token, self._user_id(client, auth_headers))
+
+        assert client.delete(f"/tokens/{access_token}", headers=auth_headers).status_code == 200
+        assert access_token not in scheduler.list_jobs()
+        with TestSessionLocal() as db:
+            assert db.query(ScheduledRefreshJob).filter_by(access_token=access_token).count() == 0
+
+    def test_deleting_a_link_unschedules_and_removes_its_dependents(self, client, auth_headers):
+        link_token = _link(client, auth_headers)
+        access_token = _token(client, auth_headers, link_token)
+        scheduler = self._schedule(access_token, self._user_id(client, auth_headers))
+        request_id = client.post(
+            "/consent/request",
+            json={"access_token": access_token, "scopes": ["balance"], "agent_name": "x"},
+            headers=auth_headers,
+        ).json()["request_id"]
+        client.post(f"/consent/{request_id}/approve", headers=auth_headers)
+
+        assert client.delete(f"/links/{link_token}", headers=auth_headers).status_code == 200
+        assert access_token not in scheduler.list_jobs()
+        with TestSessionLocal() as db:
+            assert db.query(ScheduledRefreshJob).count() == 0
+            assert db.query(ConsentGrant).count() == 0
+            assert db.query(AccessToken).count() == 0
+
+    def test_deleting_the_account_unschedules_its_jobs(self, client):
+        registered = client.post(
+            "/auth/register",
+            json={"username": "leaving", "email": "leaving@example.com", "password": "Secure@pass123"},
+        ).json()
+        headers = {"Authorization": f"Bearer {registered['access_token']}"}
+        access_token = _token(client, headers, _link(client, headers))
+        scheduler = self._schedule(access_token, self._user_id(client, headers))
+
+        resp = client.request("DELETE", "/auth/me", json={"password": "Secure@pass123"}, headers=headers)
+        assert resp.status_code == 200
+        assert access_token not in scheduler.list_jobs()
+
+
+class TestPublicTokenExchange:
+    """JOB-22: one exchange per public token, even when requests race."""
+
+    def _public_token(self, client, headers):
+        link_token = _link(client, headers)
+        access_token = _token(client, headers, link_token)
+        user_id = client.get("/auth/me", headers=headers).json()["id"]
+        with TestSessionLocal() as db:
+            db.add(
+                PublicToken(
+                    token="public-race",
+                    link_token=link_token,
+                    access_token=access_token,
+                    user_id=user_id,
+                    expires_at=utcnow() + timedelta(minutes=10),
+                )
+            )
+            db.commit()
+        return "public-race", access_token
+
+    def test_concurrent_exchanges_yield_one_access_token(self, client, auth_headers):
+        from src.routers import links as links_router
+
+        public_token, access_token = self._public_token(client, auth_headers)
+        barrier = threading.Barrier(2, timeout=10)
+        real_check = links_router.ensure_site_allowed_for_request
+
+        def both_have_read_the_row(request, site):
+            barrier.wait()  # each request has looked the token up before either claims it
+            return real_check(request, site)
+
+        results = []
+
+        def exchange():
+            from fastapi.testclient import TestClient
+
+            from src.main import app
+
+            resp = TestClient(app).post(
+                "/exchange/public_token", json={"public_token": public_token}, headers=auth_headers
+            )
+            results.append((resp.status_code, resp.json()))
+
+        with patch.object(links_router, "ensure_site_allowed_for_request", both_have_read_the_row):
+            threads = [threading.Thread(target=exchange) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        assert sorted(status for status, _ in results) == [200, 410]
+        assert [body["access_token"] for status, body in results if status == 200] == [access_token]
+
+    def test_expired_public_token_is_refused(self, client, auth_headers):
+        public_token, _ = self._public_token(client, auth_headers)
+        with TestSessionLocal() as db:
+            db.get(PublicToken, public_token).expires_at = utcnow() - timedelta(seconds=1)
+            db.commit()
+        resp = client.post("/exchange/public_token", json={"public_token": public_token}, headers=auth_headers)
+        assert resp.status_code == 410
+        assert "expired" in resp.json()["detail"]
+
+    def test_api_key_can_exchange(self, client, auth_headers):
+        public_token, access_token = self._public_token(client, auth_headers)
+        key = client.post("/api-keys", json={"name": "server"}, headers=auth_headers).json()["key"]
+        resp = client.post("/exchange/public_token", json={"public_token": public_token}, headers={"X-API-Key": key})
+        assert resp.status_code == 200
+        assert resp.json()["access_token"] == access_token
+
+
+class TestCreateLinkValidatesFirst:
+    """JOB-24: a rejected create_link leaves no link behind."""
+
+    def test_bad_refresh_schedule_creates_nothing(self, client, auth_headers):
+        for bad in (
+            {"refresh_schedule": {"schedule_format": "fortnightly"}},
+            {"refresh_schedule": {"interval_seconds": 60}},
+            {"refresh_schedule": "hourly"},
+            {"scopes": "balance"},
+        ):
+            resp = client.post("/create_link", params={"site": "internal_bank"}, json=bad, headers=auth_headers)
+            assert resp.status_code in (400, 422), bad
+        with TestSessionLocal() as db:
+            assert db.query(Link).count() == 0
+
+    def test_valid_refresh_schedule_is_echoed(self, client, auth_headers):
+        resp = client.post(
+            "/create_link",
+            params={"site": "internal_bank"},
+            json={"refresh_schedule": {"format": "daily"}},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["refresh_schedule"] == {"schedule_format": "daily", "interval_seconds": 86400}
+
+
+class TestTokensStayOutOfTheAuditTrail:
+    """SEC-22: the audit trail records fingerprints, never bearer tokens."""
+
+    def test_link_and_token_events_use_fingerprints(self, client, auth_headers):
+        link_token = _link(client, auth_headers)
+        access_token = _token(client, auth_headers, link_token)
+        client.post("/fetch_data", json={"access_token": access_token}, headers=auth_headers)
+        client.delete(f"/tokens/{access_token}", headers=auth_headers)
+        client.delete(f"/links/{link_token}", headers=auth_headers)
+
+        with TestSessionLocal() as db:
+            entries = db.query(AuditLog).filter(AuditLog.event_type.in_(["token", "data_access"])).all()
+        dumped = " ".join(f"{e.resource} {e.metadata_json}" for e in entries)
+        assert entries
+        assert access_token not in dumped and link_token not in dumped
+        assert token_fingerprint(access_token) in dumped and token_fingerprint(link_token) in dumped

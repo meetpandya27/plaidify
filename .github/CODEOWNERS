@@ -1,0 +1,10 @@
+# Every change needs a review from the maintainer, including Dependabot's.
+# With branch protection's "Require review from Code Owners" this also covers
+# the deployment workflows and infrastructure below.
+*                       @meetpandya27
+
+/.github/               @meetpandya27
+/infra/                 @meetpandya27
+/Dockerfile             @meetpandya27
+/requirements*.txt      @meetpandya27
+/requirements*.lock     @meetpandya27

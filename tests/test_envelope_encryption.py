@@ -295,7 +295,7 @@ class TestSubmitCredentialsWithDEK:
         # Submit credentials
         response = client.post(
             "/submit_credentials",
-            params={
+            json={
                 "link_token": link_token,
                 "username": "myuser",
                 "password": "mypass",
@@ -318,3 +318,190 @@ class TestSubmitCredentialsWithDEK:
             assert decrypted_pass == "mypass"
         finally:
             db.close()
+
+
+class TestEncryptedJsonDocuments:
+    """ENG-15: per-user encryption of stored JSON (access-job results)."""
+
+    def _user(self, db, username="docowner", with_dek=True):
+        from src.database import User, create_user_dek
+
+        user = User(
+            username=username,
+            email=f"{username}@example.com",
+            hashed_password="x",
+            encrypted_dek=create_user_dek() if with_dek else None,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
+
+    def test_roundtrip_and_nothing_readable_at_rest(self):
+        from src.database import decrypt_json_for_user, encrypt_json_for_user, is_encrypted_json
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        try:
+            user = self._user(db)
+            document = {"data": {"account_number": "000123456789", "balance": 1234.56}, "status": "ok"}
+            stored = encrypt_json_for_user(db, user, document, context="access_job:j1:result")
+            assert is_encrypted_json(stored)
+            assert "000123456789" not in stored and "balance" not in stored
+            assert decrypt_json_for_user(user, stored, context="access_job:j1:result") == document
+        finally:
+            db.close()
+
+    def test_ciphertext_is_bound_to_its_context(self):
+        from src.database import CredentialDecryptionError, decrypt_json_for_user, encrypt_json_for_user
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        try:
+            user = self._user(db)
+            stored = encrypt_json_for_user(db, user, {"a": 1}, context="access_job:j1:result")
+            with pytest.raises(CredentialDecryptionError):
+                decrypt_json_for_user(user, stored, context="access_job:j2:result")
+        finally:
+            db.close()
+
+    def test_other_users_key_cannot_decrypt(self):
+        from src.database import CredentialDecryptionError, decrypt_json_for_user, encrypt_json_for_user
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        try:
+            alice, bob = self._user(db, "alice_doc"), self._user(db, "bob_doc")
+            stored = encrypt_json_for_user(db, alice, {"secret": True}, context="c")
+            with pytest.raises(CredentialDecryptionError):
+                decrypt_json_for_user(bob, stored, context="c")
+        finally:
+            db.close()
+
+    def test_legacy_plaintext_rows_and_none_still_read(self):
+        from src.database import decrypt_json_for_user
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        try:
+            user = self._user(db)
+            assert decrypt_json_for_user(user, '{"status": "completed"}', context="c") == {"status": "completed"}
+            assert decrypt_json_for_user(user, None, context="c") is None
+        finally:
+            db.close()
+
+    def test_user_without_a_dek_gets_one_in_the_callers_transaction(self):
+        from src.database import User, decrypt_json_for_user, encrypt_json_for_user
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        try:
+            user = self._user(db, "nodek_doc", with_dek=False)
+            stored = encrypt_json_for_user(db, user, {"x": 1}, context="c")
+            assert user.encrypted_dek is not None
+            db.commit()
+
+            other = TestSessionLocal()
+            try:
+                fresh = other.get(User, user.id)
+                assert fresh.encrypted_dek == user.encrypted_dek
+                assert decrypt_json_for_user(fresh, stored, context="c") == {"x": 1}
+            finally:
+                other.close()
+        finally:
+            db.close()
+
+    def test_a_concurrently_created_dek_is_reused_not_overwritten(self):
+        """Two writers racing to give a user a DEK must end up on the same one."""
+        from src.database import User, create_user_dek, decrypt_json_for_user, encrypt_json_for_user
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        try:
+            user = self._user(db, "race_doc", with_dek=False)
+            winner = TestSessionLocal()
+            try:
+                row = winner.get(User, user.id)
+                row.encrypted_dek = create_user_dek()
+                winner.commit()
+                winning_dek = row.encrypted_dek
+            finally:
+                winner.close()
+
+            stored = encrypt_json_for_user(db, user, {"y": 2}, context="c")  # still sees no DEK in memory
+            db.commit()
+            assert user.encrypted_dek == winning_dek
+            assert decrypt_json_for_user(user, stored, context="c") == {"y": 2}
+        finally:
+            db.close()
+
+    def test_context_is_required(self):
+        from src.database import encrypt_json_for_user
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        try:
+            with pytest.raises(ValueError):
+                encrypt_json_for_user(db, self._user(db), {}, context="")
+        finally:
+            db.close()
+
+
+class TestJobResultRetention:
+    """ENG-15: stored access-job results are erased after RESULT_RETENTION_DAYS."""
+
+    def test_old_results_are_erased_and_rows_kept(self):
+        from datetime import datetime, timedelta, timezone
+
+        from src.database import AccessJob, purge_expired_job_results
+        from tests.conftest import TestSessionLocal
+
+        now = datetime.now(timezone.utc)
+        db = TestSessionLocal()
+        try:
+            db.add_all(
+                [
+                    AccessJob(
+                        id="old",
+                        site="s",
+                        job_type="t",
+                        lock_scope="x",
+                        result_json="enc:v1:aaa",
+                        created_at=now - timedelta(days=40),
+                        completed_at=now - timedelta(days=31),
+                    ),
+                    AccessJob(
+                        id="recent",
+                        site="s",
+                        job_type="t",
+                        lock_scope="x",
+                        result_json="enc:v1:bbb",
+                        created_at=now - timedelta(days=40),
+                        completed_at=now - timedelta(days=29),
+                    ),
+                    AccessJob(
+                        id="never-finished",
+                        site="s",
+                        job_type="t",
+                        lock_scope="x",
+                        result_json="{}",
+                        created_at=now - timedelta(days=45),
+                    ),
+                ]
+            )
+            db.commit()
+
+            assert purge_expired_job_results(db, retention_days=30, now=now) == 2
+            db.expire_all()
+            assert db.get(AccessJob, "old").result_json is None
+            assert db.get(AccessJob, "never-finished").result_json is None
+            assert db.get(AccessJob, "recent").result_json == "enc:v1:bbb"
+            assert db.get(AccessJob, "old").status == "pending"  # the row itself stays
+            assert purge_expired_job_results(db, retention_days=30, now=now) == 0
+        finally:
+            db.close()
+
+    def test_default_retention_comes_from_settings(self):
+        from src.config import get_settings
+
+        assert get_settings().result_retention_days == 30

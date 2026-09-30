@@ -223,7 +223,7 @@ class TestBlueprintGenerator:
         assert auth_steps[2]["value"] == "{{password}}"
         assert auth_steps[3]["action"] == "click"
         assert auth_steps[3]["selector"] == "button[type='submit']"
-        assert auth_steps[4]["action"] == "wait"
+        assert auth_steps[4] == {"action": "wait_for_navigation", "timeout": 10000}
 
     @pytest.mark.asyncio
     async def test_generate_with_mfa(self, field_response, mock_dom_simplifier_result):
@@ -445,7 +445,140 @@ class TestBlueprintGenerator:
         assert result.blueprint_json["rate_limit"]["max_requests_per_hour"] == 10
 
 
+# ── Generator safety (SEC-03) ─────────────────────────────────────────────────
+
+
+class TestGeneratorSafety:
+    @pytest.mark.asyncio
+    async def test_credentials_in_the_url_are_refused(self):
+        generator = BlueprintGenerator(MagicMock())
+        with pytest.raises(ValueError, match="credentials"):
+            await generator.generate("https://chase:x@attacker.example/login", _make_mock_page())
+
+    @pytest.mark.asyncio
+    async def test_site_key_and_domain_come_from_the_hostname(self):
+        provider = _make_mock_provider(
+            {"username_selector": "#u", "password_selector": "#p", "submit_selector": "#go", "confidence": 0.9},
+            {"fields": [{"name": "balance", "type": "currency"}]},
+        )
+        generator = BlueprintGenerator(provider)
+        generator.dom_simplifier = MagicMock()
+        generator.dom_simplifier.simplify = AsyncMock(return_value=MagicMock(html="<form></form>"))
+        page = _make_mock_page()
+        page.eval_on_selector = AsyncMock(return_value="https://login.attacker.example/session?next=/")
+
+        result = await generator.generate("https://Attacker.Example:443/login", page)
+
+        assert result.site_key == "attacker_example"
+        assert result.blueprint_json["domain"] == "attacker.example"
+        assert "auto_generated" in result.blueprint_json["tags"]
+        # Where the login form posts is read from the page, not invented.
+        assert result.blueprint_json["auth"]["submit_targets"] == ["https://login.attacker.example/session"]
+
+    @pytest.mark.asyncio
+    async def test_model_suggested_steps_and_fields_are_sanitised(self):
+        provider = _make_mock_provider(
+            {
+                "username_selector": "#u",
+                "password_selector": "#p",
+                "submit_selector": "#go",
+                "pre_login_steps": [
+                    {"action": "goto", "selector": "file:///etc/passwd"},
+                    {"action": "execute_js", "selector": "#x"},
+                    {"action": "click", "selector": "#cookies"},
+                ],
+                "confidence": 0.9,
+            },
+            {"fields": [{"name": "Balance Due!", "type": "money"}, "junk", {"name": ""}]},
+        )
+        generator = BlueprintGenerator(provider)
+        generator.dom_simplifier = MagicMock()
+        generator.dom_simplifier.simplify = AsyncMock(return_value=MagicMock(html="<form></form>"))
+
+        result = await generator.generate("https://bank.example/login", _make_mock_page())
+
+        actions = [step["action"] for step in result.blueprint_json["auth"]["steps"]]
+        assert actions == ["goto", "click", "fill", "fill", "click", "wait_for_navigation"]
+        assert result.blueprint_json["extract"] == {"balance_due": {"type": "text", "description": ""}}
+        assert isinstance(result.blueprint, BlueprintV2)
+
+
 # ── API Endpoint Tests ────────────────────────────────────────────────────────
+
+
+def _admin_headers(client):
+    from src.database import User, get_db
+
+    response = client.post(
+        "/auth/register",
+        json={"username": "gen_admin", "email": "gen_admin@example.com", "password": "Secure@pass123"},
+    )
+    assert response.status_code == 200
+    gen = client.app.dependency_overrides[get_db]()
+    db = next(gen)
+    try:
+        user = db.query(User).filter(User.username == "gen_admin").first()
+        user.is_admin = True
+        db.commit()
+    finally:
+        gen.close()
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+class _FakePage:
+    async def goto(self, *args, **kwargs):
+        return None
+
+    async def wait_for_timeout(self, ms):
+        return None
+
+
+class _FakeContext:
+    async def new_page(self):
+        return _FakePage()
+
+
+class _FakeLease:
+    network_violation = None
+    context = _FakeContext()
+
+
+class _FakePool:
+    def __init__(self):
+        self.acquired = []
+        self.released = []
+
+    async def acquire(self, session_id, **kwargs):
+        self.acquired.append(kwargs)
+        return _FakeLease()
+
+    async def release(self, session_id):
+        self.released.append(session_id)
+
+
+def _draft():
+    from types import SimpleNamespace
+
+    blueprint_json = {
+        "schema_version": "3.0",
+        "name": "Bank",
+        "domain": "bank.example",
+        "tags": ["auto_generated"],
+        "extraction_strategy": "llm_adaptive",
+        "auth": {
+            "type": "form",
+            "submit_targets": ["/*"],
+            "steps": [{"action": "goto", "url": "https://bank.example/login"}],
+        },
+        "extract": {"balance": {"type": "currency"}},
+    }
+    return SimpleNamespace(
+        blueprint_json=blueprint_json,
+        site_key="bank_example",
+        domain="bank.example",
+        confidence=0.9,
+        warnings=[],
+    )
 
 
 class TestBlueprintGenerateEndpoint:
@@ -455,36 +588,120 @@ class TestBlueprintGenerateEndpoint:
         response = client.post("/blueprints/generate", json={"url": "https://example.com"})
         assert response.status_code == 401
 
-    def test_requires_url(self, client, auth_headers):
-        response = client.post("/blueprints/generate", json={}, headers=auth_headers)
+    def test_requires_an_administrator(self, client, auth_headers):
+        response = client.post("/blueprints/generate", json={"url": "https://example.com"}, headers=auth_headers)
+        assert response.status_code == 403
+
+    def test_requires_url(self, client):
+        response = client.post("/blueprints/generate", json={}, headers=_admin_headers(client))
         assert response.status_code == 422
 
-    def test_rejects_invalid_scheme(self, client, auth_headers):
+    def test_rejects_invalid_scheme(self, client):
         response = client.post(
             "/blueprints/generate",
             json={"url": "ftp://example.com"},
-            headers=auth_headers,
+            headers=_admin_headers(client),
         )
         assert response.status_code == 422
         assert "http" in response.json()["detail"].lower()
 
-    def test_rejects_missing_hostname(self, client, auth_headers):
+    def test_rejects_missing_hostname(self, client):
         response = client.post(
             "/blueprints/generate",
             json={"url": "https://"},
-            headers=auth_headers,
+            headers=_admin_headers(client),
         )
         assert response.status_code == 422
 
-    def test_requires_llm_configured(self, client, auth_headers):
+    def test_rejects_credentials_in_the_url(self, client):
+        response = client.post(
+            "/blueprints/generate",
+            json={"url": "https://chase:x@attacker.example/login"},
+            headers=_admin_headers(client),
+        )
+        assert response.status_code == 422
+        assert "credentials" in response.json()["detail"]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://127.0.0.1:8000/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.5/",
+            "http://[::1]/",
+            "http://168.63.129.16/",
+        ],
+    )
+    def test_rejects_private_addresses(self, client, url):
+        with patch("src.routers.system.settings.llm_api_key", "sk-test"):
+            response = client.post("/blueprints/generate", json={"url": url}, headers=_admin_headers(client))
+        assert response.status_code == 422
+
+    def test_rejects_unresolvable_hostnames(self, client):
+        with patch("src.routers.system._resolves", AsyncMock(return_value=False)):
+            response = client.post(
+                "/blueprints/generate",
+                json={"url": "https://no-such-host.invalid/login"},
+                headers=_admin_headers(client),
+            )
+        assert response.status_code == 422
+        assert "resolve" in response.json()["detail"]
+
+    def test_requires_llm_configured(self, client):
         """Should return 503 if LLM_API_KEY is not set."""
-        with patch("src.routers.system.settings") as mock_settings:
+        headers = _admin_headers(client)
+        with (
+            patch("src.routers.system.settings") as mock_settings,
+            patch("src.routers.system._resolves", AsyncMock(return_value=True)),
+        ):
             mock_settings.llm_api_key = ""
             mock_settings.llm_provider = "openai"
             mock_settings.llm_model = "gpt-4o-mini"
+            mock_settings.demo_mode = False
+            mock_settings.engine_allow_internal_connectors = False
             response = client.post(
                 "/blueprints/generate",
                 json={"url": "https://example.com/login"},
-                headers=auth_headers,
+                headers=headers,
             )
             assert response.status_code == 503
+
+    def _generate(self, client, tmp_path, headers, *, save):
+        pool = _FakePool()
+        with (
+            patch("src.routers.system.settings.llm_api_key", "sk-test"),
+            patch("src.routers.system.settings.connectors_dir", str(tmp_path)),
+            patch("src.routers.system.get_browser_pool", AsyncMock(return_value=pool)),
+            patch("src.routers.system._resolves", AsyncMock(return_value=True)),
+            patch("src.core.blueprint_generator.BlueprintGenerator") as Generator,
+        ):
+            Generator.return_value.generate = AsyncMock(return_value=_draft())
+            response = client.post(
+                "/blueprints/generate",
+                json={"url": "https://bank.example/login", "save": save},
+                headers=headers,
+            )
+        return response, pool
+
+    def test_returns_a_draft_without_writing_anything(self, client, tmp_path):
+        response, pool = self._generate(client, tmp_path, _admin_headers(client), save=False)
+        assert response.status_code == 200, response.text
+        assert response.json()["saved"] is None
+        assert response.json()["site_key"] == "bank_example"
+        assert list(tmp_path.iterdir()) == []
+        # The browser session is held to the address policy and never submits forms.
+        [lease] = pool.acquired
+        assert lease["address_policy"].block_private is True
+        assert lease["read_only_policy"].phase.value == "read"
+        assert len(pool.released) == 1
+
+    def test_saving_writes_once_under_the_hostname_key(self, client, tmp_path):
+        headers = _admin_headers(client)
+        response, _ = self._generate(client, tmp_path, headers, save=True)
+        assert response.status_code == 200, response.text
+        saved = tmp_path / "bank_example.json"
+        assert response.json()["saved"] == str(saved)
+        assert json.loads(saved.read_text())["domain"] == "bank.example"
+
+        again, _ = self._generate(client, tmp_path, headers, save=True)
+        assert again.status_code == 409

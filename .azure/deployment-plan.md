@@ -73,7 +73,7 @@ Status: In Progress
 ## 10. Risks / Open Items
 - Playwright runtime dependencies inside Azure Container Apps still need explicit runtime validation in Azure.
 - Redis remains mandatory in production for shared state; degraded in-memory mode should not be used.
-- PostgreSQL is initially exposed via Azure-managed public access rules for simplicity; private networking can be layered in later.
+- PostgreSQL (VNet-integrated) and Redis (private endpoint) have no public access; the apps connect to PostgreSQL as a least-privilege role. The template has not been deployed yet.
 - Executor process crash recovery depends on Redis stream reclaim plus MFA session persistence; this path is now implemented but still needs real Azure runtime exercise.
 
 ## 11. Approval Gate

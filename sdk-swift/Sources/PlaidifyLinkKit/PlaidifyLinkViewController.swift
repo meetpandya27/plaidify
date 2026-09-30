@@ -4,9 +4,12 @@ import SwiftUI
 import UIKit
 import WebKit
 
-/// UIKit entrypoint that hosts the native Plaidify Link flow and falls
-/// back to the existing WKWebView surface when an institution isn't
-/// covered by the native UI yet.
+/// UIKit entrypoint for Plaidify Link.
+///
+/// By default every institution is shown in the hosted Link page inside a
+/// WKWebView — the supported path. The native SwiftUI screens are
+/// **experimental** and only used when `experimentalNativeScreens` is true
+/// and the institution is listed in `registry`.
 ///
 /// Embedders integrate via:
 ///
@@ -17,27 +20,38 @@ import WebKit
 /// )
 /// present(vc, animated: true)
 /// ```
+///
+/// The controller dismisses itself on `CONNECTED` (the event carries the
+/// public token) and on `EXIT`; an `ERROR` leaves Link open on its retry
+/// screen.
 @available(iOS 15.0, *)
 public final class PlaidifyLinkViewController: UIViewController {
     public typealias EventHandler = (PlaidifyLinkEvent) -> Void
 
     public let hostedConfiguration: PlaidifyHostedLinkConfiguration
     public let registry: PlaidifyLinkInstitutionRegistry
+    public let experimentalNativeScreens: Bool
     public let onEvent: EventHandler
 
     private var hostingController: UIHostingController<AnyView>?
-    private var webView: WKWebView?
-    private var messageHandler: PlaidifyLinkScriptMessageHandler?
+    private var hostedWebView: PlaidifyHostedLinkWebView?
     private let client: PlaidifyLinkClient
     private let flow: PlaidifyLinkConnectFlow
+    private lazy var nativeSession = PlaidifyLinkNativeSession(client: client, flow: flow)
 
+    /// - Parameters:
+    ///   - experimentalNativeScreens: Opt in to the native SwiftUI screens
+    ///     for institutions in `registry`. Experimental; defaults to false
+    ///     (hosted web view for everything).
     public init(
         hostedConfiguration: PlaidifyHostedLinkConfiguration,
         registry: PlaidifyLinkInstitutionRegistry = PlaidifyLinkInstitutionRegistry(),
+        experimentalNativeScreens: Bool = false,
         onEvent: @escaping EventHandler
     ) {
         self.hostedConfiguration = hostedConfiguration
         self.registry = registry
+        self.experimentalNativeScreens = experimentalNativeScreens
         self.onEvent = onEvent
         self.client = PlaidifyLinkClient(
             serverURL: hostedConfiguration.serverURL,
@@ -59,7 +73,11 @@ public final class PlaidifyLinkViewController: UIViewController {
     public override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        showPicker()
+        if experimentalNativeScreens {
+            showPicker()
+        } else {
+            presentWebView()
+        }
     }
 
     // MARK: - Presentation
@@ -73,52 +91,43 @@ public final class PlaidifyLinkViewController: UIViewController {
             guard let self else { return }
             do {
                 let response = try await self.client.searchOrganizations(query: nil, limit: 40)
-                await MainActor.run {
-                    self.replaceContent(with: AnyView(
-                        PlaidifyLinkPickerView(organizations: response.organizations) { org in
-                            self.flow.apply(.selectInstitution(org))
-                        }
-                    ))
-                }
+                self.replaceContent(with: AnyView(
+                    PlaidifyLinkPickerView(organizations: response.results) { [weak self] org in
+                        self?.flow.apply(.selectInstitution(org))
+                    }
+                ))
             } catch {
-                await MainActor.run {
-                    self.flow.apply(.failed(code: nil, message: "\(error)"))
-                }
+                self.flow.apply(.failed(code: nil, message: "\(error)"))
             }
         }
     }
 
     private func showCredentials(for organization: PlaidifyOrganization) {
         replaceContent(with: AnyView(
-            PlaidifyLinkCredentialsView(organization: organization) { [weak self] _, _ in
-                // Encryption + connect happen at the app integration layer
-                // (the SDK does not bundle WebCrypto-equivalent code).
-                // We expose `CREDENTIALS_SUBMITTED` and let the host app
-                // post-process and call back into the flow with the
-                // connect response.
-                self?.onEvent(PlaidifyLinkEvent(
-                    source: "plaidify-link",
+            PlaidifyLinkCredentialsView(organization: organization) { [weak self] username, password in
+                guard let self else { return }
+                self.onEvent(PlaidifyLinkEvent(
                     event: PlaidifyLinkEventName.credentialsSubmitted.rawValue,
-                    jobID: nil,
-                    publicToken: nil,
                     organizationID: organization.organizationID,
                     organizationName: organization.name,
-                    site: organization.site,
-                    mfaType: nil,
-                    sessionID: nil,
-                    error: nil,
-                    reason: nil
+                    site: organization.site
                 ))
-                self?.flow.apply(.credentialsSubmitted)
+                Task { await self.nativeSession.submitCredentials(username: username, password: password) }
             }
         ))
     }
 
     private func showMFA() {
-        let prompt = "Enter the verification code from your provider to continue."
+        let prompt = flow.state.mfaPrompt ?? "Enter the verification code from your provider to continue."
         replaceContent(with: AnyView(
-            PlaidifyLinkMFAView(prompt: prompt) { [weak self] _ in
-                self?.flow.apply(.mfaSubmitted)
+            PlaidifyLinkMFAView(prompt: prompt, mfaType: flow.state.mfaType) { [weak self] code in
+                guard let self else { return }
+                self.onEvent(PlaidifyLinkEvent(
+                    event: PlaidifyLinkEventName.mfaSubmitted.rawValue,
+                    site: self.flow.state.organization?.site,
+                    sessionID: self.flow.state.sessionID
+                ))
+                Task { await self.nativeSession.submitMFA(code: code) }
             }
         ))
     }
@@ -131,30 +140,34 @@ public final class PlaidifyLinkViewController: UIViewController {
         replaceContent(with: AnyView(
             PlaidifyLinkErrorView(message: message) { [weak self] in
                 self?.flow.apply(.reset)
-                self?.showPicker()
             }
         ))
     }
 
-    // MARK: - Webview fallback
+    // MARK: - Hosted web view
 
-    private func presentWebViewFallback() {
-        let handler = PlaidifyLinkScriptMessageHandler { [weak self] event in
-            self?.onEvent(event)
-            if event.shouldDismissSheet {
-                self?.dismiss(animated: true)
+    private func presentWebView() {
+        guard let hosted = PlaidifyHostedLinkWebView(
+            configuration: hostedConfiguration,
+            onEvent: { [weak self] event in
+                guard let self else { return }
+                self.onEvent(event)
+                if event.shouldDismissSheet {
+                    self.dismiss(animated: true)
+                }
             }
+        ) else {
+            showError("The Plaidify server URL is not valid.")
+            return
         }
-        let webView = PlaidifyLinkWebViewFactory.makeWebView(
-            hostedLink: hostedConfiguration,
-            messageHandler: handler
-        )
+        let webView = hosted.webView
         webView.translatesAutoresizingMaskIntoConstraints = false
         view.subviews.forEach { $0.removeFromSuperview() }
         children.forEach {
             $0.willMove(toParent: nil)
             $0.removeFromParent()
         }
+        hostingController = nil
         view.addSubview(webView)
         NSLayoutConstraint.activate([
             webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -162,8 +175,8 @@ public final class PlaidifyLinkViewController: UIViewController {
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
-        self.webView = webView
-        self.messageHandler = handler
+        hostedWebView = hosted
+        hosted.load()
     }
 
     // MARK: - Helpers
@@ -204,56 +217,49 @@ public final class PlaidifyLinkViewController: UIViewController {
             }
         case .institutionSelected(let org):
             onEvent(PlaidifyLinkEvent(
-                source: "plaidify-link",
                 event: PlaidifyLinkEventName.institutionSelected.rawValue,
-                jobID: nil, publicToken: nil,
                 organizationID: org.organizationID,
-                organizationName: org.name, site: org.site,
-                mfaType: nil, sessionID: nil, error: nil, reason: nil
+                organizationName: org.name,
+                site: org.site
             ))
         case .mfaRequired(let type, let sessionID):
             onEvent(PlaidifyLinkEvent(
-                source: "plaidify-link",
                 event: PlaidifyLinkEventName.mfaRequired.rawValue,
-                jobID: nil, publicToken: nil,
                 organizationID: flow.state.organization?.organizationID,
                 organizationName: flow.state.organization?.name,
                 site: flow.state.organization?.site,
-                mfaType: type, sessionID: sessionID, error: nil, reason: nil
+                mfaType: type,
+                sessionID: sessionID
             ))
         case .connected(let publicToken, let jobID, let site):
             onEvent(PlaidifyLinkEvent(
-                source: "plaidify-link",
                 event: PlaidifyLinkEventName.connected.rawValue,
-                jobID: jobID, publicToken: publicToken,
+                jobID: jobID,
+                publicToken: publicToken,
                 organizationID: flow.state.organization?.organizationID,
                 organizationName: flow.state.organization?.name,
-                site: site,
-                mfaType: nil, sessionID: nil, error: nil, reason: nil
+                site: site
             ))
+            dismiss(animated: true)
         case .errored(let code, let message):
+            // Recoverable: the error screen offers a retry.
             onEvent(PlaidifyLinkEvent(
-                source: "plaidify-link",
                 event: PlaidifyLinkEventName.error.rawValue,
-                jobID: nil, publicToken: nil,
                 organizationID: flow.state.organization?.organizationID,
                 organizationName: flow.state.organization?.name,
                 site: flow.state.organization?.site,
-                mfaType: nil, sessionID: nil,
-                error: "\(code ?? "unknown"): \(message)",
-                reason: code
+                error: message,
+                errorCode: code
             ))
         case .fallbackToWebView(_, let reason):
             onEvent(PlaidifyLinkEvent(
-                source: "plaidify-link",
                 event: "FALLBACK_WEBVIEW",
-                jobID: nil, publicToken: nil,
                 organizationID: flow.state.organization?.organizationID,
                 organizationName: flow.state.organization?.name,
                 site: flow.state.organization?.site,
-                mfaType: nil, sessionID: nil, error: nil, reason: reason
+                reason: reason
             ))
-            presentWebViewFallback()
+            presentWebView()
         }
     }
 }

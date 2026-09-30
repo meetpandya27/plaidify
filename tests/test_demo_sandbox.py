@@ -271,3 +271,31 @@ class TestDemoPickerCatalog:
             assert entry["has_mfa"] is True
         cat._load_connector_templates.cache_clear()
         cat.get_organization_catalog.cache_clear()
+
+
+# ── Rejections are visible to connectors (ENG-04, ENG-12) ────────────────────
+
+
+class TestRejectionMarkers:
+    """The error line carries an id only when there is an error, so a visible id means "rejected"."""
+
+    def test_utility_portal_login_and_code_errors(self, portal):
+        assert "login-error" not in portal.get("/login").text
+        bad = portal.post("/login", data={"username": "demo_user", "password": "wrong"})
+        assert "id='login-error'" in bad.text
+
+        portal.post("/login", data={"username": "demo_mfa", "password": "demo_pass"}, follow_redirects=True)
+        assert "mfa-error" not in portal.get("/mfa").text
+        wrong = portal.post("/mfa", data={"code": "000000"})
+        assert wrong.status_code == 401 and "id='mfa-error'" in wrong.text
+
+    def test_bank_login_and_answer_errors(self, bank):
+        assert "login-error" not in bank.get("/login").text
+        assert "id='login-error'" in bank.post("/auth", data={"email": "demo@acme.test", "passcode": "x"}).text
+        bank.post("/auth", data={"email": "demo@acme.test", "passcode": "demo_pass"}, follow_redirects=True)
+        assert "mfa-error" not in bank.get("/verify").text
+        assert "id='mfa-error'" in bank.post("/verify", data={"answer": "nope"}).text
+
+    def test_saas_login_error(self, saas):
+        assert "login-error" not in saas.get("/login").text
+        assert "id='login-error'" in saas.post("/signin", data={"user": "demo_saas", "pass": "bad"}).text

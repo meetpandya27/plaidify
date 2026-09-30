@@ -3,8 +3,17 @@ DOM Simplifier — produces a token-efficient DOM representation for LLM extract
 
 Takes raw HTML from a Playwright page and produces a cleaned, compact version
 suitable for sending to an LLM. Strips non-essential elements (scripts, styles,
-SVGs, etc.), collapses whitespace, assigns stable element IDs (data-pid),
-and estimates token count.
+SVGs, etc.), collapses whitespace, and estimates token count.
+
+What leaves the process is kept to what the model needs: hidden form fields
+(anti-forgery and session tokens, account ids) are dropped, password values
+are never included, secret-looking URL parameters are redacted, and a page over
+the token budget is trimmed (long tables and lists first, then truncation)
+instead of being sent whole.
+
+Element ids (``p1``, ``p2`` …) are kept only in ``element_map``; they are not
+written into the HTML, because a selector built on them would match nothing on
+the live page.
 
 Usage:
     simplifier = DOMSimplifier()
@@ -100,9 +109,18 @@ KEEP_ATTRS = frozenset(
         "for",
         "action",
         "method",
-        "data-pid",
     }
 )
+
+# Attributes holding URLs, whose secret-looking query parameters are redacted.
+URL_ATTRS = frozenset({"href", "src", "action"})
+_SECRET_PARAM = re.compile(
+    r"(?i)(^|[?&;])([\w.\-]*?(?:token|session|sessid|sid|csrf|xsrf|auth|key|secret|code|state|nonce|jwt|sig|signature|password|pwd|otp|ticket|saml)[\w.\-]*)=([^&#;]*)"
+)
+# Row caps tried, in order, when a page is over the token budget.
+_ROW_CAPS = (50, 20, 5)
+_ROW_CONTAINERS = {"tr": frozenset({"table", "thead", "tbody", "tfoot"}), "li": frozenset({"ul", "ol"})}
+_TRUNCATION_NOTE = "\n[... page truncated to fit the token budget ...]"
 
 # Tags that carry interactive or semantic meaning (always keep)
 IMPORTANT_TAGS = frozenset(
@@ -145,7 +163,7 @@ IMPORTANT_TAGS = frozenset(
 # Approximate chars per token (for GPT-family models)
 CHARS_PER_TOKEN = 4
 
-# Default token budget — warn if exceeded
+# Default token budget — larger pages are trimmed to fit
 DEFAULT_TOKEN_BUDGET = 30_000
 
 
@@ -174,6 +192,7 @@ class SimplifiedDOM:
     simplified_length: int
     reduction_pct: float
     over_budget: bool
+    truncated: bool = False
 
 
 # ── HTML Cleaner (Parser-based) ───────────────────────────────────────────────
@@ -181,17 +200,20 @@ class SimplifiedDOM:
 
 class _DOMCleaner(HTMLParser):
     """
-    Streaming HTML parser that strips unwanted elements and assigns data-pid
-    attributes to all surviving elements.
+    Streaming HTML parser that strips unwanted elements and records every
+    surviving element in an element map under an internal id.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_rows: Optional[int] = None) -> None:
         super().__init__(convert_charrefs=True)
         self._output = StringIO()
         self._element_map: Dict[str, ElementInfo] = {}
         self._pid_counter = 0
         self._skip_depth = 0  # > 0 means we're inside a stripped tag
         self._tag_stack: List[str] = []  # stack of open tags for nesting
+        self._max_rows = max_rows
+        self._row_counts: Dict[str, int] = {}
+        self.rows_dropped = 0
 
     def _next_pid(self) -> str:
         self._pid_counter += 1
@@ -216,18 +238,41 @@ class _DOMCleaner(HTMLParser):
         if tag in SKIP_TAGS:
             return
 
-        # Assign a data-pid
+        raw_attrs = {name.lower(): value for name, value in attrs}
+        input_type = (raw_attrs.get("type") or "").strip().lower()
+
+        # Hidden inputs carry anti-forgery and session tokens, not page data;
+        # elements with the hidden attribute are not rendered at all.
+        if (tag == "input" and input_type == "hidden") or "hidden" in raw_attrs:
+            if tag not in VOID_TAGS:
+                self._skip_depth += 1
+            return
+
+        # Keep long tables and lists to their first rows when trimming for budget.
+        if self._max_rows is not None and tag in _ROW_CONTAINERS and self._tag_stack:
+            parent_pid = self._tag_stack[-1]
+            parent = self._element_map.get(parent_pid)
+            if parent is not None and parent.tag in _ROW_CONTAINERS[tag]:
+                count = self._row_counts.get(parent_pid, 0) + 1
+                self._row_counts[parent_pid] = count
+                if count > self._max_rows:
+                    self.rows_dropped += 1
+                    self._skip_depth += 1
+                    return
+
         pid = self._next_pid()
         attr_dict = {}
-        for name, value in attrs:
-            name_lower = name.lower()
-            if name_lower in KEEP_ATTRS and value is not None:
-                attr_dict[name_lower] = value
-
-        attr_dict["data-pid"] = pid
+        for name_lower, value in raw_attrs.items():
+            if name_lower not in KEEP_ATTRS or value is None:
+                continue
+            if name_lower == "value" and (input_type == "password" or tag == "textarea"):
+                continue
+            if name_lower in URL_ATTRS:
+                value = _redact_url(value)
+            attr_dict[name_lower] = value
 
         # Build the element info
-        info = ElementInfo(tag=tag, pid=pid, attrs={k: v for k, v in attr_dict.items() if k != "data-pid"})
+        info = ElementInfo(tag=tag, pid=pid, attrs=dict(attr_dict))
         self._element_map[pid] = info
 
         # Wire parent-child
@@ -299,6 +344,28 @@ def _escape_attr(value: str) -> str:
     return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _redact_url(value: str) -> str:
+    """Blank the values of secret-looking query / path parameters (token=, jsessionid=, ...)."""
+    return _SECRET_PARAM.sub(lambda m: f"{m.group(1)}{m.group(2)}=REDACTED", value)
+
+
+def _clean(raw_html: str, max_rows: Optional[int] = None) -> tuple[str, Dict[str, ElementInfo], int]:
+    cleaner = _DOMCleaner(max_rows=max_rows)
+    cleaner.feed(raw_html)
+    cleaner.close()
+    html, element_map = cleaner.get_result()
+    return html, element_map, cleaner.rows_dropped
+
+
+def _truncate_html(html: str, max_chars: int) -> str:
+    """Cut ``html`` to ``max_chars``, at a tag boundary, with a visible note."""
+    budget = max(0, max_chars - len(_TRUNCATION_NOTE))
+    if len(html) <= max_chars:
+        return html
+    cut = html.rfind(">", 0, budget)
+    return html[: cut + 1 if cut > 0 else budget] + _TRUNCATION_NOTE
+
+
 def estimate_tokens(text: str) -> int:
     """Estimate the number of LLM tokens in a string (GPT-family approximation)."""
     return max(1, len(text) // CHARS_PER_TOKEN)
@@ -310,27 +377,37 @@ def simplify_html(raw_html: str, token_budget: int = DEFAULT_TOKEN_BUDGET) -> Si
 
     Args:
         raw_html: The full HTML string from a page.
-        token_budget: Maximum recommended tokens. A warning is logged if exceeded.
+        token_budget: Maximum tokens to produce. A larger page keeps only the
+            first rows of long tables and lists and, if still too large, is
+            truncated.
 
     Returns:
         SimplifiedDOM with cleaned HTML, element map, and token estimate.
     """
     original_length = len(raw_html)
 
-    cleaner = _DOMCleaner()
-    cleaner.feed(raw_html)
-    cleaned_html, element_map = cleaner.get_result()
+    cleaned_html, element_map, _dropped = _clean(raw_html)
+    over_budget = estimate_tokens(cleaned_html) > token_budget
+    truncated = False
+
+    if over_budget:
+        full_tokens = estimate_tokens(cleaned_html)
+        rows_dropped = 0
+        for max_rows in _ROW_CAPS:
+            cleaned_html, element_map, rows_dropped = _clean(raw_html, max_rows=max_rows)
+            if estimate_tokens(cleaned_html) <= token_budget:
+                break
+        if estimate_tokens(cleaned_html) > token_budget:
+            cleaned_html = _truncate_html(cleaned_html, token_budget * CHARS_PER_TOKEN)
+        truncated = True
+        logger.warning(
+            f"Simplified DOM exceeded the token budget: {full_tokens} tokens (budget: {token_budget}); trimmed",
+            extra={"extra_data": {"tokens": full_tokens, "budget": token_budget, "rows_dropped": rows_dropped}},
+        )
 
     simplified_length = len(cleaned_html)
     token_est = estimate_tokens(cleaned_html)
     reduction = (1 - simplified_length / original_length) * 100 if original_length > 0 else 0
-    over_budget = token_est > token_budget
-
-    if over_budget:
-        logger.warning(
-            f"Simplified DOM exceeds token budget: {token_est} tokens (budget: {token_budget})",
-            extra={"extra_data": {"tokens": token_est, "budget": token_budget}},
-        )
 
     logger.info(
         f"DOM simplified: {original_length} → {simplified_length} chars "
@@ -346,6 +423,7 @@ def simplify_html(raw_html: str, token_budget: int = DEFAULT_TOKEN_BUDGET) -> Si
         simplified_length=simplified_length,
         reduction_pct=round(reduction, 1),
         over_budget=over_budget,
+        truncated=truncated,
     )
 
 

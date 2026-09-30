@@ -80,14 +80,19 @@ class PlaidifyUser(HttpUser):
         self.client.get("/auth/me", headers=self.auth_headers)
 
     @task(1)
-    def connect_mock(self):
-        """Attempt a connection to the hydro_one connector."""
+    def connect_demo(self):
+        """Connect to the bundled demo SaaS portal (no MFA).
+
+        Needs the target API in DEMO_MODE with the demo portal running
+        (``python scripts/demo.py --serve``). Never point load at a real
+        site's connector: that hammers someone else's login page.
+        """
         self.client.post(
             "/connect",
             json={
-                "site": "hydro_one",
-                "username": "test_user",
-                "password": "test_pass",
+                "site": "demo_saas",
+                "username": "demo_saas",
+                "password": "demo_pass",
             },
             headers=self.auth_headers,
         )

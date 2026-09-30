@@ -31,7 +31,12 @@ export type TelemetryEventName =
   | "exit_reason";
 
 export interface TelemetryPayload {
-  readonly event: TelemetryEventName;
+  /**
+   * Which telemetry event this is. Deliberately not `event`: every
+   * telemetry payload travels inside an `{event: "TELEMETRY"}` envelope,
+   * and a payload `event` key used to overwrite it.
+   */
+  readonly name: TelemetryEventName;
   /** Milliseconds since the telemetry session began. */
   readonly elapsed_ms: number;
   /** Current step identifier at event time. */
@@ -60,9 +65,9 @@ export interface TelemetryEmitter {
  */
 export function createTelemetry(emitter: TelemetryEmitter, now: () => number = Date.now) {
   const start = now();
-  const send = (event: TelemetryEventName, extra: Omit<TelemetryPayload, "event" | "elapsed_ms"> = {}) => {
+  const send = (name: TelemetryEventName, extra: Omit<TelemetryPayload, "name" | "elapsed_ms"> = {}) => {
     const payload: TelemetryPayload = {
-      event,
+      name,
       elapsed_ms: Math.max(0, now() - start),
       ...extra,
     };

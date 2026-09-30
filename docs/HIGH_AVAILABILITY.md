@@ -3,15 +3,20 @@
 How to run Plaidify with no single point of failure and how to extend it to a
 multi-region, active-passive topology. Pair this with
 [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md) (backup/restore/failover) and
-[RELIABILITY_DESIGN.md](RELIABILITY_DESIGN.md) (in-app resilience).
+[AZURE_DEPLOYMENT.md](AZURE_DEPLOYMENT.md) (the template these parameters belong to).
 
 ## Design principle: a stateless app tier
 
-The Plaidify API is stateless — all durable state lives in PostgreSQL, with
-Redis holding only ephemeral rate-limit/session data and the browser pool being
-per-instance and disposable. That means **HA is achieved by running ≥2 app
-replicas behind a load balancer plus HA backing services** — no app-side
-changes required.
+The Plaidify API is stateless — all durable state lives in PostgreSQL, and
+the browser pool is per-instance and disposable. Redis holds the short-lived
+shared state: the access-job queue, link sessions, MFA state, the hosted-link
+RSA keys and rate limits. None of it is the system of record, but losing it
+breaks every flow in progress, so Redis needs replication too. That means **HA
+is achieved by running ≥2 app replicas behind a load balancer plus HA backing
+services** — no app-side changes required. The background services (scheduled
+refresh, webhook outbox, stuck-job reaper) run under leases, so several API or
+executor replicas can run at once: one holds each lease, and another takes over
+within the lease's lifetime if it dies.
 
 ```mermaid
 flowchart TB
@@ -30,9 +35,9 @@ flowchart TB
 
 | Tier | Make it HA | How |
 | ---- | ---------- | --- |
-| **App (Container Apps)** | ≥2 replicas across zones | Set `minReplicas: 2+`. Zone redundancy requires a **VNet-injected** environment (`infrastructureSubnetId`) in a zone-enabled region — see below. |
+| **App (Container Apps)** | ≥2 replicas across zones | Set `minReplicas=2` (or more) and `containerAppsZoneRedundant=true` in a zone-enabled region; the environment is already VNet-injected — see below. |
 | **PostgreSQL** | Zone-redundant HA | Set `postgresSkuTier=GeneralPurpose` (HA isn't available on Burstable) and `postgresHighAvailabilityMode=ZoneRedundant` (now parameterized in `infra/main.bicep`). A hot standby in another zone fails over automatically. |
-| **Redis** | Replication / zones | Use `redisSkuName=Standard` (primary+replica, 99.9% SLA) or `Premium` for zone redundancy. |
+| **Redis** | Replication / zones | `redisSkuName=Standard` (the default: primary + replica, 99.9% SLA); `Premium` for zone redundancy. |
 | **Backups** | Geo-redundant | Set `postgresGeoRedundantBackup=true` for cross-region restore capability. |
 
 ### Enabling Postgres zone-redundant HA
@@ -48,12 +53,14 @@ param postgresGeoRedundantBackup = true
 
 ### Enabling Container Apps zone redundancy
 
-Zone redundancy for the managed environment requires VNet injection. Create the
-environment with an `infrastructureSubnetId` and `zoneRedundant: true`, then run
-the app with `minReplicas: 2+` so replicas spread across zones. This is a
-networking change beyond the default template — plan a VNet + delegated subnet
-(`/23` or larger) and set the subnet on the `Microsoft.App/managedEnvironments`
-resource.
+Zone redundancy for the managed environment requires VNet injection, which the
+template already does (a delegated `/23` subnet in its own VNet). Set
+`containerAppsZoneRedundant = true` and `minReplicas = 2` (or more) so replicas
+spread across zones. Zone redundancy is fixed when the environment is created;
+turning it on for an existing environment means recreating the environment
+(see "Upgrading An Existing Deployment" in [AZURE_DEPLOYMENT.md](AZURE_DEPLOYMENT.md)).
+Scale the executor the same way (`accessExecutorMinReplicas`) — it is where
+the browser work happens.
 
 ## Multi-region (active-passive)
 
@@ -71,7 +78,8 @@ For regional-failure survival, run a warm standby in a second region:
    Traffic Manager) using health-probe-based priority routing: primary first,
    standby on failure.
 4. **Redis** — stand up a regional instance per region; it is not the source of
-   truth, so no cross-region replication is required.
+   truth, so no cross-region replication is required. Flows in progress at the
+   moment of failover (links, MFA, queued jobs) have to be restarted.
 
 ### Failover
 
@@ -88,7 +96,7 @@ For regional-failure survival, run a warm standby in a second region:
 | -------- | --- | --- |
 | Single-region zone-redundant | ~0 (sync standby) | seconds–minutes (automatic) |
 | Multi-region, read replica | seconds (replication lag) | minutes (promote + cut over) |
-| Multi-region, geo-backup only | ≤ backup interval | ~1 hour (restore drill validated) |
+| Multi-region, geo-backup only | ≤ backup interval | ~1 hour (a target: no restore drill has been run yet) |
 
 ## Capacity & scaling
 

@@ -56,10 +56,92 @@ class TestMfaRateLimit:
         # Default limit is 5/minute. A nonexistent session returns 200 with an
         # error status; the 6th call within the window should be 429.
         for _ in range(5):
-            r = client.post("/mfa/submit", params={"session_id": "missing", "code": "000000"})
+            r = client.post("/mfa/submit", json={"session_id": "missing", "code": "000000"})
             assert r.status_code == 200
-        blocked = client.post("/mfa/submit", params={"session_id": "missing", "code": "000000"})
+        blocked = client.post("/mfa/submit", json={"session_id": "missing", "code": "000000"})
         assert blocked.status_code == 429
+
+
+# ── Access-log redaction ─────────────────────────────────────────────────────
+
+
+class TestAccessLogRedaction:
+    def _access_record(self, path: str):
+        import logging
+
+        # The shape uvicorn's httptools/h11 protocols log for every request.
+        return logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            1,
+            '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1:5000", "POST", path, "1.1", 200),
+            None,
+        )
+
+    def test_mfa_code_and_session_are_redacted(self):
+        from src.logging_config import AccessLogRedactFilter
+
+        record = self._access_record("/mfa/submit?session_id=access-123&code=654321")
+        assert AccessLogRedactFilter().filter(record) is True
+        line = record.getMessage()
+        assert "654321" not in line
+        assert "access-123" not in line
+        assert "/mfa/submit?session_id=REDACTED&code=REDACTED" in line
+
+    def test_link_token_redacted_and_other_params_kept(self):
+        from src.logging_config import redact_query
+
+        assert redact_query("/link?token=lnk-secret&theme=dark") == "/link?token=REDACTED&theme=dark"
+        assert redact_query("/health") == "/health"
+
+    def test_site_credentials_in_legacy_query_are_redacted(self):
+        from src.logging_config import redact_query
+
+        line = redact_query("/submit_credentials?link_token=lnk-1&username=alice&password=hunter2")
+        assert "alice" not in line and "hunter2" not in line and "lnk-1" not in line
+        assert redact_query("/fetch_data?access_token=tok-9&consent_token=c-1") == (
+            "/fetch_data?access_token=REDACTED&consent_token=REDACTED"
+        )
+
+    def test_credentials_in_the_path_are_redacted(self):
+        from src.logging_config import AccessLogRedactFilter, redact_path
+
+        assert redact_path("/tokens/tok-9") == "/tokens/REDACTED"
+        assert redact_path("/links/lnk-1") == "/links/REDACTED"
+        assert redact_path("/link/sessions/lnk-1/status") == "/link/sessions/REDACTED/status"
+        assert redact_path("/link/events/lnk-1") == "/link/events/REDACTED"
+        assert redact_path("/encryption/public_key/lnk-1") == "/encryption/public_key/REDACTED"
+        assert redact_path("/mfa/status/access-1") == "/mfa/status/REDACTED"
+        assert redact_path("/access_jobs/ajob-1") == "/access_jobs/REDACTED"
+        assert redact_path("/refresh/schedule/tok-9") == "/refresh/schedule/REDACTED"
+        assert redact_path("/consent/ctok-1") == "/consent/REDACTED"
+        # Static routes and plain ids stay readable.
+        for path in (
+            "/link/sessions/bootstrap",
+            "/link/sessions/public",
+            "/consent/request",
+            "/consent/creq-1/approve",
+            "/agents/7",
+            "/access_jobs",
+            "/refresh/schedule",
+        ):
+            assert redact_path(path) == path
+
+        record = self._access_record("/link/sessions/lnk-secret/status?token=lnk-secret")
+        AccessLogRedactFilter().filter(record)
+        assert "lnk-secret" not in record.getMessage()
+
+    def test_filter_is_installed_on_the_access_logger(self):
+        import logging
+
+        from src.logging_config import AccessLogRedactFilter, setup_logging
+
+        setup_logging(level="WARNING", log_format="text")
+        setup_logging(level="WARNING", log_format="text")
+        filters = [f for f in logging.getLogger("uvicorn.access").filters if isinstance(f, AccessLogRedactFilter)]
+        assert len(filters) == 1
 
 
 # ── Registration gate ────────────────────────────────────────────────────────

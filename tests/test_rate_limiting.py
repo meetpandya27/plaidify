@@ -137,3 +137,50 @@ class TestRateLimitDisabled:
                 assert response.status_code != 429
         finally:
             limiter.enabled = True
+
+
+class TestDefaultLimit:
+    """RATE_LIMIT_DEFAULT covers every route without its own limit, per client address and path."""
+
+    def test_undecorated_route_gets_the_default_limit(self, client, auth_headers):
+        from unittest.mock import patch
+
+        from src import app as appmod
+
+        with patch.object(appmod.settings, "rate_limit_default", "3/minute"):
+            codes = [client.get("/links", headers=auth_headers).status_code for _ in range(4)]
+            blocked = client.get("/links", headers=auth_headers)
+            other_path = client.get("/tokens", headers=auth_headers)
+        assert codes[:3] == [200, 200, 200] and codes[3] == 429
+        assert blocked.status_code == 429 and int(blocked.headers["Retry-After"]) >= 1
+        assert other_path.status_code == 200
+
+    def test_a_browser_can_read_the_429_and_preflights_do_not_count(self, client, auth_headers):
+        from unittest.mock import patch
+
+        from src import app as appmod
+
+        origin = {"Origin": "http://localhost:3000"}
+        preflight = {
+            **origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        }
+        with patch.object(appmod.settings, "rate_limit_default", "2/minute"):
+            for _ in range(5):
+                assert client.options("/links", headers=preflight).status_code == 200
+            codes = [client.get("/links", headers={**auth_headers, **origin}).status_code for _ in range(3)]
+            blocked = client.get("/links", headers={**auth_headers, **origin})
+        assert codes == [200, 200, 429]
+        assert blocked.status_code == 429
+        assert blocked.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+    def test_probes_and_the_hosted_pages_polling_are_exempt(self, client):
+        from unittest.mock import patch
+
+        from src import app as appmod
+
+        with patch.object(appmod.settings, "rate_limit_default", "2/minute"):
+            for _ in range(6):
+                assert client.get("/health").status_code in (200, 503)
+                assert client.get("/link/sessions/no-such-token/status").status_code != 429

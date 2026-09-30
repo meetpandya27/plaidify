@@ -117,3 +117,27 @@ class TestConfig:
 
         s = get_settings()
         assert s.log_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+class TestMFAOutcomeErrors:
+    """How an MFA challenge can end (ENG-12)."""
+
+    def test_timeout_is_its_own_error_code(self):
+        from src.core.mfa_manager import MFATimeoutError
+        from src.error_taxonomy import LinkErrorCode, classify_exception
+
+        err = MFATimeoutError(site="bank", mfa_type="otp_input", session_id="s1")
+        assert classify_exception(err) is LinkErrorCode.MFA_TIMEOUT
+        assert not isinstance(err, MFARequiredError)
+        assert err.status_code == 408 and err.session_id == "s1"
+        # The hosted page's message classifier recognises it too.
+        assert "mfa" in err.message.lower() and "timeout" in err.message.lower()
+
+    def test_rejected_code_is_invalid_credentials(self):
+        from src.core.mfa_manager import MFARejectedError
+        from src.error_taxonomy import LinkErrorCode, classify_exception
+
+        err = MFARejectedError(site="bank", mfa_type="otp_input", attempts=3)
+        assert isinstance(err, AuthenticationError)
+        assert classify_exception(err) is LinkErrorCode.INVALID_CREDENTIALS
+        assert "verification code" in str(err)

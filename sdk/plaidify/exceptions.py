@@ -61,12 +61,20 @@ class MFARequiredError(PlaidifyError):
         )
 
 
-class BlueprintNotFoundError(PlaidifyError):
+class NotFoundError(PlaidifyError):
+    """The server has no such resource (HTTP 404): a job, key, link, agent..."""
+
+    def __init__(self, message: str = "Not found.", **kwargs):
+        kwargs.setdefault("status_code", 404)
+        super().__init__(message, **kwargs)
+
+
+class BlueprintNotFoundError(NotFoundError):
     """No blueprint exists for the requested site."""
 
     def __init__(self, site: str, **kwargs):
         self.site = site
-        super().__init__(f"No blueprint found for site: {site}", status_code=404, **kwargs)
+        super().__init__(f"No blueprint found for site: {site}", **kwargs)
 
 
 class BlueprintValidationError(PlaidifyError):

@@ -1,5 +1,7 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 
+import { isTerminalLinkEvent, sanitizeLinkPayload } from "./link-events";
+import { buildHostedLinkUrl } from "./link-url";
 import type {
   HostedLinkUrlOptions,
   PlaidifyLinkEventPayload,
@@ -16,8 +18,10 @@ export interface PlaidifyReactNativeLinkConfig {
 }
 
 export interface PlaidifyReactNativeCallbacks {
+  /** Every event, including recoverable ERRORs. */
   onEvent?: (event: string, payload: PlaidifyLinkEventPayload) => void;
   onSuccess?: (publicToken: string, metadata: PlaidifyLinkSuccessMetadata) => void;
+  /** The user left Link. Not called for ERROR, which the page recovers from. */
   onExit?: (details: PlaidifyLinkExitDetails) => void;
   onMFA?: (details: PlaidifyLinkMfaDetails) => void;
 }
@@ -58,38 +62,24 @@ export interface PlaidifyReactNativeLinkComponentProps
 export function buildPlaidifyHostedLinkUrl(
   config: PlaidifyReactNativeLinkConfig,
 ): string {
-  const baseUrl = config.serverUrl.replace(/\/+$/, "");
-  const url = new URL(`${baseUrl}/link`);
-  url.searchParams.set("token", config.token);
+  return buildHostedLinkUrl(config.serverUrl, config.token, {
+    origin: config.origin,
+    theme: config.theme,
+  });
+}
 
-  if (config.origin) {
-    url.searchParams.set("origin", config.origin);
-  }
-
-  const theme = config.theme;
-  if (theme?.accentColor) {
-    url.searchParams.set("accent", theme.accentColor);
-  }
-  if (theme?.bgColor) {
-    url.searchParams.set("bg", theme.bgColor);
-  }
-  if (theme?.borderRadius) {
-    url.searchParams.set("radius", theme.borderRadius);
-  }
-  if (theme?.logo) {
-    url.searchParams.set("logo", theme.logo);
-  }
-
-  return url.toString();
+function plaidifyOrigin(serverUrl: string): string {
+  return new URL(serverUrl.replace(/\/+$/, "")).origin;
 }
 
 export function createPlaidifyReactNativeWebViewProps(
   config: PlaidifyReactNativeLinkConfig,
 ): PlaidifyReactNativeWebViewProps {
-  const origin = new URL(config.serverUrl.replace(/\/+$/, "")).origin;
   return {
     source: { uri: buildPlaidifyHostedLinkUrl(config) },
-    originWhitelist: [origin],
+    // Anything off the Plaidify origin is handed to the OS browser instead
+    // of being loaded inside the Link webview.
+    originWhitelist: [plaidifyOrigin(config.serverUrl)],
     javaScriptEnabled: true,
     domStorageEnabled: true,
     sharedCookiesEnabled: true,
@@ -103,9 +93,17 @@ export function createPlaidifyReactNativeMessageHandler(
   callbacks?: PlaidifyReactNativeCallbacks & {
     onStatusChange?: (status: UsePlaidifyReactNativeLinkReturn["status"]) => void;
     onLastEventChange?: (payload: PlaidifyLinkEventPayload | null) => void;
+    /**
+     * Only accept messages from a page on this origin (react-native-webview
+     * reports the sending page's URL as `nativeEvent.url`).
+     */
+    expectedOrigin?: string;
   },
 ) {
   return function handlePlaidifyMessage(input: unknown): PlaidifyLinkEventPayload | null {
+    if (callbacks?.expectedOrigin && !messageFromOrigin(input, callbacks.expectedOrigin)) {
+      return null;
+    }
     const payload = parsePlaidifyLinkMessage(input);
     if (!payload) {
       return null;
@@ -127,14 +125,21 @@ export function createPlaidifyReactNativeMessageHandler(
         });
         break;
       case "ERROR":
+        // Recoverable: the page shows retry and choose-another-provider
+        // screens, so this is not an exit.
         callbacks?.onStatusChange?.("error");
-        callbacks?.onExit?.({ reason: "error", error: payload.error });
         break;
       case "EXIT":
       case "DONE":
       case "CLOSE":
         callbacks?.onStatusChange?.("idle");
-        callbacks?.onExit?.({ reason: payload.reason || String(payload.event || "exit").toLowerCase() });
+        callbacks?.onExit?.({
+          reason: payload.reason || String(payload.event || "exit").toLowerCase(),
+          error: payload.error,
+          error_code: payload.error_code,
+        });
+        break;
+      case "TELEMETRY":
         break;
       default:
         callbacks?.onStatusChange?.("active");
@@ -150,23 +155,36 @@ export function usePlaidifyReactNativeLink(
 ): UsePlaidifyReactNativeLinkReturn {
   const [status, setStatus] = useState<UsePlaidifyReactNativeLinkReturn["status"]>("idle");
   const [lastEvent, setLastEvent] = useState<PlaidifyLinkEventPayload | null>(null);
+  // onSuccess / onExit fire once per Link session; reset() starts another.
+  const finishedRef = useRef(false);
 
   const url = useMemo(() => buildPlaidifyHostedLinkUrl(config), [config]);
 
+  const { onEvent, onExit, onMFA, onSuccess, serverUrl } = config;
   const handleMessage = useMemo(
     () =>
       createPlaidifyReactNativeMessageHandler({
-        onEvent: config.onEvent,
-        onExit: config.onExit,
-        onMFA: config.onMFA,
-        onSuccess: config.onSuccess,
+        onEvent,
+        onExit: (details) => {
+          if (finishedRef.current) return;
+          finishedRef.current = true;
+          onExit?.(details);
+        },
+        onMFA,
+        onSuccess: (publicToken, metadata) => {
+          if (finishedRef.current) return;
+          finishedRef.current = true;
+          onSuccess?.(publicToken, metadata);
+        },
         onStatusChange: setStatus,
         onLastEventChange: setLastEvent,
+        expectedOrigin: plaidifyOrigin(serverUrl),
       }),
-    [config.onEvent, config.onExit, config.onMFA, config.onSuccess],
+    [onEvent, onExit, onMFA, onSuccess, serverUrl],
   );
 
   const reset = useCallback(() => {
+    finishedRef.current = false;
     setStatus("idle");
     setLastEvent(null);
   }, []);
@@ -206,6 +224,22 @@ export function PlaidifyReactNativeLink(
   return React.createElement(WebViewComponent, webViewProps as Record<string, unknown>);
 }
 
+/** True unless the message says it came from a page on another origin. */
+function messageFromOrigin(input: unknown, expectedOrigin: string): boolean {
+  const pageUrl =
+    typeof input === "object" && input !== null && "nativeEvent" in input
+      ? (input as { nativeEvent?: { url?: unknown } }).nativeEvent?.url
+      : undefined;
+  if (typeof pageUrl !== "string" || !pageUrl) {
+    return true;
+  }
+  try {
+    return new URL(pageUrl).origin === expectedOrigin;
+  } catch {
+    return false;
+  }
+}
+
 export function parsePlaidifyLinkMessage(
   input: unknown,
 ): PlaidifyLinkEventPayload | null {
@@ -229,32 +263,12 @@ export function parsePlaidifyLinkMessage(
     }
   }
 
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const eventPayload = payload as PlaidifyLinkEventPayload;
-  if (eventPayload.source !== "plaidify-link") {
-    return null;
-  }
-
-  return {
-    source: "plaidify-link",
-    event: eventPayload.event,
-    error: eventPayload.error,
-    job_id: eventPayload.job_id,
-    mfa_type: eventPayload.mfa_type,
-    organization_id: eventPayload.organization_id,
-    organization_name: eventPayload.organization_name,
-    public_token: eventPayload.public_token,
-    reason: eventPayload.reason,
-    session_id: eventPayload.session_id,
-    site: eventPayload.site,
-  };
+  return sanitizeLinkPayload(payload);
 }
 
+/** CONNECTED or an exit — never ERROR, which the page recovers from. */
 export function isPlaidifyTerminalEvent(eventName?: string): boolean {
-  return ["CONNECTED", "ERROR", "EXIT", "DONE"].includes(String(eventName || ""));
+  return isTerminalLinkEvent(eventName);
 }
 
 export function shouldDismissPlaidifySheet(

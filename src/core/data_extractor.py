@@ -5,8 +5,10 @@ Provides:
 - Typed extraction (text, currency, date, number, etc.)
 - Built-in transforms (strip_whitespace, parse_date, regex_extract, etc.)
 - List/table extraction with row iteration
-- Sensitive field handling (marked fields are never logged)
-- Pagination support
+- Per-field errors: a missing field comes back as null (or its default) instead
+  of discarding everything else, unless the blueprint marks it required
+- Sensitive field handling (values are never logged)
+- Pagination, with every "next" click checked by the read-only policy
 """
 
 from __future__ import annotations
@@ -24,10 +26,16 @@ from src.core.blueprint import (
     ListExtractionField,
     TransformType,
 )
+from src.core.read_only_policy import ReadOnlyExecutionPolicy
 from src.exceptions import DataExtractionError
 from src.logging_config import get_logger
 
 logger = get_logger("data_extractor")
+
+# The first field may wait this long for the page to render its data…
+DEFAULT_FIELD_TIMEOUT_MS = 15000
+# …after which the page has settled, and an absent field is absent.
+SETTLED_FIELD_TIMEOUT_MS = 3000
 
 
 # ── Transform Functions ──────────────────────────────────────────────────────
@@ -56,22 +64,91 @@ def transform_to_uppercase(value: str) -> str:
     return value.upper()
 
 
-def transform_to_number(value: str) -> float:
-    """Parse a string to a number, stripping non-numeric chars except . and -."""
-    cleaned = re.sub(r"[^\d.\-]", "", value)
-    try:
-        return float(cleaned)
-    except ValueError:
-        return 0.0
+# A number as written on a statement: digits with optional grouping (, . space
+# ' or thin/narrow spaces) and an optional decimal part.
+_NUMBER_TOKEN = re.compile("\\d[\\d.,'\u00a0\u202f\u2009 ]*")
+_GROUP_SEPARATORS = re.compile("['\u00a0\u202f\u2009 ]")
+_NEGATIVE_MARKERS = ("-", "\u2212", "\u2013")
+_CREDIT_SUFFIX = re.compile(r"CR\b", re.IGNORECASE)
 
 
-def transform_to_currency(value: str) -> float:
-    """Parse a currency string to a float."""
-    cleaned = re.sub(r"[^\d.\-]", "", value)
+def _normalize_number(token: str) -> Optional[str]:
+    """Turn '1,234.56' / '1.234,56' / '1 234,56' into '1234.56'; None if ambiguous garbage."""
+    token = _GROUP_SEPARATORS.sub("", token).rstrip(".,")
+    if not token:
+        return None
+    last_dot, last_comma = token.rfind("."), token.rfind(",")
+    if last_dot >= 0 and last_comma >= 0:
+        decimal = "." if last_dot > last_comma else ","
+        group = "," if decimal == "." else "."
+        integer, _, fraction = token.rpartition(decimal)
+        integer = integer.replace(group, "")
+        if not integer.isdigit() or not fraction.isdigit():
+            return None
+        return f"{integer}.{fraction}"
+    for separator in (",", "."):
+        if separator not in token:
+            continue
+        parts = token.split(separator)
+        if len(parts) > 2 or (len(parts) == 2 and len(parts[1]) == 3 and separator == ","):
+            # Repeated, or a single ',' followed by three digits: grouping ("1,234", "1.234.567").
+            if all(part.isdigit() for part in parts) and all(len(part) == 3 for part in parts[1:]):
+                return "".join(parts)
+            return None
+        # One separator: a decimal point ("12.50", "12,50").
+        integer, fraction = parts
+        if not integer.isdigit() or not fraction.isdigit():
+            return None
+        return f"{integer}.{fraction}"
+    return token if token.isdigit() else None
+
+
+def parse_number(value: Any) -> Optional[float]:
+    """Parse the first number in a statement-style string, or None when there is none.
+
+    Handles grouping and decimal separators in either convention ("1,234.56",
+    "1.234,56 €", "1 234,56"), a leading or trailing minus, and accounting
+    parentheses for negatives ("(1,234.56)"). Returns None — never a made-up
+    0.0 — for "N/A", "--", "Pending" and other text without a number.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    match = _NUMBER_TOKEN.search(text)
+    if not match:
+        return None
+    normalized = _normalize_number(match.group(0))
+    if normalized is None:
+        return None
     try:
-        return round(float(cleaned), 2)
+        number = float(normalized)
     except ValueError:
-        return 0.0
+        return None
+
+    before = text[: match.start()].rstrip(" $€£¥₹\u00a0").rstrip()
+    after = text[match.end() :].lstrip(" $€£¥₹\u00a0").lstrip()
+    negative = (
+        before.endswith(_NEGATIVE_MARKERS)
+        or after.startswith(_NEGATIVE_MARKERS)
+        or (before.endswith("(") and after.startswith(")"))
+        or bool(_CREDIT_SUFFIX.match(after))  # statements mark credits as "123.45 CR"
+    )
+    return -number if negative else number
+
+
+def transform_to_number(value: str) -> Optional[float]:
+    """Parse a string to a number; None when it holds no number."""
+    return parse_number(value)
+
+
+def transform_to_currency(value: str) -> Optional[float]:
+    """Parse a currency string to a float rounded to cents; None when it holds no amount."""
+    number = parse_number(value)
+    return None if number is None else round(number, 2)
 
 
 def transform_parse_date(value: str, fmt: Optional[str] = None) -> str:
@@ -179,10 +256,17 @@ def coerce_type(value: Any, field_type: FieldType) -> Any:
         field_type: The target type.
 
     Returns:
-        Typed value.
+        Typed value, or None when a currency/number field holds no number.
     """
     if value is None:
         return None
+
+    if (
+        field_type in (FieldType.CURRENCY, FieldType.NUMBER)
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
+        return round(float(value), 2) if field_type == FieldType.CURRENCY else float(value)
 
     str_val = str(value).strip()
 
@@ -203,7 +287,30 @@ def coerce_type(value: Any, field_type: FieldType) -> Any:
     return str_val
 
 
+def _default_for(field_def: ExtractionField) -> Any:
+    """A field's declared default, in the field's own type."""
+    if field_def.default is None:
+        return None
+    return coerce_type(field_def.default, field_def.type)
+
+
 # ── Page Extractor ────────────────────────────────────────────────────────────
+
+
+_DESCRIBE_ELEMENT_JS = """(element) => {
+    const form = element.closest('form');
+    return {
+        text: element.innerText || element.textContent || '',
+        ariaLabel: element.getAttribute('aria-label') || '',
+        title: element.getAttribute('title') || '',
+        value: element.getAttribute('value') || '',
+        name: element.getAttribute('name') || '',
+        id: element.id || '',
+        href: element.getAttribute('href') || '',
+        formAction: element.getAttribute('formaction') || form?.getAttribute('action') || '',
+        formMethod: form?.getAttribute('method') || '',
+    };
+}"""
 
 
 class DataExtractor:
@@ -213,10 +320,14 @@ class DataExtractor:
     Usage:
         extractor = DataExtractor(page)
         data = await extractor.extract(blueprint.extract)
+        extractor.field_errors  # {"field": "why it has no value"}
     """
 
-    def __init__(self, page: Page) -> None:
+    def __init__(self, page: Page, *, read_only_policy: Optional[ReadOnlyExecutionPolicy] = None) -> None:
         self.page = page
+        self.read_only_policy = read_only_policy
+        self.field_errors: Dict[str, str] = {}
+        self._settled = False
 
     async def extract(
         self,
@@ -226,14 +337,21 @@ class DataExtractor:
         """
         Extract all defined fields from the current page.
 
+        A field that cannot be read comes back as its default (or None) and is
+        listed in ``field_errors``; the other fields are still returned.
+
         Args:
             fields: Dict mapping field names to extraction configs.
             site: Site identifier for error messages.
 
         Returns:
             Dict of extracted, typed, transformed data.
+
+        Raises:
+            DataExtractionError: when a field marked ``required`` has no value.
         """
         result: Dict[str, Any] = {}
+        self.field_errors = {}
 
         for name, field_def in fields.items():
             try:
@@ -241,27 +359,39 @@ class DataExtractor:
                     result[name] = await self._extract_list(field_def, name, site)
                 else:
                     result[name] = await self._extract_field(field_def, name, site)
-
-                # Log non-sensitive fields
-                if not (isinstance(field_def, ExtractionField) and field_def.sensitive):
-                    logger.debug(
-                        f"Extracted {name}",
-                        extra={"extra_data": {"field": name, "type": field_def.type.value}},
-                    )
-            except DataExtractionError:
-                raise
             except Exception as e:
+                reason = str(e).splitlines()[0] if str(e) else type(e).__name__
                 logger.warning(
-                    f"Extraction failed for {name}: {e}",
-                    extra={"extra_data": {"field": name, "error": str(e)}},
+                    f"Extraction failed for {name}",
+                    extra={"extra_data": {"field": name, "error": reason}},
                 )
-                # Use default if available
-                if isinstance(field_def, ExtractionField) and field_def.default is not None:
-                    result[name] = field_def.default
-                else:
-                    result[name] = None
+                self.field_errors.setdefault(name, reason)
+                result[name] = _default_for(field_def) if isinstance(field_def, ExtractionField) else None
+
+            # Values are never logged; sensitive ones not even by name at debug level.
+            if not (isinstance(field_def, ExtractionField) and field_def.sensitive):
+                logger.debug(
+                    f"Extracted {name}",
+                    extra={"extra_data": {"field": name, "type": field_def.type.value}},
+                )
+
+        missing_required = [
+            name
+            for name, field_def in fields.items()
+            if field_def.required and (result.get(name) is None or result.get(name) == [])
+        ]
+        if missing_required:
+            raise DataExtractionError(
+                site=site,
+                detail=f"Required field(s) not found: {', '.join(missing_required)}.",
+            )
 
         return result
+
+    def _field_timeout(self, field_def: ExtractionField) -> int:
+        if field_def.timeout:
+            return field_def.timeout
+        return SETTLED_FIELD_TIMEOUT_MS if self._settled else DEFAULT_FIELD_TIMEOUT_MS
 
     async def _extract_field(
         self,
@@ -270,21 +400,21 @@ class DataExtractor:
         site: str,
     ) -> Any:
         """Extract a single field value."""
-        field_timeout = getattr(field_def, "timeout", None) or 15000
         try:
-            element = await self.page.wait_for_selector(field_def.selector, timeout=field_timeout, state="attached")
-        except PlaywrightTimeout:
-            if field_def.default is not None:
-                return field_def.default
-            raise DataExtractionError(
-                site=site,
-                detail=f"Selector '{field_def.selector}' not found for field '{name}'.",
+            element = await self.page.wait_for_selector(
+                field_def.selector, timeout=self._field_timeout(field_def), state="attached"
             )
+        except PlaywrightTimeout:
+            self._settled = True
+            if field_def.default is None:
+                self.field_errors[name] = "not_found"
+            return _default_for(field_def)
+        self._settled = True
 
         if element is None:
-            if field_def.default is not None:
-                return field_def.default
-            return None
+            if field_def.default is None:
+                self.field_errors[name] = "not_found"
+            return _default_for(field_def)
 
         # Get the raw value
         if field_def.attribute:
@@ -297,8 +427,37 @@ class DataExtractor:
 
         # Coerce to type
         value = coerce_type(value, field_def.type)
+        if value is None:
+            if field_def.default is not None:
+                return _default_for(field_def)
+            self.field_errors[name] = "unparseable"
 
         return value
+
+    async def _next_page_ready(self, next_btn: Any, selector: str) -> bool:
+        """Whether the pagination control can and may be clicked."""
+        try:
+            if not await next_btn.is_visible():
+                return False
+            if await next_btn.is_disabled():
+                return False
+            aria_disabled = await next_btn.get_attribute("aria-disabled")
+            if aria_disabled and aria_disabled.strip().lower() == "true":
+                return False
+        except Exception:
+            return False
+
+        if self.read_only_policy is not None:
+            try:
+                metadata = await next_btn.evaluate(_DESCRIBE_ELEMENT_JS)
+            except Exception:
+                metadata = {}
+            reason = self.read_only_policy.evaluate_click(selector, metadata if isinstance(metadata, dict) else {})
+            if reason:
+                self.read_only_policy.record_blocked("pagination_click", reason, target=None)
+                logger.warning("Pagination stopped: the next control failed the read-only click policy")
+                return False
+        return True
 
     async def _extract_list(
         self,
@@ -317,8 +476,11 @@ class DataExtractor:
         while page_num < max_pages:
             # Get all row elements
             rows = await self.page.query_selector_all(field_def.selector)
+            self._settled = True
 
             if not rows:
+                if page_num == 0:
+                    self.field_errors[name] = "not_found"
                 break
 
             max_items = field_def.max_items
@@ -338,30 +500,30 @@ class DataExtractor:
 
                             value = apply_transform(raw, col_def.transform)
                             value = coerce_type(value, col_def.type)
-                            row_data[col_name] = value
+                            row_data[col_name] = _default_for(col_def) if value is None else value
                         else:
-                            row_data[col_name] = col_def.default
+                            row_data[col_name] = _default_for(col_def)
                     except Exception as e:
                         logger.debug(
                             f"Column extraction failed: {col_name} in row {i}",
-                            extra={"extra_data": {"error": str(e)}},
+                            extra={"extra_data": {"error": str(e).splitlines()[0] if str(e) else type(e).__name__}},
                         )
-                        row_data[col_name] = col_def.default
+                        row_data[col_name] = _default_for(col_def)
 
                 items.append(row_data)
+
+            if max_items and len(items) >= max_items:
+                break
 
             # Handle pagination
             if field_def.pagination and page_num < max_pages - 1:
                 try:
-                    next_btn = await self.page.query_selector(field_def.pagination.next_selector)
-                    if next_btn:
-                        is_disabled = await next_btn.get_attribute("disabled")
-                        if is_disabled:
-                            break
-                        await next_btn.click()
-                        await self.page.wait_for_timeout(field_def.pagination.wait_after_click)
-                    else:
+                    next_selector = field_def.pagination.next_selector
+                    next_btn = await self.page.query_selector(next_selector)
+                    if next_btn is None or not await self._next_page_ready(next_btn, next_selector):
                         break
+                    await next_btn.click()
+                    await self.page.wait_for_timeout(field_def.pagination.wait_after_click)
                 except Exception:
                     break
 

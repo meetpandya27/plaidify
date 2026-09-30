@@ -1,36 +1,67 @@
 """
 Shared test fixtures and configuration.
+
+Database: the whole suite uses ONE engine — ``src.database.engine``, built from
+``DATABASE_URL`` — for request handlers (``get_db``) and for everything that
+opens its own session (background jobs, audit, access jobs). Without an
+explicit ``DATABASE_URL`` each run gets a fresh SQLite file in a temporary
+directory; set ``DATABASE_URL=postgresql://...`` to run the suite against
+PostgreSQL. Tables are created once per session and emptied after every test,
+so no test depends on another having run first.
 """
 
+import atexit
+import gc
 import json
 import os
+import shutil
+import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 # Set test environment variables BEFORE importing app modules
+if not os.environ.get("DATABASE_URL"):
+    _TEST_DB_DIR = tempfile.mkdtemp(prefix="plaidify-tests-")
+    atexit.register(shutil.rmtree, _TEST_DB_DIR, True)
+    os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(_TEST_DB_DIR, "test.db")
 os.environ.setdefault("ENCRYPTION_KEY", "s790nQg9kGoAVQGqXreKUbG8Q0OA-A4HASTbyd-ruuQ=")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only-not-production")
-os.environ.setdefault("DATABASE_URL", "sqlite:///test_plaidify.db")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 os.environ.setdefault("LOG_FORMAT", "text")
 
-from src.core.llm_provider import LLMResponse, TokenUsage
-from src.database import Base, get_db
-from src.main import app
+import src.database as _database  # noqa: E402
+from src.core.llm_provider import LLMResponse, TokenUsage  # noqa: E402
+from src.database import Base, get_db  # noqa: E402
+from src.main import app  # noqa: E402
 
 # ── Test Database Setup ───────────────────────────────────────────────────────
 
-TEST_DATABASE_URL = "sqlite:///test_plaidify.db"
-test_engine = create_engine(TEST_DATABASE_URL, echo=False)
-TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+# The application's own engine and session factory: modules that imported
+# SessionLocal by name hold these very objects, so requests, background work
+# and tests all see the same database.
+TEST_DATABASE_URL = os.environ["DATABASE_URL"]
+test_engine = _database.engine
+TestSessionLocal = _database.SessionLocal
+
+# Every table is emptied after each test. Refuse a database that does not
+# look disposable unless the caller says it is.
+if not (
+    test_engine.dialect.name == "sqlite"
+    or "test" in (test_engine.url.database or "").lower()
+    or os.environ.get("PLAIDIFY_TEST_DB_DISPOSABLE") == "1"
+):
+    raise pytest.UsageError(
+        f"The test suite empties every table of DATABASE_URL ({test_engine.url.render_as_string(hide_password=True)}). "
+        "Use a database whose name contains 'test', or set PLAIDIFY_TEST_DB_DISPOSABLE=1 for a throwaway database."
+    )
 
 
 def override_get_db():
-    """Override the database dependency with test database."""
+    """Request-scoped session on the shared test engine."""
     db = TestSessionLocal()
     try:
         yield db
@@ -41,12 +72,63 @@ def override_get_db():
 app.dependency_overrides[get_db] = override_get_db
 
 
-@pytest.fixture(autouse=True)
-def setup_test_db():
-    """Create fresh tables before each test, drop after."""
-    Base.metadata.create_all(bind=test_engine)
-    yield
+def _truncate_postgres(tables, lock_timeout: str) -> None:
+    with test_engine.begin() as conn:
+        conn.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}'"))
+        names = ", ".join(conn.dialect.identifier_preparer.format_table(t) for t in tables)
+        conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+
+
+def _empty_all_tables() -> None:
+    tables = list(reversed(Base.metadata.sorted_tables))
+    if test_engine.dialect.name != "postgresql":
+        with test_engine.begin() as conn:
+            for table in tables:
+                conn.execute(table.delete())
+        return
+
+    # TRUNCATE waits for every open transaction that touched these tables. A
+    # test that dropped a session without closing it (``db = next(get_db())``)
+    # leaves one open until the session is garbage collected.
+    gc.collect()
+    try:
+        _truncate_postgres(tables, "5s")
+    except OperationalError:
+        # Still blocked: end transactions a finished test left idle. The
+        # database is disposable (checked above); running statements are spared.
+        with test_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                    "AND state LIKE 'idle in transaction%'"
+                )
+            )
+        _truncate_postgres(tables, "30s")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _create_test_schema():
+    """Build the schema fresh for the run.
+
+    create_all alone keeps a table that already exists with an older shape,
+    so a local test database left over from before a model change would fail
+    on the new columns. The database is disposable (see the name guard above).
+    """
     Base.metadata.drop_all(bind=test_engine)
+    Base.metadata.create_all(bind=test_engine)
+    _empty_all_tables()
+    yield
+    test_engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def setup_test_db(_create_test_schema):
+    """Every test starts from empty tables and a fresh key-rotation sweep."""
+    _database.reset_key_rotation_state()
+    yield
+    _database.reset_key_rotation_state()
+    _empty_all_tables()
 
 
 @pytest.fixture(autouse=True)

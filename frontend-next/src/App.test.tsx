@@ -73,14 +73,13 @@ describe("App (SSR smoke)", () => {
     expect(html).toContain('id="connect-btn"');
   });
 
-  it("renders the success step with the PUBLIC TOKEN reference", () => {
+  it("renders the success step without showing the user a token", () => {
     const html = renderToString(
       <App
         initialState={{
           ...initialFlowState,
           step: "success",
           success: {
-            accessToken: "public-abc123",
             summary: "Your secure connection is complete. Return to your app to finish setup.",
           },
         }}
@@ -89,8 +88,32 @@ describe("App (SSR smoke)", () => {
     );
     expect(html).toContain('id="step-success"');
     expect(html).toContain('class="link-step active"');
-    expect(html).toContain("PUBLIC TOKEN");
-    expect(html).toContain("public-abc123");
     expect(html).toContain("Return to your app");
+    expect(html).not.toContain("PUBLIC TOKEN");
+    expect(html).not.toContain('id="access-token-display"');
+  });
+
+  it("wraps credentials in a real form so Enter submits", () => {
+    const html = renderToString(
+      <App
+        initialState={{ ...initialFlowState, step: "credentials", institution: institutionHydro }}
+        buildEventDelivery={() => null}
+      />,
+    );
+    expect(html).toMatch(/<form[^>]*id="credentials-form"/);
+    expect(html).toMatch(/<button id="connect-btn" type="submit"/);
+    expect(html).toMatch(/<form[^>]*id="mfa-form"/);
+  });
+
+  it("renders the embedder logo from the branding", () => {
+    const logo = "data:image/png;base64,iVBORw0KGgo=";
+    const html = renderToString(
+      <App
+        buildEventDelivery={() => null}
+        branding={{ accent: null, background: null, radius: null, logo }}
+      />,
+    );
+    expect(html).toContain('class="link-brand__logo"');
+    expect(html).toContain(`src="${logo}"`);
   });
 });

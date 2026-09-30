@@ -29,6 +29,8 @@ public data class PlaidifyLinkFlowState(
     val organization: PlaidifyOrganization? = null,
     val sessionId: String? = null,
     val mfaType: String? = null,
+    /** What the provider asks for, e.g. the security question. */
+    val mfaPrompt: String? = null,
     val lastErrorCode: String? = null,
     val lastErrorMessage: String? = null,
     val publicToken: String? = null,
@@ -111,7 +113,8 @@ public class PlaidifyLinkConnectFlow(
 
     private fun handleConnectResponse(response: PlaidifyConnectResponse) {
         when (response.status) {
-            "completed" -> {
+            // `/connect` says "connected"; the session status says "completed".
+            "connected", "completed" -> {
                 state = state.copy(
                     step = PlaidifyLinkStep.Success,
                     publicToken = response.publicToken,
@@ -132,6 +135,7 @@ public class PlaidifyLinkConnectFlow(
                     step = PlaidifyLinkStep.Mfa,
                     sessionId = response.sessionId,
                     mfaType = response.mfaType,
+                    mfaPrompt = response.metadata?.message ?: response.message,
                 )
                 onEvent(
                     PlaidifyLinkFlowEvent.MfaRequired(
@@ -146,13 +150,14 @@ public class PlaidifyLinkConnectFlow(
                 apply(
                     Action.Failed(
                         code = null,
-                        message = response.errorMessage ?: response.message ?: "Connection failed.",
+                        message = response.error ?: response.message ?: "Connection failed.",
                     )
                 )
             }
 
             else -> {
-                // pending / unknown: stay on connecting.
+                // pending / mfa_submitted: still working — stay on connecting
+                // while the caller polls the session (PlaidifyLinkNativeSession).
             }
         }
     }

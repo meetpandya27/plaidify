@@ -166,24 +166,17 @@ async def test_connect_utility_account_success():
 
 
 @pytest.mark.asyncio
-async def test_connect_utility_account_unauthenticated_fallback():
+async def test_connect_utility_account_without_credentials_says_how_to_authenticate():
+    """No more fake "unauthenticated" link: an encryption session is not a hosted-link session."""
     from src.mcp_server import connect_utility_account
 
-    resp_403 = _mock_response({"detail": "Forbidden"}, 403)
-    error_403 = httpx.HTTPStatusError("", request=MagicMock(), response=resp_403)
-
-    fallback_data = {"link_token": "enc-xyz"}
-
-    async def side_effect(method, path, **kwargs):
-        if path == "/link/sessions":
-            raise error_403
-        return fallback_data
-
-    with patch("src.mcp_server._api", new_callable=AsyncMock, side_effect=side_effect):
-        result = await connect_utility_account("hydro_one")
-
-    assert "enc-xyz" in result
-    assert "unauthenticated mode" in result
+    for status_code, expected in ((401, "PLAIDIFY_API_KEY"), (403, "not allowed")):
+        response = _mock_response({"detail": "nope"}, status_code)
+        error = httpx.HTTPStatusError("", request=MagicMock(), response=response)
+        with patch("src.mcp_server._api", new_callable=AsyncMock, side_effect=error) as mock_api:
+            result = await connect_utility_account("hydro_one")
+        assert expected in result
+        assert all(call.args[1] != "/encryption/session" for call in mock_api.call_args_list)
 
 
 # ── check_connection_status ───────────────────────────────────────────────────
@@ -300,12 +293,12 @@ async def test_fetch_data_with_consent_token():
 
     assert "$142.57" in result
     assert "read:current_bill" in result
-    # Verify consent_token was passed
+    # The tokens travel in a POST body, never in the URL.
     mock_api.assert_called_once()
     call_params = mock_api.call_args
-    assert call_params.kwargs.get("params", {}).get("consent_token") == "consent-xyz" or (
-        len(call_params.args) > 2 and "consent_token" in str(call_params)
-    )
+    assert call_params.args[:2] == ("POST", "/fetch_data")
+    assert call_params.kwargs["json"] == {"access_token": "acc-token-456", "consent_token": "consent-xyz"}
+    assert "params" not in call_params.kwargs
 
 
 @pytest.mark.asyncio
@@ -493,3 +486,145 @@ def test_headers_no_key():
         assert "X-API-Key" not in h
     finally:
         mcp_mod.PLAIDIFY_API_KEY = original
+
+
+# ── get_job_status ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_job_status_reports_an_mfa_prompt_and_a_rejected_code():
+    from src.mcp_server import get_job_status
+
+    job = {
+        "job_id": "ajob-1",
+        "site": "demo_bank",
+        "status": "mfa_required",
+        "mfa_type": "otp",
+        "session_id": "sess-9",
+        "metadata": {"message": "Enter the code", "mfa_error": "invalid_code", "attempts_remaining": 2},
+    }
+    with patch("src.mcp_server._api", new_callable=AsyncMock, return_value=job) as mock_api:
+        result = await get_job_status("ajob-1")
+    mock_api.assert_called_once_with("GET", "/access_jobs/ajob-1")
+    assert "mfa_required" in result and "sess-9" in result
+    assert "rejected the last code" in result and "2 attempt" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "job,expected",
+    [
+        ({"status": "running", "mfa_state": "verifying"}, "checking it"),
+        ({"status": "pending"}, "Still running"),
+        ({"status": "completed", "result": {"data": {"balance": "$5"}}}, "$5"),
+        ({"status": "completed", "result": None, "metadata": {"result_fields": ["balance"]}}, "balance"),
+        ({"status": "mfa_timeout", "error_code": "mfa_timeout", "error_message": "MFA timeout"}, "(mfa_timeout)"),
+    ],
+)
+async def test_get_job_status_states(job, expected):
+    from src.mcp_server import get_job_status
+
+    with patch("src.mcp_server._api", new_callable=AsyncMock, return_value={"site": "s", **job}):
+        assert expected in await get_job_status("ajob-1")
+
+
+@pytest.mark.asyncio
+async def test_get_job_status_not_found():
+    from src.mcp_server import get_job_status
+
+    response = _mock_response({"detail": "Access job not found."}, 404)
+    with patch(
+        "src.mcp_server._api",
+        new_callable=AsyncMock,
+        side_effect=httpx.HTTPStatusError("", request=MagicMock(), response=response),
+    ):
+        assert "not found" in await get_job_status("nope")
+
+
+@pytest.mark.asyncio
+async def test_connect_site_pending_points_at_get_job_status():
+    from src.mcp_server import connect_site
+
+    with patch("src.mcp_server._api", new_callable=AsyncMock, return_value={"status": "pending", "job_id": "ajob-7"}):
+        result = await connect_site("demo_bank", "u", "p")
+    assert "get_job_status('ajob-7')" in result
+
+
+# ── HTTP transports ───────────────────────────────────────────────────────────
+
+
+def test_main_runs_sse_on_the_configured_port(monkeypatch):
+    """mcp.run(transport="sse", port=...) raised TypeError; the port goes through mcp.settings."""
+    import src.mcp_server as mcp_mod
+
+    calls = []
+    monkeypatch.setattr(mcp_mod.mcp, "run", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(mcp_mod.mcp.settings, "host", mcp_mod.mcp.settings.host)
+    monkeypatch.setattr(mcp_mod.mcp.settings, "port", mcp_mod.mcp.settings.port)
+    monkeypatch.setattr(mcp_mod.mcp.settings, "transport_security", mcp_mod.mcp.settings.transport_security)
+    mcp_mod.main(["--transport", "sse", "--port", "3999"])
+    assert calls == [{"transport": "sse"}]
+    assert (mcp_mod.mcp.settings.host, mcp_mod.mcp.settings.port) == ("127.0.0.1", 3999)
+
+    mcp_mod.main(["--transport", "streamable-http", "--port", "4000"])
+    assert calls[-1] == {"transport": "streamable-http"}
+
+
+def test_a_non_loopback_bind_needs_allowed_hosts(monkeypatch):
+    import src.mcp_server as mcp_mod
+
+    monkeypatch.setattr(mcp_mod.mcp, "run", lambda **kwargs: None)
+    monkeypatch.setattr(mcp_mod.mcp.settings, "host", mcp_mod.mcp.settings.host)
+    monkeypatch.setattr(mcp_mod.mcp.settings, "port", mcp_mod.mcp.settings.port)
+    monkeypatch.setattr(mcp_mod.mcp.settings, "transport_security", mcp_mod.mcp.settings.transport_security)
+    monkeypatch.delenv("PLAIDIFY_MCP_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(SystemExit):
+        mcp_mod.main(["--transport", "sse", "--host", "0.0.0.0"])
+    mcp_mod.main(["--transport", "sse", "--host", "0.0.0.0", "--allowed-host", "mcp.internal"])
+    assert mcp_mod.mcp.settings.transport_security.allowed_hosts == ["mcp.internal:*"]
+
+
+@pytest.mark.asyncio
+async def test_the_sse_transport_serves_an_event_stream():
+    """Start the real SSE app on an ephemeral port and open /sse."""
+    import asyncio
+
+    import uvicorn
+    from sse_starlette.sse import AppStatus
+
+    import src.mcp_server as mcp_mod
+
+    # sse-starlette's process-wide exit event is bound to the first loop that streamed.
+    AppStatus.should_exit_event = None
+    AppStatus.should_exit = False
+    mcp_mod.configure_http_transport("127.0.0.1", 0)
+    server = uvicorn.Server(uvicorn.Config(mcp_mod.mcp.sse_app(), host="127.0.0.1", port=0, log_level="warning"))
+    task = asyncio.create_task(server.serve())
+    try:
+        for _ in range(500):
+            if server.started:
+                break
+            await asyncio.sleep(0.01)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        async with httpx.AsyncClient(timeout=5) as client:
+            async with client.stream("GET", f"http://127.0.0.1:{port}/sse") as response:
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith("text/event-stream")
+                async for line in response.aiter_lines():
+                    if line.startswith("event:"):
+                        assert line.strip() == "event: endpoint"
+                        break
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_check_connection_status_explains_an_error_and_an_exit():
+    from src.mcp_server import check_connection_status
+
+    failed = {"status": "error", "site": "demo_bank", "error_message": "MFA timeout", "error_code": "mfa_timeout"}
+    with patch("src.mcp_server._api", new_callable=AsyncMock, return_value=failed):
+        assert "Error (mfa_timeout): MFA timeout" in await check_connection_status("lt")
+    with patch("src.mcp_server._api", new_callable=AsyncMock, return_value={"status": "exited", "site": "s"}):
+        assert "closed the link" in await check_connection_status("lt")

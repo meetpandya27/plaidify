@@ -1,9 +1,14 @@
-# Ruff configuration for Plaidify
+# Tool configuration for Plaidify. The server supports Python 3.11-3.13 (CI
+# tests all three; the image runs 3.11); dependencies are in requirements*.txt
+# and their hash-locked requirements*.lock files.
 # https://docs.astral.sh/ruff/
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 120
+# One ruff everywhere: requirements-dev.txt, .pre-commit-config.yaml and CI
+# pin this version, so lint and format results never depend on who runs them.
+required-version = "==0.14.6"
 
 [tool.ruff.lint]
 select = [

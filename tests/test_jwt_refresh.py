@@ -2,6 +2,8 @@
 Tests for JWT refresh token rotation (Issue #11).
 """
 
+import json
+import threading
 from datetime import datetime, timedelta, timezone
 
 
@@ -126,12 +128,12 @@ class TestRefreshEndpoint:
         tokens = self._register_and_get_tokens(client, "expireduser")
 
         # Manually expire the token in the database
-        from src.database import RefreshToken
+        from src.database import RefreshToken, hash_refresh_token
         from tests.conftest import TestSessionLocal
 
         db = TestSessionLocal()
         try:
-            rt = db.query(RefreshToken).filter_by(token=tokens["refresh_token"]).first()
+            rt = db.query(RefreshToken).filter_by(token_hash=hash_refresh_token(tokens["refresh_token"])).first()
             rt.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
             db.commit()
         finally:
@@ -145,6 +147,29 @@ class TestRefreshEndpoint:
         )
         assert response.status_code == 401
         assert "expired" in response.json()["detail"].lower()
+
+    def test_presenting_an_expired_token_twice_keeps_other_sessions(self, client):
+        """An expired token is just expired: retrying it must not look like theft."""
+        from src.database import RefreshToken, hash_refresh_token
+        from tests.conftest import TestSessionLocal
+
+        tokens = self._register_and_get_tokens(client, "expiredtwice")
+        other = client.post("/auth/token", data={"username": "expiredtwice", "password": "Strong@pass123"}).json()
+
+        db = TestSessionLocal()
+        try:
+            rt = db.query(RefreshToken).filter_by(token_hash=hash_refresh_token(tokens["refresh_token"])).one()
+            rt.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+            db.commit()
+        finally:
+            db.close()
+
+        for _ in range(2):
+            response = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+            assert response.status_code == 401
+            assert "expired" in response.json()["detail"].lower()
+
+        assert client.post("/auth/refresh", json={"refresh_token": other["refresh_token"]}).status_code == 200
 
     def test_new_access_token_works(self, client):
         """The new access token from refresh should authenticate requests."""
@@ -182,6 +207,144 @@ class TestRefreshEndpoint:
             assert "refresh_token" in tokens
 
 
+class TestRefreshTokenStorage:
+    """SEC-15: only a hash of each refresh token is stored."""
+
+    def test_raw_token_is_not_stored(self, client):
+        from src.database import RefreshToken, hash_refresh_token
+        from tests.conftest import TestSessionLocal
+
+        raw = client.post(
+            "/auth/register",
+            json={"username": "hashstore", "email": "hashstore@example.com", "password": "Strong@pass123"},
+        ).json()["refresh_token"]
+
+        db = TestSessionLocal()
+        try:
+            rows = db.query(RefreshToken).all()
+            assert len(rows) == 1
+            assert rows[0].token_hash == hash_refresh_token(raw)
+            assert rows[0].token_hash != raw
+            assert not hasattr(rows[0], "token")
+        finally:
+            db.close()
+
+    def test_constructor_hashes_a_raw_token(self):
+        from src.database import RefreshToken, hash_refresh_token
+
+        row = RefreshToken(token="raw-value", user_id=1, expires_at=datetime.now(timezone.utc))
+        assert row.token_hash == hash_refresh_token("raw-value")
+
+    def test_a_stored_hash_is_not_a_usable_refresh_token(self, client):
+        from src.database import RefreshToken
+        from tests.conftest import TestSessionLocal
+
+        client.post(
+            "/auth/register",
+            json={"username": "hashreplay", "email": "hashreplay@example.com", "password": "Strong@pass123"},
+        )
+        db = TestSessionLocal()
+        try:
+            stored = db.query(RefreshToken).one().token_hash
+        finally:
+            db.close()
+        assert client.post("/auth/refresh", json={"refresh_token": stored}).status_code == 401
+
+
+class TestRefreshTokenReuse:
+    """SEC-15: rotation is atomic and reuse of a rotated token revokes the whole family."""
+
+    def _register(self, client, username):
+        return client.post(
+            "/auth/register",
+            json={"username": username, "email": f"{username}@example.com", "password": "Strong@pass123"},
+        ).json()
+
+    def _active_refresh_tokens(self, username):
+        from src.database import RefreshToken, User
+        from tests.conftest import TestSessionLocal
+
+        db = TestSessionLocal()
+        try:
+            user = db.query(User).filter_by(username=username).one()
+            return db.query(RefreshToken).filter_by(user_id=user.id, revoked=False).count()
+        finally:
+            db.close()
+
+    def test_reusing_a_rotated_token_revokes_every_session(self, client):
+        first = self._register(client, "familyuser")
+        second = client.post("/auth/token", data={"username": "familyuser", "password": "Strong@pass123"}).json()
+
+        rotated = client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
+        assert rotated.status_code == 200
+        assert self._active_refresh_tokens("familyuser") == 2  # second + the rotated one
+
+        # The old token shows up again: someone else has a copy of it.
+        replay = client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
+        assert replay.status_code == 401
+        assert "Invalid or revoked" in replay.json()["detail"]
+        assert self._active_refresh_tokens("familyuser") == 0
+
+        for token in (second["refresh_token"], rotated.json()["refresh_token"]):
+            assert client.post("/auth/refresh", json={"refresh_token": token}).status_code == 401
+
+    def test_reuse_is_audited(self, client):
+        from src.database import AuditLog
+        from tests.conftest import TestSessionLocal
+
+        tokens = self._register(client, "reuseaudit")
+        client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+        client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+
+        db = TestSessionLocal()
+        try:
+            entry = db.query(AuditLog).filter_by(action="refresh_token_reuse").one()
+            assert json.loads(entry.metadata_json)["revoked_count"] == 1
+        finally:
+            db.close()
+
+    def test_unknown_token_revokes_nothing(self, client):
+        self._register(client, "unknowntok")
+        assert client.post("/auth/refresh", json={"refresh_token": "not-a-real-token"}).status_code == 401
+        assert self._active_refresh_tokens("unknowntok") == 1
+
+    def test_concurrent_refreshes_mint_at_most_one_session(self, client):
+        """One token presented by many requests at once yields exactly one new pair."""
+        from src.database import RefreshToken, User
+        from tests.conftest import TestSessionLocal
+
+        tokens = self._register(client, "racer")
+        workers = 8
+        barrier = threading.Barrier(workers)
+        statuses: list[int] = []
+        lock = threading.Lock()
+
+        def refresh():
+            barrier.wait()
+            response = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+            with lock:
+                statuses.append(response.status_code)
+
+        threads = [threading.Thread(target=refresh) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+
+        assert sorted(statuses) == [200] + [401] * (workers - 1)
+
+        db = TestSessionLocal()
+        try:
+            user = db.query(User).filter_by(username="racer").one()
+            issued = db.query(RefreshToken).filter_by(user_id=user.id).count()
+            # The registration token plus exactly one successor — never one per request.
+            assert issued == 2
+            # The losers presented an already-rotated token, which revokes the family.
+            assert db.query(RefreshToken).filter_by(user_id=user.id, revoked=False).count() == 0
+        finally:
+            db.close()
+
+
 class TestShortAccessTokenExpiry:
     """Verify access tokens have short expiry times."""
 
@@ -189,6 +352,7 @@ class TestShortAccessTokenExpiry:
         """Access tokens should have a short default expiry (15 minutes)."""
         import jwt as pyjwt
 
+        from src.auth_utils import ACCESS_TOKEN_AUDIENCE
         from src.config import get_settings
 
         response = client.post(
@@ -202,7 +366,9 @@ class TestShortAccessTokenExpiry:
         token = response.json()["access_token"]
 
         settings = get_settings()
-        payload = pyjwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        payload = pyjwt.decode(
+            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm], audience=ACCESS_TOKEN_AUDIENCE
+        )
         exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
         now = datetime.now(timezone.utc)
 

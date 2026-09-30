@@ -1,5 +1,13 @@
 name: Publish JS SDK
 
+# Publishes @plaidify/client (sdk-js/) to npm when a tag like
+# sdk-js-v0.3.0-beta.1 is pushed. The tag must match sdk-js/package.json's
+# version and the SDK's checks must pass. The upload uses npm trusted
+# publishing (OIDC, no token) with provenance, from the `npm` GitHub
+# environment: configure the trusted publisher on npmjs.com (package
+# @plaidify/client, workflow publish-sdk-js.yml, environment npm) and protect
+# the environment with required reviewers.
+
 on:
   push:
     tags:
@@ -7,34 +15,73 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
-    name: Build & Publish to npm
+  test:
+    name: Test and build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: sdk-js
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: "20"
-          registry-url: "https://registry.npmjs.org"
-          cache: "npm"
-          cache-dependency-path: sdk-js/package-lock.json
-
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - name: Check the tag matches the package version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          if [[ "$TAG" != "sdk-js-v${version}" ]]; then
+            echo "::error::Tag ${TAG} does not match sdk-js/package.json version ${version} (expected sdk-js-v${version})."
+            exit 1
+          fi
       - name: Install dependencies
-        working-directory: sdk-js
-        run: npm ci
-
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
       - name: Run tests
-        working-directory: sdk-js
-        run: npx vitest run
-
+        run: npm test
       - name: Build
-        working-directory: sdk-js
         run: npm run build
+      - name: Pack
+        run: npm pack --pack-destination "$RUNNER_TEMP"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: js-sdk-tarball
+          path: ${{ runner.temp }}/*.tgz
+          if-no-files-found: error
 
+  publish:
+    name: Publish to npm
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@plaidify/client
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance (OIDC); no token is stored
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Node 24 ships npm 11, which exchanges the OIDC token itself.
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: js-sdk-tarball
+          path: dist/
       - name: Publish to npm
-        working-directory: sdk-js
-        run: npm publish --access public --provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The exact tarball the test job built and checked.
+          npm publish dist/*.tgz --access public --provenance

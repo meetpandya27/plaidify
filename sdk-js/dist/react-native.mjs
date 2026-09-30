@@ -1,13 +1,47 @@
 // src/react-native.ts
-import React, { useCallback, useMemo, useState } from "react";
-function buildPlaidifyHostedLinkUrl(config) {
-  const baseUrl = config.serverUrl.replace(/\/+$/, "");
-  const url = new URL(`${baseUrl}/link`);
-  url.searchParams.set("token", config.token);
-  if (config.origin) {
-    url.searchParams.set("origin", config.origin);
+import React, { useCallback, useMemo, useRef, useState } from "react";
+
+// src/link-events.ts
+function sanitizeLinkPayload(data) {
+  if (!data || typeof data !== "object") {
+    return null;
   }
-  const theme = config.theme;
+  const payload = data;
+  if (payload.source !== "plaidify-link") {
+    return null;
+  }
+  return {
+    source: "plaidify-link",
+    event: payload.event,
+    error: payload.error,
+    error_code: payload.error_code,
+    job_id: payload.job_id,
+    mfa_type: payload.mfa_type,
+    organization_id: payload.organization_id,
+    organization_name: payload.organization_name,
+    public_token: payload.public_token,
+    reason: payload.reason,
+    session_id: payload.session_id,
+    site: payload.site,
+    name: payload.name,
+    step: payload.step,
+    field: payload.field,
+    elapsed_ms: payload.elapsed_ms
+  };
+}
+var TERMINAL_EVENTS = /* @__PURE__ */ new Set(["CONNECTED", "EXIT", "DONE", "CLOSE"]);
+function isTerminalLinkEvent(eventName) {
+  return TERMINAL_EVENTS.has(String(eventName || ""));
+}
+
+// src/link-url.ts
+function buildHostedLinkUrl(serverUrl, linkToken, options = {}, base) {
+  const url = new URL(`${serverUrl.replace(/\/+$/, "")}/link`, base);
+  url.searchParams.set("token", linkToken);
+  if (options.origin) {
+    url.searchParams.set("origin", options.origin);
+  }
+  const theme = options.theme;
   if (theme?.accentColor) {
     url.searchParams.set("accent", theme.accentColor);
   }
@@ -22,11 +56,23 @@ function buildPlaidifyHostedLinkUrl(config) {
   }
   return url.toString();
 }
+
+// src/react-native.ts
+function buildPlaidifyHostedLinkUrl(config) {
+  return buildHostedLinkUrl(config.serverUrl, config.token, {
+    origin: config.origin,
+    theme: config.theme
+  });
+}
+function plaidifyOrigin(serverUrl) {
+  return new URL(serverUrl.replace(/\/+$/, "")).origin;
+}
 function createPlaidifyReactNativeWebViewProps(config) {
-  const origin = new URL(config.serverUrl.replace(/\/+$/, "")).origin;
   return {
     source: { uri: buildPlaidifyHostedLinkUrl(config) },
-    originWhitelist: [origin],
+    // Anything off the Plaidify origin is handed to the OS browser instead
+    // of being loaded inside the Link webview.
+    originWhitelist: [plaidifyOrigin(config.serverUrl)],
     javaScriptEnabled: true,
     domStorageEnabled: true,
     sharedCookiesEnabled: true,
@@ -37,6 +83,9 @@ function createPlaidifyReactNativeWebViewProps(config) {
 }
 function createPlaidifyReactNativeMessageHandler(callbacks) {
   return function handlePlaidifyMessage(input) {
+    if (callbacks?.expectedOrigin && !messageFromOrigin(input, callbacks.expectedOrigin)) {
+      return null;
+    }
     const payload = parsePlaidifyLinkMessage(input);
     if (!payload) {
       return null;
@@ -57,13 +106,18 @@ function createPlaidifyReactNativeMessageHandler(callbacks) {
         break;
       case "ERROR":
         callbacks?.onStatusChange?.("error");
-        callbacks?.onExit?.({ reason: "error", error: payload.error });
         break;
       case "EXIT":
       case "DONE":
       case "CLOSE":
         callbacks?.onStatusChange?.("idle");
-        callbacks?.onExit?.({ reason: payload.reason || String(payload.event || "exit").toLowerCase() });
+        callbacks?.onExit?.({
+          reason: payload.reason || String(payload.event || "exit").toLowerCase(),
+          error: payload.error,
+          error_code: payload.error_code
+        });
+        break;
+      case "TELEMETRY":
         break;
       default:
         callbacks?.onStatusChange?.("active");
@@ -75,19 +129,31 @@ function createPlaidifyReactNativeMessageHandler(callbacks) {
 function usePlaidifyReactNativeLink(config) {
   const [status, setStatus] = useState("idle");
   const [lastEvent, setLastEvent] = useState(null);
+  const finishedRef = useRef(false);
   const url = useMemo(() => buildPlaidifyHostedLinkUrl(config), [config]);
+  const { onEvent, onExit, onMFA, onSuccess, serverUrl } = config;
   const handleMessage = useMemo(
     () => createPlaidifyReactNativeMessageHandler({
-      onEvent: config.onEvent,
-      onExit: config.onExit,
-      onMFA: config.onMFA,
-      onSuccess: config.onSuccess,
+      onEvent,
+      onExit: (details) => {
+        if (finishedRef.current) return;
+        finishedRef.current = true;
+        onExit?.(details);
+      },
+      onMFA,
+      onSuccess: (publicToken, metadata) => {
+        if (finishedRef.current) return;
+        finishedRef.current = true;
+        onSuccess?.(publicToken, metadata);
+      },
       onStatusChange: setStatus,
-      onLastEventChange: setLastEvent
+      onLastEventChange: setLastEvent,
+      expectedOrigin: plaidifyOrigin(serverUrl)
     }),
-    [config.onEvent, config.onExit, config.onMFA, config.onSuccess]
+    [onEvent, onExit, onMFA, onSuccess, serverUrl]
   );
   const reset = useCallback(() => {
+    finishedRef.current = false;
     setStatus("idle");
     setLastEvent(null);
   }, []);
@@ -120,6 +186,17 @@ function PlaidifyReactNativeLink(props) {
   const { webViewProps } = usePlaidifyReactNativeLink(config);
   return React.createElement(WebViewComponent, webViewProps);
 }
+function messageFromOrigin(input, expectedOrigin) {
+  const pageUrl = typeof input === "object" && input !== null && "nativeEvent" in input ? input.nativeEvent?.url : void 0;
+  if (typeof pageUrl !== "string" || !pageUrl) {
+    return true;
+  }
+  try {
+    return new URL(pageUrl).origin === expectedOrigin;
+  } catch {
+    return false;
+  }
+}
 function parsePlaidifyLinkMessage(input) {
   let payload = input;
   if (typeof payload === "object" && payload !== null && "nativeEvent" in payload && typeof payload.nativeEvent?.data !== "undefined") {
@@ -132,29 +209,10 @@ function parsePlaidifyLinkMessage(input) {
       return null;
     }
   }
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-  const eventPayload = payload;
-  if (eventPayload.source !== "plaidify-link") {
-    return null;
-  }
-  return {
-    source: "plaidify-link",
-    event: eventPayload.event,
-    error: eventPayload.error,
-    job_id: eventPayload.job_id,
-    mfa_type: eventPayload.mfa_type,
-    organization_id: eventPayload.organization_id,
-    organization_name: eventPayload.organization_name,
-    public_token: eventPayload.public_token,
-    reason: eventPayload.reason,
-    session_id: eventPayload.session_id,
-    site: eventPayload.site
-  };
+  return sanitizeLinkPayload(payload);
 }
 function isPlaidifyTerminalEvent(eventName) {
-  return ["CONNECTED", "ERROR", "EXIT", "DONE"].includes(String(eventName || ""));
+  return isTerminalLinkEvent(eventName);
 }
 function shouldDismissPlaidifySheet(payload) {
   if (!payload) {

@@ -17,6 +17,11 @@ export interface LinkSessionStatus {
   readonly mfa_type?: string | null;
   readonly message?: string | null;
   readonly error_message?: string | null;
+  /**
+   * Origins allowed to embed this session. Absent on servers that predate
+   * the field; empty when only the API's own origin may embed it.
+   */
+  readonly allowed_origins?: readonly string[] | null;
 }
 
 export type OrganizationAuthStyle =
@@ -227,14 +232,12 @@ export class LinkApi {
   }
 
   submitMfa(params: { sessionId: string; code: string }): Promise<ConnectResponse> {
-    const search = new URLSearchParams({
-      session_id: params.sessionId,
-      code: params.code,
-    });
+    // In the body, never the URL: a query string lands in access logs.
     return request<ConnectResponse>(
       this.fetchImpl,
       "POST",
-      joinUrl(this.serverUrl, `/mfa/submit?${search.toString()}`),
+      joinUrl(this.serverUrl, "/mfa/submit"),
+      { session_id: params.sessionId, code: params.code },
     );
   }
 }
@@ -293,10 +296,28 @@ function bytesToBase64(bytes: Uint8Array): string {
  */
 export interface PollOptions {
   readonly api: LinkApi;
+  /**
+   * The MFA session whose code was just submitted. Right after an answer the
+   * session can still read "mfa_required" for the challenge just answered;
+   * a different session, or the same one re-opened after the site rejected
+   * the code (fewer `attempts_remaining` than when it was answered), is a
+   * fresh prompt.
+   */
+  readonly answeredMfaSessionId?: string | null;
+  /** `metadata.attempts_remaining` of the challenge that was answered, if any. */
+  readonly answeredAttemptsRemaining?: number | null;
   readonly maxAttempts?: number;
   readonly intervalMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly onTick?: (status: LinkSessionStatus, attempt: number) => void;
+}
+
+/** `metadata.attempts_remaining` of an MFA status, when the site rejected a code. */
+export function mfaAttemptsRemaining(status: {
+  readonly metadata?: Record<string, unknown> | null;
+}): number | undefined {
+  const value = status.metadata?.attempts_remaining;
+  return typeof value === "number" ? value : undefined;
 }
 
 const DEFAULT_POLL_MAX = 90;
@@ -316,10 +337,20 @@ export async function pollLinkSession(
     const status = await options.api.getStatus();
     options.onTick?.(status, attempt);
 
+    const remaining = mfaAttemptsRemaining(status);
+    const reopened =
+      remaining !== undefined &&
+      (options.answeredAttemptsRemaining == null || remaining < options.answeredAttemptsRemaining);
+    const answered =
+      status.status === "mfa_required" &&
+      !!options.answeredMfaSessionId &&
+      (!status.session_id || status.session_id === options.answeredMfaSessionId) &&
+      !reopened;
     if (
-      status.status === "completed" ||
-      status.status === "error" ||
-      status.status === "mfa_required"
+      !answered &&
+      (status.status === "completed" ||
+        status.status === "error" ||
+        status.status === "mfa_required")
     ) {
       return status;
     }

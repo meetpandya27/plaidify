@@ -18,44 +18,37 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import type { PlaidifyLinkConfig, PlaidifyLinkEventPayload } from "./types";
+import { sanitizeLinkPayload } from "./link-events";
+import { buildHostedLinkUrl } from "./link-url";
+import type {
+  PlaidifyLinkConfig,
+  PlaidifyLinkEventPayload,
+  PlaidifyLinkExitDetails,
+} from "./types";
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export interface UsePlaidifyLinkReturn {
-  /** Open the link modal. */
+  /** Open the link modal. Does nothing while it is already open. */
   open: () => void;
   /** Whether the link component is ready to open. */
   ready: boolean;
-  /** Current status of the link flow. */
+  /**
+   * Current status of the link flow. "error" means the last event was a
+   * recoverable ERROR: Link stays open on its retry screen.
+   */
   status: "idle" | "loading" | "open" | "success" | "error";
-  /** Close the link modal programmatically. */
+  /** Close the link modal programmatically (reported as an exit). */
   close: () => void;
 }
 
-function sanitizePlaidifyLinkPayload(data: unknown): PlaidifyLinkEventPayload | null {
-  if (!data || typeof data !== "object") {
+function serverOrigin(serverUrl: string): string | null {
+  try {
+    const base = typeof window !== "undefined" ? window.location.href : undefined;
+    return new URL(serverUrl.replace(/\/+$/, ""), base).origin;
+  } catch {
     return null;
   }
-
-  const payload = data as PlaidifyLinkEventPayload;
-  if (payload.source !== "plaidify-link") {
-    return null;
-  }
-
-  return {
-    source: "plaidify-link",
-    event: payload.event,
-    error: payload.error,
-    job_id: payload.job_id,
-    mfa_type: payload.mfa_type,
-    organization_id: payload.organization_id,
-    organization_name: payload.organization_name,
-    public_token: payload.public_token,
-    reason: payload.reason,
-    session_id: payload.session_id,
-    site: payload.site,
-  };
 }
 
 export function usePlaidifyLink(config: PlaidifyLinkConfig): UsePlaidifyLinkReturn {
@@ -63,10 +56,11 @@ export function usePlaidifyLink(config: PlaidifyLinkConfig): UsePlaidifyLinkRetu
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const resizeHandlerRef = useRef<(() => void) | null>(null);
-  const serverOriginRef = useRef(new URL(config.serverUrl.replace(/\/+$/, ""), window.location.href).origin);
+  // True from open() until the session is over; guards every callback so
+  // onSuccess/onExit fire at most once per open.
+  const activeRef = useRef(false);
   const configRef = useRef(config);
   configRef.current = config;
-  serverOriginRef.current = new URL(config.serverUrl.replace(/\/+$/, ""), window.location.href).origin;
 
   const applyResponsiveLayout = useCallback(() => {
     if (!overlayRef.current || !iframeRef.current) {
@@ -106,35 +100,54 @@ export function usePlaidifyLink(config: PlaidifyLinkConfig): UsePlaidifyLinkRetu
       window.removeEventListener("resize", resizeHandlerRef.current);
       resizeHandlerRef.current = null;
     }
-    if (overlayRef.current) {
-      document.body.removeChild(overlayRef.current);
-      overlayRef.current = null;
-    }
+    overlayRef.current?.remove();
+    overlayRef.current = null;
     iframeRef.current = null;
   }, []);
 
+  /** End the session: tear the modal down and report how it ended, once. */
+  const finish = useCallback(
+    (outcome: { success: PlaidifyLinkEventPayload } | { exit: PlaidifyLinkExitDetails }) => {
+      if (!activeRef.current) {
+        return;
+      }
+      activeRef.current = false;
+      cleanup();
+      if ("success" in outcome) {
+        setStatus("success");
+        configRef.current.onSuccess?.(outcome.success.public_token || "", outcome.success);
+      } else {
+        setStatus("idle");
+        configRef.current.onExit?.(outcome.exit);
+      }
+    },
+    [cleanup],
+  );
+
   const close = useCallback(() => {
-    cleanup();
-    setStatus("idle");
-    configRef.current.onExit?.({ reason: "user_closed" });
-  }, [cleanup]);
+    finish({ exit: { reason: "user_closed" } });
+  }, [finish]);
 
   // Listen for postMessage events from the iframe
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
-      const data = sanitizePlaidifyLinkPayload(event.data);
-      if (!data || data.source !== "plaidify-link") return;
-      if (event.origin !== serverOriginRef.current) return;
+      if (!activeRef.current) return;
+      // Only the Link iframe this hook opened, served from the Plaidify
+      // server — not another frame on the page posting look-alike events.
+      const frame = iframeRef.current;
+      if (!frame || event.source !== frame.contentWindow) return;
+      if (event.origin !== serverOrigin(configRef.current.serverUrl)) return;
+      const data = sanitizeLinkPayload(event.data);
+      if (!data) return;
 
       configRef.current.onEvent?.(data.event || "UNKNOWN", data);
 
       switch (data.event) {
         case "CONNECTED":
-          setStatus("success");
-          cleanup();
-          configRef.current.onSuccess?.(data.public_token || "", data as PlaidifyLinkEventPayload);
+          finish({ success: data });
           break;
         case "MFA_REQUIRED":
+          setStatus("open");
           configRef.current.onMFA?.({
             mfa_type: data.mfa_type,
             session_id: data.session_id,
@@ -142,31 +155,46 @@ export function usePlaidifyLink(config: PlaidifyLinkConfig): UsePlaidifyLinkRetu
           break;
         case "EXIT":
         case "CLOSE":
-          close();
+        case "DONE":
+          finish({
+            exit: {
+              reason: data.reason || String(data.event).toLowerCase(),
+              error: data.error,
+              error_code: data.error_code,
+            },
+          });
           break;
         case "ERROR":
+          // Recoverable: the page offers retry / another provider. Link
+          // closes only when the user exits.
           setStatus("error");
-          cleanup();
-          configRef.current.onExit?.({ reason: "error", error: data.error || "Link error" });
+          break;
+        case "TELEMETRY":
+          break;
+        default:
+          setStatus("open");
           break;
       }
     }
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [cleanup, close]);
+  }, [finish]);
 
   const open = useCallback(() => {
+    if (activeRef.current) {
+      // Already showing: a second overlay would be orphaned on close.
+      return;
+    }
     const cfg = configRef.current;
+    const url = buildHostedLinkUrl(
+      cfg.serverUrl,
+      cfg.token,
+      { origin: window.location.origin, theme: cfg.theme },
+      window.location.href,
+    );
+    activeRef.current = true;
     setStatus("loading");
-
-    // Build iframe URL with theme and origin params
-    let url = `${cfg.serverUrl}/link?token=${encodeURIComponent(cfg.token)}`;
-    url += `&origin=${encodeURIComponent(window.location.origin)}`;
-    if (cfg.theme?.accentColor) url += `&accent=${encodeURIComponent(cfg.theme.accentColor)}`;
-    if (cfg.theme?.bgColor) url += `&bg=${encodeURIComponent(cfg.theme.bgColor)}`;
-    if (cfg.theme?.borderRadius) url += `&radius=${encodeURIComponent(cfg.theme.borderRadius)}`;
-    if (cfg.theme?.logo) url += `&logo=${encodeURIComponent(cfg.theme.logo)}`;
 
     // Create overlay
     const overlay = document.createElement("div");
@@ -177,12 +205,15 @@ export function usePlaidifyLink(config: PlaidifyLinkConfig): UsePlaidifyLinkRetu
     // Create iframe
     const iframe = document.createElement("iframe");
     iframe.src = url;
+    iframe.title = "Plaidify Link";
     iframe.style.cssText =
       "width:min(100%,680px);max-width:680px;height:min(820px,92vh);max-height:92vh;border:none;" +
       `border-radius:${cfg.theme?.borderRadius || "30px"};` +
       "background:#fff;box-shadow:0 30px 90px rgba(15,23,42,0.28);";
     iframe.allow = "clipboard-write";
-    iframe.onload = () => setStatus("open");
+    iframe.onload = () => {
+      if (activeRef.current) setStatus((current) => (current === "loading" ? "open" : current));
+    };
 
     // Close on overlay click
     overlay.addEventListener("click", (e) => {
@@ -197,10 +228,16 @@ export function usePlaidifyLink(config: PlaidifyLinkConfig): UsePlaidifyLinkRetu
     resizeHandlerRef.current = applyResponsiveLayout;
     window.addEventListener("resize", resizeHandlerRef.current);
     applyResponsiveLayout();
-  }, [close]);
+  }, [applyResponsiveLayout, close]);
 
   // Cleanup on unmount
-  useEffect(() => cleanup, [cleanup]);
+  useEffect(
+    () => () => {
+      activeRef.current = false;
+      cleanup();
+    },
+    [cleanup],
+  );
 
   return {
     open,

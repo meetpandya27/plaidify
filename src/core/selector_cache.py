@@ -109,6 +109,29 @@ class CacheEntry:
 # ── Cache Key ─────────────────────────────────────────────────────────────────
 
 
+def is_valid_selector_map(selectors: Any) -> bool:
+    """Whether ``selectors`` has the shape the engine reads back.
+
+    ``{field: "css"}`` for scalar fields and
+    ``{field: {"row": "css", "fields": {column: "css"}}}`` for lists.
+    """
+    if not isinstance(selectors, dict) or not selectors:
+        return False
+    for value in selectors.values():
+        if isinstance(value, str):
+            if not value.strip():
+                return False
+            continue
+        if not isinstance(value, dict):
+            return False
+        row, fields = value.get("row"), value.get("fields")
+        if not isinstance(row, str) or not row.strip() or not isinstance(fields, dict):
+            return False
+        if not all(isinstance(col, str) and col.strip() for col in fields.values()):
+            return False
+    return True
+
+
 def make_cache_key(domain: str, page_path: str) -> str:
     """Generate a deterministic cache key from domain + page path."""
     normalized = f"{domain.lower().strip()}/{page_path.strip('/')}"
@@ -180,7 +203,12 @@ class SelectorCache:
 
         Returns:
             The new CacheEntry.
+
+        Raises:
+            ValueError: if ``selectors`` is not a valid selector map.
         """
+        if not is_valid_selector_map(selectors):
+            raise ValueError("selectors must map field names to CSS selectors (or row/fields maps for lists)")
         key = make_cache_key(domain, page_path)
         entry = CacheEntry(
             domain=domain.lower().strip(),
@@ -298,8 +326,21 @@ class SelectorCache:
             return
         try:
             data = json.loads(path.read_text())
-            for key, entry_data in data.items():
-                self._store[key] = CacheEntry.from_dict(entry_data)
-            logger.info("Loaded %d cache entries from disk", len(self._store))
-        except (json.JSONDecodeError, KeyError) as e:
+        except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to load cache from disk: %s", e)
+            return
+        if not isinstance(data, dict):
+            logger.warning("Ignoring selector cache file: not a JSON object")
+            return
+        skipped = 0
+        for key, entry_data in data.items():
+            try:
+                entry = CacheEntry.from_dict(entry_data)
+            except (KeyError, TypeError, ValueError, AttributeError):
+                skipped += 1
+                continue
+            if not is_valid_selector_map(entry.selectors):
+                skipped += 1
+                continue
+            self._store[key] = entry
+        logger.info("Loaded %d cache entries from disk (%d malformed skipped)", len(self._store), skipped)

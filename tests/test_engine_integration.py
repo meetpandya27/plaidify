@@ -108,11 +108,13 @@ class TestStepExecutor:
 
     @pytest.mark.asyncio
     async def test_login_invalid_creds(self, test_site, internal_bank_blueprint):
-        """Test that invalid credentials don't reach the dashboard."""
+        """Invalid credentials show the blueprint's failure indicator, which the engine reports as such."""
         from playwright.async_api import async_playwright
 
+        from src.core.engine import _await_login_outcome
+        from src.core.page_checks import indicator_present
         from src.core.step_executor import StepExecutor
-        from src.exceptions import ConnectionFailedError
+        from src.exceptions import AuthenticationError
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
@@ -121,10 +123,11 @@ class TestStepExecutor:
 
             variables = {"username": "bad_user", "password": "bad_pass"}
             executor = StepExecutor(page, variables)
+            await executor.execute_steps(internal_bank_blueprint.auth.steps, context="auth")
 
-            # The "wait for #dashboard" step should timeout since login fails
-            with pytest.raises(ConnectionFailedError):
-                await executor.execute_steps(internal_bank_blueprint.auth.steps, context="auth")
+            assert await indicator_present(page, internal_bank_blueprint.auth.failure)
+            with pytest.raises(AuthenticationError):
+                await _await_login_outcome(page, internal_bank_blueprint, "internal_bank")
 
             await context.close()
             await browser.close()
@@ -257,52 +260,238 @@ class TestBrowserPool:
 # ── Full Engine Integration ───────────────────────────────────────────────────
 
 
+@pytest.fixture
+def engine_env(test_site, monkeypatch, tmp_path):
+    """The engine pointed at a copy of internal_bank on the test port, with internal connectors allowed."""
+    import json
+    from pathlib import Path
+
+    from src.core import engine
+
+    text = Path("connectors/internal_bank.json").read_text().replace("localhost:8080", "127.0.0.1:18080")
+    (tmp_path / "internal_bank.json").write_text(text)
+    json.loads(text)  # still valid JSON
+
+    monkeypatch.setattr(engine.settings, "connectors_dir", str(tmp_path))
+    monkeypatch.setattr(engine.settings, "engine_allow_internal_connectors", True)
+    engine.get_site_rate_limiter()._windows.clear()
+    yield engine
+    engine.get_site_rate_limiter()._windows.clear()
+
+
+async def _until(predicate, timeout=15.0):
+    import asyncio
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if await predicate():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("condition not reached")
+
+
 class TestEngineIntegration:
     @pytest.mark.asyncio
-    async def test_full_connect_flow(self, test_site):
+    async def test_full_connect_flow(self, engine_env):
         """Test the full connect_to_site function against the test site."""
-        # We need to temporarily set the connectors dir and use port 18080
-        import json
-        import tempfile
-        from pathlib import Path
+        from src.core.browser_pool import shutdown_browser_pool
+
+        try:
+            result = await engine_env.connect_to_site(
+                site="internal_bank",
+                username="test_user",
+                password="test_pass",
+            )
+
+            assert result["status"] == "connected"
+            assert result["data"]["current_bill"] == 142.57
+            assert isinstance(result["data"]["usage_history"], list)
+            assert len(result["data"]["usage_history"]) == 6
+            metadata = result["metadata"]
+            # Storage learns which values to protect; the engine never logs them.
+            assert metadata["sensitive_fields"] == ["account_number"]
+            assert metadata["read_only_policy"]["blocked_action_count"] == 0
+        finally:
+            await shutdown_browser_pool()
+
+    @pytest.mark.asyncio
+    async def test_wrong_password_is_invalid_credentials_not_a_timeout(self, engine_env):
+        import time
 
         from src.core.browser_pool import shutdown_browser_pool
-        from src.core.engine import connect_to_site
+        from src.exceptions import AuthenticationError
 
-        # Create a modified blueprint pointing to test port
-        bp_path = Path("connectors/internal_bank.json")
-        with open(bp_path) as f:
-            bp_data = json.load(f)
+        started = time.monotonic()
+        try:
+            with pytest.raises(AuthenticationError):
+                await engine_env.connect_to_site(site="internal_bank", username="test_user", password="wrong")
+        finally:
+            await shutdown_browser_pool()
+        assert time.monotonic() - started < 20
 
-        # Update URLs to test port
-        for step in bp_data["auth"]["steps"]:
-            if "url" in step and "8080" in step["url"]:
-                step["url"] = step["url"].replace("8080", "18080")
+    @pytest.mark.asyncio
+    async def test_mfa_wrong_code_then_right_code(self, engine_env):
+        import asyncio
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            modified_bp = Path(tmpdir) / "internal_bank.json"
-            modified_bp.write_text(json.dumps(bp_data))
+        from src.core.browser_pool import shutdown_browser_pool
+        from src.core.mfa_manager import get_mfa_manager
+        from tests.fixtures.internal_portal import MFA_CODE
 
-            # Temporarily override connectors dir
-            original_dir = os.environ.get("CONNECTORS_DIR")
-            os.environ["CONNECTORS_DIR"] = tmpdir
+        manager = get_mfa_manager()
+        session_id = "integration-mfa-1"
 
+        async def awaiting(with_error=False):
+            session = await manager.get_session(session_id)
+            return session is not None and session.awaiting_code and (not with_error or "mfa_error" in session.metadata)
+
+        task = asyncio.create_task(
+            engine_env.connect_to_site(
+                site="internal_bank", username="fixture_mfa", password="test_pass", session_id=session_id
+            )
+        )
+        try:
+            await _until(awaiting)
+            assert await manager.submit_code(session_id, "000000")
+            await _until(lambda: awaiting(with_error=True))
+            assert await manager.submit_code(session_id, MFA_CODE)
+            result = await asyncio.wait_for(task, timeout=60)
+            assert result["status"] == "connected"
+            assert result["data"]["current_bill"] == 142.57
+            assert await manager.get_session(session_id) is None
+        finally:
+            if not task.done():
+                task.cancel()
+            await shutdown_browser_pool()
+
+    @pytest.mark.asyncio
+    async def test_unanswered_mfa_is_an_mfa_timeout(self, engine_env, monkeypatch):
+        from src.core.browser_pool import shutdown_browser_pool
+        from src.core.mfa_manager import MFATimeoutError
+
+        monkeypatch.setattr(engine_env.settings, "mfa_timeout_seconds", 2)
+        try:
+            with pytest.raises(MFATimeoutError):
+                await engine_env.connect_to_site(site="internal_bank", username="fixture_mfa", password="test_pass")
+        finally:
+            await shutdown_browser_pool()
+
+
+class TestBrowserGuards:
+    @pytest.mark.asyncio
+    async def test_private_addresses_are_refused_per_request(self, test_site):
+        from src.core.browser_pool import BrowserPool
+        from src.core.network_policy import AddressPolicy
+        from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
+
+        async with BrowserPool() as pool:
+            policy = ReadOnlyExecutionPolicy(enabled=True, phase=ExecutionPhase.AUTH)
+            lease = await pool.acquire(
+                "private",
+                read_only_policy=policy,
+                address_policy=AddressPolicy(block_private=True, allow_loopback=False),
+            )
+            page = await lease.context.new_page()
+            with pytest.raises(Exception, match="ERR_BLOCKED_BY_CLIENT"):
+                await page.goto("http://127.0.0.1:18080/login")
+            assert policy.blocked_actions[-1].action == "network"
+            await pool.release("private")
+
+    @pytest.mark.asyncio
+    async def test_redirect_hops_are_caught(self, test_site):
+        import asyncio
+
+        from src.core.browser_pool import BrowserPool
+        from src.core.network_policy import AddressPolicy
+        from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
+
+        class RefuseLocalhostName(AddressPolicy):
+            async def host_block_reason(self, host):
+                return "private address" if host == "localhost" else None
+
+        async with BrowserPool() as pool:
+            policy = ReadOnlyExecutionPolicy(enabled=True, phase=ExecutionPhase.READ)
+            lease = await pool.acquire("redirect", read_only_policy=policy, address_policy=RefuseLocalhostName())
+            page = await lease.context.new_page()
+            await page.route(
+                "http://127.0.0.1:18080/hop",
+                lambda route: route.fulfill(status=302, headers={"Location": "http://localhost:18080/login"}),
+            )
             try:
-                # Use a fresh settings load to pick up the new dir
-                # The engine uses settings.connectors_dir
-                result = await connect_to_site(
-                    site="internal_bank",
-                    username="test_user",
-                    password="test_pass",
-                )
+                await page.goto("http://127.0.0.1:18080/hop", timeout=5000)
+            except Exception:
+                pass
+            await _until(lambda: asyncio.sleep(0, result=lease.network_violation is not None), timeout=5)
+            assert "localhost:18080/login" in lease.network_violation
+            await pool.release("redirect")
 
-                assert result["status"] == "connected"
-                assert "data" in result
-                assert result["data"]["current_bill"] == 142.57
-                assert isinstance(result["data"]["usage_history"], list)
-            finally:
-                if original_dir:
-                    os.environ["CONNECTORS_DIR"] = original_dir
-                else:
-                    os.environ.pop("CONNECTORS_DIR", None)
-                await shutdown_browser_pool()
+    @pytest.mark.asyncio
+    async def test_goto_file_is_refused_in_cleanup(self, test_site):
+        from src.core.blueprint import BlueprintStep, StepAction
+        from src.core.browser_pool import BrowserPool
+        from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
+        from src.core.step_executor import StepExecutor
+        from src.exceptions import ReadOnlyPolicyViolationError
+
+        async with BrowserPool() as pool:
+            policy = ReadOnlyExecutionPolicy(enabled=True, phase=ExecutionPhase.CLEANUP)
+            lease = await pool.acquire("file", read_only_policy=policy)
+            page = await lease.context.new_page()
+            executor = StepExecutor(page, {}, read_only_policy=policy)
+            with pytest.raises(ReadOnlyPolicyViolationError):
+                await executor.execute_steps(
+                    [BlueprintStep.model_construct(action=StepAction.GOTO, url="file:///etc/hosts")], context="cleanup"
+                )
+            assert page.url == "about:blank"
+            await pool.release("file")
+
+    @pytest.mark.asyncio
+    async def test_steps_run_inside_an_iframe(self):
+        from src.core.blueprint import BlueprintStep
+        from src.core.browser_pool import BrowserPool
+        from src.core.step_executor import StepExecutor
+
+        async with BrowserPool() as pool:
+            lease = await pool.acquire("iframe")
+            page = await lease.context.new_page()
+            await page.set_content(
+                "<iframe id='login' srcdoc=\"<input id='u'><button id='go' "
+                "onclick='document.body.dataset.done=document.getElementById(&quot;u&quot;).value'>Go</button>\"></iframe>"
+            )
+            step = BlueprintStep.model_validate(
+                {
+                    "action": "iframe",
+                    "iframe_selector": "#login",
+                    "steps": [
+                        {"action": "fill", "selector": "#u", "value": "{{username}}"},
+                        {"action": "click", "selector": "#go"},
+                    ],
+                }
+            )
+            await StepExecutor(page, {"username": "alice"}).execute_steps([step])
+            frame = page.frame_locator("#login")
+            assert await frame.locator("body").get_attribute("data-done") == "alice"
+            await pool.release("iframe")
+
+    @pytest.mark.asyncio
+    async def test_pool_recovers_after_the_browser_dies(self):
+        import asyncio
+
+        from src.core import browser_pool as bpm
+
+        try:
+            pool = await bpm.get_browser_pool()
+            await pool.release((await pool.acquire("warm")).session_id)
+            await pool._browser.close()  # what an OOM-killed Chromium looks like to the pool
+            assert not pool.is_healthy
+
+            same_pool = await bpm.get_browser_pool()
+            assert same_pool is pool and pool.is_healthy
+            for i in range(pool._max_size + 2):
+                lease = await asyncio.wait_for(pool.acquire(f"after-{i}"), timeout=10)
+                page = await lease.context.new_page()
+                await page.set_content("<p>ok</p>")
+                await pool.release(f"after-{i}")
+            assert pool._semaphore._value == pool._max_size
+        finally:
+            await bpm.shutdown_browser_pool()

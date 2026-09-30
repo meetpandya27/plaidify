@@ -1,19 +1,31 @@
-# Observability stack for Plaidify: Prometheus + Grafana, pre-provisioned with a
-# datasource, the overview dashboard, and alert rules.
+# Observability stack for Plaidify: Prometheus + Alertmanager + Grafana,
+# pre-provisioned with a datasource, the overview dashboard, and alert rules.
 #
-# Prometheus scrapes the app's /metrics endpoint. The app runs in its own
-# compose project, so this stack attaches to that project's network. Set
-# PLAIDIFY_NETWORK to the app network name if it isn't the default
-# (`docker network ls` to find it, usually "<project>_default").
+# Prometheus scrapes the API's /metrics and the access executor's endpoint.
+# The app runs in its own compose project, so this stack attaches to that
+# project's network. Set PLAIDIFY_NETWORK to the app network name if it isn't
+# the default (`docker network ls` to find it, usually "<project>_default").
+#
+# Before the first start (the files stay out of git under .secrets/):
+#   openssl rand -base64 24 > .secrets/grafana_admin_password
+#   printf '%s' 'https://hooks.example.com/…' > .secrets/alertmanager_webhook_url
+#   grep '^METRICS_TOKEN=' .env.production | cut -d= -f2- > .secrets/metrics_token
+#   chmod 644 .secrets/grafana_admin_password .secrets/alertmanager_webhook_url .secrets/metrics_token
+# metrics_token is the API's METRICS_TOKEN, which Prometheus sends as a bearer
+# token; set one in .env.production first if it has none (openssl rand -hex 32).
 #
 # Usage:
 #   docker compose -f docker-compose.production.yml up -d
 #   PLAIDIFY_NETWORK=plaidify_default docker compose -f docker-compose.monitoring.yml up -d
-#   # Grafana: http://localhost:3000  (admin / ${GRAFANA_ADMIN_PASSWORD:-admin})
+#
+# Every UI listens on 127.0.0.1 only — reach them through an SSH tunnel or an
+# authenticating proxy, never by publishing the ports:
+#   Grafana http://127.0.0.1:3000 (admin / .secrets/grafana_admin_password)
+#   Prometheus http://127.0.0.1:9090 · Alertmanager http://127.0.0.1:9093
 
 services:
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v3.15.0
     restart: unless-stopped
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -23,32 +35,63 @@ services:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prometheus_data:/prometheus
+    secrets:
+      - metrics_token
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks:
       - default
       - plaidify
 
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    secrets:
+      - alertmanager_webhook_url
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - default
+
   grafana:
-    image: grafana/grafana:11.2.0
+    image: grafana/grafana:13.2.3
     restart: unless-stopped
     depends_on:
       - prometheus
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # No default password: the stack doesn't start without the secret file.
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
+    secrets:
+      - grafana_admin_password
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     networks:
       - default
 
+secrets:
+  metrics_token:
+    file: ./.secrets/metrics_token
+  grafana_admin_password:
+    file: ./.secrets/grafana_admin_password
+  alertmanager_webhook_url:
+    file: ./.secrets/alertmanager_webhook_url
+
 volumes:
   prometheus_data:
+  alertmanager_data:
   grafana_data:
 
 networks:

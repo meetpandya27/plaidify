@@ -1,4 +1,10 @@
-"""Generated organization directory for institution discovery."""
+"""Organization directory for institution discovery (the hosted Link picker).
+
+Only organizations backed by a real, public connector are ``supported`` and
+routed to a site. In demo mode the directory also carries the bundled sandbox
+portals and a set of fictional sample organizations; the samples are never
+supported and never routed anywhere, and search hides them unless asked.
+"""
 
 from __future__ import annotations
 
@@ -463,23 +469,83 @@ def _load_connector_templates() -> dict[str, dict[str, Any]]:
     return templates
 
 
-def _resolve_template_site(category: str, country_code: str, templates: dict[str, dict[str, Any]]) -> str:
-    if not templates:
-        return ""
+_CATEGORY_TAGS: dict[str, frozenset[str]] = {
+    "finance": frozenset({"finance", "banking", "bank", "credit_union", "lending", "investment", "brokerage"}),
+    "utility": frozenset({"utility", "utilities", "electricity", "energy", "power", "water", "gas", "hydro"}),
+    "insurance": frozenset({"insurance", "policy", "claims"}),
+    "telecom": frozenset({"telecom", "wireless", "mobile", "internet", "cable"}),
+    "healthcare": frozenset({"health", "healthcare", "medical", "patient"}),
+    "government": frozenset({"government", "tax", "benefits", "citizen"}),
+}
+_COUNTRY_TAGS = {
+    "US": frozenset({"us", "usa", "united_states", "united states"}),
+    "CA": frozenset({"ca", "can", "canada"}),
+}
+_COUNTRY_REGIONS = {"US": ("United States", _US_REGIONS), "CA": ("Canada", _CANADA_REGIONS)}
 
-    preferred_sites: tuple[str, ...]
-    if category == "utility" and country_code == "CA":
-        preferred_sites = ("hydro_one",)
-    elif category == "finance":
-        preferred_sites = tuple(templates)
-    else:
-        preferred_sites = ("hydro_one",)
 
-    for candidate in preferred_sites:
-        if candidate in templates:
-            return candidate
+def _category_spec(tags: set[str]) -> dict[str, Any] | None:
+    for spec in _CATEGORY_SPECS:
+        if tags & _CATEGORY_TAGS.get(spec["key"], frozenset()):
+            return spec
+    return None
 
-    return next(iter(templates), "")
+
+def _connector_catalog_entries(templates: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """One supported entry per real connector, described from its blueprint."""
+    entries: list[dict[str, Any]] = []
+    for site, template in templates.items():
+        tags = {str(tag).lower() for tag in template.get("tags") or []}
+        spec = _category_spec(tags)
+        branding = (spec or {}).get("branding", {})
+        category = spec["key"] if spec else "other"
+        category_label = spec["label"] if spec else "Other"
+
+        country_code = next((code for code, names in _COUNTRY_TAGS.items() if tags & names), "")
+        country_name, regions = _COUNTRY_REGIONS.get(country_code, ("", ()))
+        region_code, region_name = next(
+            ((code, name) for code, name in regions if name.lower() in tags or code.lower() in tags),
+            ("", ""),
+        )
+        service_area = ", ".join(part for part in (region_name, country_name) if part)
+
+        primary = branding.get("primary_color", "#1f2937")
+        secondary = branding.get("secondary_color", "#ffffff")
+        auth_style = branding.get("auth_style", "username_password")
+        monogram = _monogram(template["name"])
+        entries.append(
+            {
+                "organization_id": f"connector-{site.replace('_', '-')}",
+                "name": template["name"],
+                "brand": template["name"],
+                "category": category,
+                "category_label": category_label,
+                "country": country_name,
+                "country_code": country_code,
+                "region": region_name,
+                "region_code": region_code,
+                "service_area": service_area,
+                "site": site,
+                "template_name": template["name"],
+                "template_domain": template.get("domain"),
+                "has_mfa": bool(template.get("has_mfa")),
+                "supported": True,
+                "read_only": True,
+                "logo_url": _logo_data_url(monogram, primary, secondary),
+                "logo_monogram": monogram,
+                "primary_color": primary,
+                "secondary_color": secondary,
+                "accent_color": branding.get("accent_color", "#2563eb"),
+                "hint_copy": branding.get("hint_copy", "Use your online account credentials to continue."),
+                "auth_style": auth_style,
+                "credential_schema": template.get("credential_schema") or _default_credential_schema(auth_style),
+                "mfa_schema": template.get("mfa_schema") or _default_mfa_schema(),
+                "search_text": " ".join(
+                    [template["name"], site, category_label, category, country_name, country_code, region_name, *tags]
+                ).lower(),
+            }
+        )
+    return entries
 
 
 def _serialize(entry: dict[str, Any]) -> dict[str, Any]:
@@ -575,23 +641,21 @@ def _demo_catalog_entries() -> list[dict[str, Any]]:
     return entries
 
 
-@lru_cache(maxsize=1)
-def get_organization_catalog() -> tuple[dict[str, Any], ...]:
-    templates = _load_connector_templates()
-    demo_entries = list(_demo_catalog_entries()) if settings.demo_mode else []
-    if not templates:
-        return tuple(demo_entries)
+def _sample_directory_entries() -> list[dict[str, Any]]:
+    """Fictional organizations that show off search and branding in demo mode.
 
+    They are not real institutions: never ``supported``, never routed to a
+    connector (``site`` is None), so nobody's credentials can be sent anywhere
+    by picking one.
+    """
     countries = (
         ("US", "United States", _US_REGIONS),
         ("CA", "Canada", _CANADA_REGIONS),
     )
-    catalog: list[dict[str, Any]] = list(demo_entries)
+    catalog: list[dict[str, Any]] = []
 
     for country_code, country_name, regions in countries:
         for spec in _CATEGORY_SPECS:
-            template_site = _resolve_template_site(spec["key"], country_code, templates)
-            template = templates.get(template_site, {})
             branding = spec.get("branding", {})
             primary_color = branding.get("primary_color", "#1f2937")
             secondary_color = branding.get("secondary_color", "#ffffff")
@@ -648,12 +712,13 @@ def get_organization_catalog() -> tuple[dict[str, Any], ...]:
                                 "region": region_name,
                                 "region_code": region_code,
                                 "service_area": f"{region_name}, {country_name}",
-                                "site": template_site,
-                                "template_name": template.get("name", template_site),
-                                "template_domain": template.get("domain"),
-                                "has_mfa": bool(template.get("has_mfa")),
-                                "supported": True,
+                                "site": None,
+                                "template_name": None,
+                                "template_domain": None,
+                                "has_mfa": False,
+                                "supported": False,
                                 "read_only": True,
+                                "is_sample": True,
                                 "logo_url": logo_url,
                                 "logo_monogram": monogram,
                                 "primary_color": primary_color,
@@ -667,14 +732,37 @@ def get_organization_catalog() -> tuple[dict[str, Any], ...]:
                             }
                         )
 
+    return catalog
+
+
+@lru_cache(maxsize=1)
+def get_organization_catalog() -> tuple[dict[str, Any], ...]:
+    """Every directory entry: sandbox portals and samples (demo mode only) and real connectors."""
+    templates = _load_connector_templates()
+    catalog: list[dict[str, Any]] = []
+    if settings.demo_mode:
+        catalog.extend(_demo_catalog_entries())
+    catalog.extend(_connector_catalog_entries(templates))
+    if settings.demo_mode:
+        catalog.extend(_sample_directory_entries())
     return tuple(catalog)
 
 
-def get_organization_summary() -> dict[str, Any]:
-    catalog = get_organization_catalog()
+def refresh_organization_catalog() -> None:
+    """Forget cached connector templates and entries (after a connector is added)."""
+    _load_connector_templates.cache_clear()
+    get_organization_catalog.cache_clear()
+
+
+def _visible(include_unsupported: bool) -> list[dict[str, Any]]:
+    return [entry for entry in get_organization_catalog() if include_unsupported or entry.get("supported")]
+
+
+def get_organization_summary(include_unsupported: bool = False) -> dict[str, Any]:
+    catalog = _visible(include_unsupported)
     category_counts = Counter(entry["category"] for entry in catalog)
     country_counts = Counter(entry["country_code"] for entry in catalog)
-    template_counts = Counter(entry["site"] for entry in catalog)
+    template_counts = Counter(entry["site"] for entry in catalog if entry.get("site"))
 
     return {
         "total_count": len(catalog),
@@ -753,8 +841,9 @@ def search_organizations(
     site: str | None = None,
     limit: int = 40,
     offset: int = 0,
+    include_unsupported: bool = False,
 ) -> dict[str, Any]:
-    catalog = list(get_organization_catalog())
+    catalog = _visible(include_unsupported)
 
     normalized_category = category.strip().lower() if category else None
     normalized_country = _normalize_country_filter(country)
@@ -771,7 +860,7 @@ def search_organizations(
     if normalized_country:
         catalog = [entry for entry in catalog if entry["country_code"] == normalized_country]
     if normalized_site:
-        catalog = [entry for entry in catalog if entry["site"].lower() == normalized_site]
+        catalog = [entry for entry in catalog if (entry.get("site") or "").lower() == normalized_site]
 
     if query:
         scored_entries: list[tuple[int, dict[str, Any]]] = []
@@ -795,7 +884,7 @@ def search_organizations(
 
     total_count = len(filtered)
     paged_results = filtered[offset : offset + limit]
-    summary = get_organization_summary()
+    summary = get_organization_summary(include_unsupported)
 
     return {
         "query": q or "",

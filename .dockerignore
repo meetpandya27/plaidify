@@ -1,57 +1,33 @@
-# Version control
-.git
-.gitignore
+# Allow-list: the build context holds only what the Dockerfile copies.
+#
+# Everything else — .git, .env files, .secrets/, nginx/certs/, backups/ and
+# *.dump database dumps, virtualenvs, node_modules, local databases — never
+# reaches the builder, so none of it can end up in an image layer. When the
+# Dockerfile starts copying a new path, add it here.
 
-# Python
-__pycache__
-*.pyc
-*.pyo
-*.egg-info
-.eggs
-dist
-build
+*
 
-# Environment / secrets
-.env
-.env.*
-!.env.example
-
-# Development databases
-*.db
-*.sqlite3
-
-# Tests
-tests/
-test_results.txt
-.pytest_cache
-.coverage
-htmlcov/
-
-# IDE / editor
-.vscode
-.idea
-*.swp
-*.swo
-
-# Documentation (not needed in runtime image)
-docs/
-*.md
-!README.md
-LICENSE
-
-# SDK (separate package)
-sdk/
-sdk-js/
-
-# Node deps (frontend-builder reinstalls these)
-**/node_modules
-frontend-next/dist
-
-# Load test scripts (but keep the container entrypoint)
-scripts/
+!requirements.lock
+!requirements-kms.lock
+!gunicorn.conf.py
+!alembic.ini
+!alembic/
+!connectors/
+!frontend-next/
+!src/
 !scripts/container-entrypoint.sh
+!scripts/healthcheck.py
+!scripts/demo.py
+!scripts/backup_db.sh
+!scripts/provision_app_db_role.py
 
-# CI/CD
-.github/
-ISSUE_TEMPLATE/
-issues/
+# Generated or machine-local files inside the allowed directories.
+**/__pycache__
+**/*.py[cod]
+**/.DS_Store
+**/*.db
+**/*.sqlite3
+frontend-next/node_modules
+frontend-next/dist
+frontend-next/ladle-build
+frontend-next/**/*.tsbuildinfo

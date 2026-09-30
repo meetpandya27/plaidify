@@ -167,7 +167,7 @@ def _mock_openai_response(
 class TestOpenAIProvider:
     def test_init_defaults(self):
         p = OpenAIProvider(api_key="sk-test")
-        assert p.model == "gpt-4o-mini"
+        assert p.model == "gpt-5.4-mini"
         assert p.provider_name == "openai"
         assert p.max_tokens == 4096
         assert p.temperature == 0.0
@@ -187,7 +187,7 @@ class TestOpenAIProvider:
 
     @pytest.mark.asyncio
     async def test_call_success(self):
-        p = OpenAIProvider(api_key="sk-test")
+        p = OpenAIProvider(model="gpt-4o-mini", api_key="sk-test")
         mock_resp = _mock_openai_response()
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_resp
@@ -280,7 +280,7 @@ class TestOpenAIProvider:
 
     @pytest.mark.asyncio
     async def test_call_overrides(self):
-        p = OpenAIProvider(api_key="sk-test", max_tokens=4096, temperature=0.0)
+        p = OpenAIProvider(model="gpt-4o-mini", api_key="sk-test", max_tokens=4096, temperature=0.0)
         mock_resp = _mock_openai_response()
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_resp
@@ -364,7 +364,7 @@ def _mock_anthropic_response(
 class TestAnthropicProvider:
     def test_init_defaults(self):
         p = AnthropicProvider(api_key="sk-ant-test")
-        assert p.model == "claude-sonnet-4-20250514"
+        assert p.model == "claude-opus-5"
         assert p.provider_name == "anthropic"
         assert p.base_url == "https://api.anthropic.com"
 
@@ -387,8 +387,10 @@ class TestAnthropicProvider:
         assert result.usage.total_tokens == 550
 
         payload = mock_client.post.call_args[1]["json"]
-        assert payload["model"] == "claude-sonnet-4-20250514"
+        assert payload["model"] == "claude-opus-5"
         assert "system" not in payload
+        # Current Claude models reject sampling parameters.
+        assert "temperature" not in payload
 
     @pytest.mark.asyncio
     async def test_call_with_system_prompt(self):
@@ -668,7 +670,7 @@ class TestCreateProvider:
     def test_openai(self):
         p = create_provider("openai", api_key="sk-test")
         assert isinstance(p, OpenAIProvider)
-        assert p.model == "gpt-4o-mini"
+        assert p.model == "gpt-5.4-mini"
 
     def test_openai_custom_model(self):
         p = create_provider("openai", api_key="sk-test", model="gpt-4o")
@@ -677,7 +679,7 @@ class TestCreateProvider:
     def test_anthropic(self):
         p = create_provider("anthropic", api_key="sk-ant-test")
         assert isinstance(p, AnthropicProvider)
-        assert p.model == "claude-sonnet-4-20250514"
+        assert p.model == "claude-opus-5"
 
     def test_anthropic_custom_model(self):
         p = create_provider("anthropic", api_key="sk-ant-test", model="claude-opus-4-20250514")
@@ -748,3 +750,300 @@ class TestConfigIntegration:
 
         with pytest.raises(ValidationError, match="llm_provider"):
             Settings(llm_provider="bedrock")  # type: ignore[call-arg]
+
+
+# ── Request shaping and failure wrapping (ENG-07) ────────────────────────────
+
+
+def _client_returning(*responses):
+    client = AsyncMock()
+    client.post.side_effect = list(responses)
+    return client
+
+
+def _json_response(status_code, body, headers=None):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.headers = headers or {}
+    resp.json.return_value = body
+    resp.text = json.dumps(body)
+    return resp
+
+
+def _anthropic_body(text='{"ok": true}', stop_reason="end_turn", model="claude-opus-5"):
+    return {
+        "content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": text}],
+        "model": model,
+        "stop_reason": stop_reason,
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+
+
+class TestOpenAIRequestShape:
+    @pytest.mark.asyncio
+    async def test_reasoning_models_get_max_completion_tokens_and_no_temperature(self):
+        p = OpenAIProvider(model="gpt-5.4-mini", api_key="k", effort="low")
+        p._client = _client_returning(_mock_openai_response())
+        await p._call([{"role": "user", "content": "x"}], max_tokens=1000, temperature=0.3)
+        payload = p._client.post.call_args[1]["json"]
+        assert payload["max_completion_tokens"] == 1000
+        assert "max_tokens" not in payload and "temperature" not in payload
+        assert payload["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_json_schema_becomes_strict_structured_output(self):
+        from src.core.llm_provider import json_schema_format
+
+        schema = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+        p = OpenAIProvider(model="gpt-4o-mini", api_key="k")
+        p._client = _client_returning(_mock_openai_response())
+        await p._call([{"role": "user", "content": "x"}], response_format=json_schema_format(schema, "extraction"))
+        payload = p._client.post.call_args[1]["json"]
+        assert payload["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {"name": "extraction", "schema": schema, "strict": True},
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejected_parameter_is_dropped_and_retried(self):
+        rejected = _json_response(
+            400,
+            {
+                "error": {
+                    "message": "Unsupported parameter: 'temperature'",
+                    "param": "temperature",
+                    "code": "unsupported_parameter",
+                }
+            },
+        )
+        p = OpenAIProvider(model="my-azure-deployment", api_key="k")
+        p._client = _client_returning(rejected, _mock_openai_response())
+        result = await p._call([{"role": "user", "content": "x"}])
+        assert result.content == '{"balance": 100}'
+        second_payload = p._client.post.call_args_list[1][1]["json"]
+        assert "temperature" not in second_payload
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_is_renamed_when_the_model_wants_max_completion_tokens(self):
+        rejected = _json_response(
+            400, {"error": {"message": "Use 'max_completion_tokens' instead.", "param": "max_tokens"}}
+        )
+        p = OpenAIProvider(model="custom-reasoner", api_key="k")
+        p._client = _client_returning(rejected, _mock_openai_response())
+        await p._call([{"role": "user", "content": "x"}], max_tokens=77)
+        second_payload = p._client.post.call_args_list[1][1]["json"]
+        assert second_payload["max_completion_tokens"] == 77 and "max_tokens" not in second_payload
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "choice, message",
+        [
+            ({"message": {"content": '{"a": 1'}, "finish_reason": "length"}, "ran out of tokens"),
+            ({"message": {"content": None, "refusal": "I can't help"}, "finish_reason": "stop"}, "declined"),
+            ({"message": {"content": ""}, "finish_reason": "stop"}, "empty"),
+        ],
+    )
+    async def test_unusable_replies_are_provider_errors(self, choice, message):
+        p = OpenAIProvider(model="gpt-4o-mini", api_key="k")
+        p._client = _client_returning(_json_response(200, {"choices": [choice], "model": "gpt-4o-mini"}))
+        with pytest.raises(LLMProviderError, match=message):
+            await p._call([{"role": "user", "content": "x"}])
+
+    @pytest.mark.asyncio
+    async def test_non_json_body_is_a_provider_error(self):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.json.side_effect = ValueError("not json")
+        p = OpenAIProvider(model="gpt-4o-mini", api_key="k")
+        p._client = _client_returning(resp)
+        with pytest.raises(LLMProviderError, match="not JSON"):
+            await p._call([{"role": "user", "content": "x"}])
+
+
+class TestAnthropicRequestShape:
+    @pytest.mark.asyncio
+    async def test_images_become_base64_image_blocks(self):
+        p = AnthropicProvider(api_key="k")
+        p._client = _client_returning(_json_response(200, _anthropic_body()))
+        await p._call(
+            [
+                {"role": "system", "content": "sys"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "read this"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD", "detail": "high"}},
+                    ],
+                },
+            ]
+        )
+        payload = p._client.post.call_args[1]["json"]
+        blocks = payload["messages"][0]["content"]
+        assert blocks[0] == {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}}
+        assert blocks[1] == {"type": "text", "text": "read this"}
+        assert payload["system"] == "sys"
+
+    @pytest.mark.asyncio
+    async def test_structured_output_effort_and_fallbacks_on_current_models(self):
+        from src.core.llm_provider import ANTHROPIC_FALLBACK_BETA, json_schema_format
+
+        schema = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+        p = AnthropicProvider(model="claude-opus-5", api_key="k", effort="low")
+        p._client = _client_returning(_json_response(200, _anthropic_body()))
+        await p._call([{"role": "user", "content": "x"}], response_format=json_schema_format(schema))
+        call = p._client.post.call_args
+        payload = call[1]["json"]
+        assert payload["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": schema}}
+        assert payload["fallbacks"] == "default"
+        assert call[1]["headers"] == {"anthropic-beta": ANTHROPIC_FALLBACK_BETA}
+        assert "temperature" not in payload
+
+    @pytest.mark.asyncio
+    async def test_older_models_keep_temperature_and_skip_unsupported_features(self):
+        from src.core.llm_provider import json_schema_format
+
+        p = AnthropicProvider(model="claude-sonnet-4-20250514", api_key="k", effort="low")
+        p._client = _client_returning(_json_response(200, _anthropic_body()))
+        await p._call([{"role": "user", "content": "x"}], response_format=json_schema_format({"type": "object"}))
+        payload = p._client.post.call_args[1]["json"]
+        assert payload["temperature"] == 0.0
+        assert "output_config" not in payload and "fallbacks" not in payload
+
+    @pytest.mark.asyncio
+    async def test_no_fallbacks_through_a_proxy(self):
+        p = AnthropicProvider(model="claude-opus-5", api_key="k", base_url="https://llm-proxy.internal.example")
+        p._client = _client_returning(_json_response(200, _anthropic_body()))
+        await p._call([{"role": "user", "content": "x"}])
+        assert "fallbacks" not in p._client.post.call_args[1]["json"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stop_reason, message", [("refusal", "declined"), ("max_tokens", "ran out of tokens")])
+    async def test_refusals_and_truncation_are_provider_errors(self, stop_reason, message):
+        p = AnthropicProvider(api_key="k")
+        p._client = _client_returning(_json_response(200, _anthropic_body(stop_reason=stop_reason)))
+        with pytest.raises(LLMProviderError, match=message):
+            await p._call([{"role": "user", "content": "x"}])
+
+    @pytest.mark.asyncio
+    async def test_rejected_beta_is_dropped_and_retried(self):
+        rejected = _json_response(
+            400,
+            {
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Unexpected value(s) `server-side-fallback-2026-07-01` for the `anthropic-beta` header.",
+                },
+            },
+        )
+        p = AnthropicProvider(model="claude-opus-5", api_key="k")
+        p._client = _client_returning(rejected, _json_response(200, _anthropic_body()))
+        result = await p._call([{"role": "user", "content": "x"}])
+        assert result.content == '{"ok": true}'
+        retry = p._client.post.call_args_list[1]
+        assert "fallbacks" not in retry[1]["json"] and "headers" not in retry[1]
+
+    @pytest.mark.asyncio
+    async def test_overloaded_is_retryable(self):
+        p = AnthropicProvider(api_key="k")
+        p._client = _client_returning(
+            _json_response(529, {"error": {"type": "overloaded_error"}}, headers={"retry-after": "7"})
+        )
+        with pytest.raises(LLMRateLimitError) as caught:
+            await p._call([{"role": "user", "content": "x"}])
+        assert caught.value.retry_after == 7.0
+
+    def test_capability_predicates(self):
+        from src.core.llm_provider import (
+            anthropic_accepts_sampling,
+            anthropic_effort,
+            anthropic_supports_structured_output,
+        )
+
+        assert not anthropic_accepts_sampling("claude-opus-5")
+        assert not anthropic_accepts_sampling("claude-opus-4-7")
+        assert anthropic_accepts_sampling("claude-opus-4-6")
+        assert anthropic_accepts_sampling("anthropic.claude-3-5-sonnet-20241022-v2:0")
+        assert anthropic_supports_structured_output("claude-sonnet-5")
+        assert not anthropic_supports_structured_output("claude-3-haiku-20240307")
+        assert anthropic_effort("claude-opus-4-5", "max") == "high"
+        assert anthropic_effort("claude-sonnet-4-6", "xhigh") == "high"
+        assert anthropic_effort("claude-haiku-4-5", "low") is None
+
+
+class TestFailureWrapping:
+    @pytest.mark.asyncio
+    async def test_timeouts_and_network_errors_are_provider_errors(self):
+        import httpx
+
+        for error in (httpx.ReadTimeout("slow"), httpx.ConnectError("refused")):
+            p = OpenAIProvider(model="gpt-4o-mini", api_key="k")
+            client = AsyncMock()
+            client.post.side_effect = error
+            p._client = client
+            with pytest.raises(LLMProviderError):
+                await p._call([{"role": "user", "content": "x"}])
+
+    @pytest.mark.asyncio
+    async def test_chain_falls_back_after_a_timeout(self):
+        import httpx
+
+        primary = OpenAIProvider(model="primary", api_key="k")
+        primary._client = AsyncMock()
+        primary._client.post.side_effect = httpx.ReadTimeout("slow")
+        fallback = OpenAIProvider(model="fallback", api_key="k")
+        fallback._client = _client_returning(_mock_openai_response(model="fallback"))
+        result = await FallbackChain([primary, fallback]).extract("x")
+        assert result.model == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_chain_falls_back_after_a_reply_that_is_not_json(self):
+        primary = OpenAIProvider(model="primary", api_key="k")
+        primary._client = _client_returning(_mock_openai_response(content="Sorry, here is some prose."))
+        fallback = OpenAIProvider(model="fallback", api_key="k")
+        fallback._client = _client_returning(_mock_openai_response(model="fallback"))
+        result = await FallbackChain([primary, fallback]).extract("x")
+        assert result.model == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_single_provider_non_json_reply_raises_provider_error(self):
+        p = OpenAIProvider(model="gpt-4o-mini", api_key="k")
+        p._client = _client_returning(_mock_openai_response(content="no json here"))
+        with pytest.raises(LLMProviderError, match="not JSON"):
+            await p.extract("x")
+
+
+class TestParsing:
+    def test_json_inside_prose_and_fences(self):
+        content = 'Here is the extracted data:\n```json\n{"data": {"balance": 12.5}}\n```\nLet me know!'
+        r = LLMResponse(content=content, model="m", usage=TokenUsage(), latency_ms=0, provider="t")
+        assert r.parse_json() == {"data": {"balance": 12.5}}
+        r = LLMResponse(content='Result: {"a": 1} (done)', model="m", usage=TokenUsage(), latency_ms=0, provider="t")
+        assert r.parse_json() == {"a": 1}
+
+    @pytest.mark.parametrize(
+        "headers, expected",
+        [
+            ({"retry-after": "30"}, 30.0),
+            ({"retry-after-ms": "1500"}, 1.5),
+            ({"retry-after": "tomorrow-ish"}, None),
+            ({"retry-after": "100000"}, 300.0),
+            ({}, None),
+        ],
+    )
+    def test_retry_after(self, headers, expected):
+        from src.core.llm_provider import parse_retry_after
+
+        assert parse_retry_after(headers) == expected
+
+    def test_retry_after_http_date(self):
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+
+        from src.core.llm_provider import parse_retry_after
+
+        when = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=20), usegmt=True)
+        assert 10 <= parse_retry_after({"retry-after": when}) <= 21
+        past = format_datetime(datetime.now(timezone.utc) - timedelta(seconds=20), usegmt=True)
+        assert parse_retry_after({"retry-after": past}) == 0.0

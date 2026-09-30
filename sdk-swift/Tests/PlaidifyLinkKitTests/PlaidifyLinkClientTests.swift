@@ -28,16 +28,24 @@ final class PlaidifyLinkClientTests: XCTestCase {
         XCTAssertTrue(absolute.contains("site=rbc"))
     }
 
-    func testMFASubmitURL() {
-        let url = PlaidifyLinkURLBuilder.mfaSubmit(
+    func testSubmitMFAPostsCodeInBodyNotURL() async throws {
+        let stub = StubHTTPClient(responses: [
+            .ok(json: #"{"status":"mfa_submitted"}"#)
+        ])
+        let client = PlaidifyLinkClient(
             serverURL: URL(string: "https://api.example.com")!,
-            sessionID: "sess-1",
-            code: "123456"
+            linkToken: "tok",
+            http: stub
         )
-        XCTAssertEqual(
-            url?.absoluteString,
-            "https://api.example.com/mfa/submit?session_id=sess-1&code=123456"
-        )
+        let response = try await client.submitMFA(sessionID: "sess-1", code: "123456")
+        XCTAssertEqual(response.status, "mfa_submitted")
+
+        let recorded = try XCTUnwrap(stub.recordedRequests.first)
+        XCTAssertEqual(recorded.httpMethod, "POST")
+        XCTAssertEqual(recorded.url?.absoluteString, "https://api.example.com/mfa/submit")
+        let body = try XCTUnwrap(recorded.httpBody)
+        let parsed = try JSONSerialization.jsonObject(with: body) as? [String: String]
+        XCTAssertEqual(parsed, ["session_id": "sess-1", "code": "123456"])
     }
 
     func testGetStatusDecodesPayload() async throws {
@@ -72,6 +80,54 @@ final class PlaidifyLinkClientTests: XCTestCase {
             XCTAssertEqual(status, 429)
             XCTAssertEqual(errorCode, "rate_limited")
             XCTAssertEqual(message, "slow down")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testSearchDecodesResults() async throws {
+        let stub = StubHTTPClient(responses: [
+            .ok(json: #"{"results":[{"organization_id":"org-1","name":"Anchor Point Bank","site":"hydro_one","auth_style":"username_password"}],"count":1}"#)
+        ])
+        let client = PlaidifyLinkClient(
+            serverURL: URL(string: "https://api.example.com")!,
+            linkToken: "tok",
+            http: stub
+        )
+        let response = try await client.searchOrganizations(site: "hydro_one", limit: 1)
+        XCTAssertEqual(response.results.map(\.site), ["hydro_one"])
+        XCTAssertEqual(response.count, 1)
+    }
+
+    func testMFASubmitErrorReplyCarriesTheReason() async throws {
+        let stub = StubHTTPClient(responses: [
+            .ok(json: #"{"status":"error","error":"MFA session not found or expired."}"#)
+        ])
+        let client = PlaidifyLinkClient(
+            serverURL: URL(string: "https://api.example.com")!,
+            linkToken: "tok",
+            http: stub
+        )
+        let response = try await client.submitMFA(sessionID: "gone", code: "123456")
+        XCTAssertEqual(response.status, "error")
+        XCTAssertEqual(response.error, "MFA session not found or expired.")
+    }
+
+    func testValidationErrorsReadAsText() async {
+        let stub = StubHTTPClient(responses: [
+            .status(422, json: #"{"detail":[{"loc":["body","code"],"msg":"Field required"}]}"#)
+        ])
+        let client = PlaidifyLinkClient(
+            serverURL: URL(string: "https://api.example.com")!,
+            linkToken: "tok",
+            http: stub
+        )
+        do {
+            _ = try await client.submitMFA(sessionID: "s", code: "")
+            XCTFail("expected error")
+        } catch let PlaidifyLinkClientError.http(status, _, message) {
+            XCTAssertEqual(status, 422)
+            XCTAssertEqual(message, "Field required")
         } catch {
             XCTFail("unexpected error: \(error)")
         }

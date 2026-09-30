@@ -5,6 +5,16 @@ hosted data stays fresh without the integrator polling. This document covers
 the public API surface, schedule formats, abuse controls, and the standardized
 webhook contract.
 
+Schedules are rows in the `scheduled_refresh_jobs` table. The scheduler runs in
+one process at a time under a lease (in `redis-worker` mode, in the access
+executor), reads the due rows every `REFRESH_TICK_SECONDS` (30 s) and runs up
+to `REFRESH_MAX_CONCURRENCY` (5) refreshes at once; each row is claimed with a
+conditional update, so a refresh never runs twice and a restart loses nothing.
+Refreshes are unattended: a site that asks for MFA or rejects the stored
+credentials disables the schedule instead of retrying (see below).
+
+All endpoints need a user access token (`Authorization: Bearer`), not an API key.
+
 ## Schedule formats
 
 The scheduler accepts four formats:
@@ -27,7 +37,7 @@ Body:
 
 ```json
 {
-  "access_token": "acc-…",
+  "access_token": "<access_token>",
   "schedule_format": "hourly"
 }
 ```
@@ -36,7 +46,7 @@ or
 
 ```json
 {
-  "access_token": "acc-…",
+  "access_token": "<access_token>",
   "schedule_format": "interval",
   "interval_seconds": 1800
 }
@@ -53,7 +63,10 @@ Removes the schedule.
 
 ### `GET /refresh/jobs`
 
-Lists active schedules for the authenticated user (admin scope today).
+Lists your schedules, tokens masked: `access_token` (prefix), `interval_seconds`,
+`schedule_format`, `enabled`, `disabled_reason`, `last_refreshed`,
+`next_run_at`, `last_error`, `consecutive_failures`. Administrators see every
+tenant's schedules (with `user_id`) at `GET /refresh/admin/jobs`.
 
 ### `POST /create_link` — deferred binding
 
@@ -80,17 +93,28 @@ intervals return `400`), then consumed exactly once at `/submit_credentials`.
   active schedules. Attempting to register a 51st returns `429`.
 - Per-job exponential backoff doubles the effective interval on each
   consecutive failure, capped at 24 h. After
-  `_MAX_CONSECUTIVE_FAILURES` (10), the job is auto-disabled and a
-  `REFRESH_FAILED` webhook is dispatched.
+  `_MAX_CONSECUTIVE_FAILURES` (10), the job is auto-disabled
+  (`disabled_reason: "max_failures"`) and a `REFRESH_FAILED` webhook is
+  dispatched.
+- A refresh that meets an MFA challenge, or whose stored credentials are
+  rejected, disables the schedule at once (`disabled_reason: "needs_reauth"`,
+  the access job ends as `failed` with `error_code: "mfa_required"` for MFA)
+  and sends one `REFRESH_FAILED`: the user has to link again.
 
 ## Webhook contract (`event_version: 2`)
+
+Refresh webhooks go to the webhooks registered for the access token's link
+(`POST /webhooks/register`), through the same signed, retried outbox as every
+other webhook: headers `X-Plaidify-Event`, `X-Plaidify-Delivery`,
+`X-Plaidify-Timestamp` and `X-Plaidify-Signature: sha256=<hex HMAC-SHA256 of
+"{timestamp}." + raw body>`, and `delivery_id` / `webhook_id` added to the body.
 
 Both refresh-triggered webhook events share a base envelope:
 
 ```json
 {
   "event_version": 2,
-  "access_token_prefix": "acc-abc1234...",
+  "access_token_prefix": "3f0946a5-af2...",
   "timestamp": "2026-04-24T12:00:00+00:00",
   "event": "DATA_REFRESHED" | "REFRESH_FAILED",
   "success": true | false
@@ -103,7 +127,7 @@ Both refresh-triggered webhook events share a base envelope:
 {
   "event": "DATA_REFRESHED",
   "event_version": 2,
-  "access_token_prefix": "acc-abc1234...",
+  "access_token_prefix": "3f0946a5-af2...",
   "timestamp": "2026-04-24T12:00:00+00:00",
   "success": true,
   "fields_updated": ["balance", "transactions"]
@@ -112,16 +136,18 @@ Both refresh-triggered webhook events share a base envelope:
 
 ### `REFRESH_FAILED`
 
-Fired exactly once when a job is auto-disabled after
-`_MAX_CONSECUTIVE_FAILURES` (10) consecutive failures.
+Fired once when a schedule is disabled: after `_MAX_CONSECUTIVE_FAILURES`
+(10) consecutive failures (`reason: "max_failures"`), or at once when the site
+asks for MFA or rejects the credentials (`reason: "needs_reauth"`).
 
 ```json
 {
   "event": "REFRESH_FAILED",
   "event_version": 2,
-  "access_token_prefix": "acc-abc1234...",
+  "access_token_prefix": "3f0946a5-af2...",
   "timestamp": "2026-04-24T12:00:00+00:00",
   "success": false,
+  "reason": "max_failures",
   "error": "<sanitized exception message>",
   "consecutive_failures": 10
 }
@@ -129,4 +155,5 @@ Fired exactly once when a job is auto-disabled after
 
 Integrators should re-enable a disabled schedule via
 `PATCH /refresh/schedule/{access_token}` with `{"enabled": true}` after
-addressing the underlying issue (typically expired credentials).
+addressing the underlying issue; for `needs_reauth`, the user links the
+account again first.

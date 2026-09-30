@@ -186,10 +186,11 @@ def test_hosted_link_web_journey_returns_public_token(live_server, browser):
         success_text = page.locator("#success-message").inner_text()
         assert "Return to your app" in success_text
 
-        reference_text = page.locator("#access-token-display").inner_text()
-        assert "PUBLIC TOKEN" in reference_text
-        assert "public-" in reference_text
-        assert "access_token" not in reference_text
+        # The public token goes to the embedding app in the CONNECTED event
+        # (covered by the bridge tests), never onto the end user's screen.
+        body_text = page.locator("body").inner_text()
+        assert page.locator("#access-token-display").count() == 0
+        assert "public-" not in body_text and "PUBLIC TOKEN" not in body_text
     finally:
         context.close()
 
@@ -225,3 +226,39 @@ def test_hosted_link_native_bridges_only_receive_safe_payloads(live_server, brow
         assert "access_token" not in connected_event
     finally:
         context.close()
+
+
+def test_hosted_link_try_again_after_rejected_credentials(live_server, browser, mock_browser_engine):
+    """LNK-02: a failed attempt must not end the session; "Try again" encrypts to a fresh key."""
+    from src.exceptions import AuthenticationError
+
+    success = {"status": "connected", "data": {"account_number": "123"}}
+    mock_browser_engine.side_effect = [AuthenticationError(site="hydro_one"), success]
+
+    link_token = _create_authenticated_link_session(live_server)
+    provider_name = _get_hydro_one_provider_name(live_server)
+    context = browser.new_context(viewport={"width": 1280, "height": 1000})
+
+    try:
+        page = context.new_page()
+        page.goto(f"{live_server}/link?token={link_token}", wait_until="domcontentloaded")
+        _select_provider(page, provider_name)
+
+        page.locator("#link-username").fill("demo-user")
+        page.locator("#link-password").fill("Wrong@pass123")
+        page.locator("#connect-btn").click()
+        page.locator("#step-error.active").wait_for(timeout=15000)
+
+        page.locator("#retry-btn").click()
+        page.locator("#step-credentials.active").wait_for(timeout=15000)
+        page.locator("#link-password").fill("Secret@pass123")
+        page.locator("#connect-btn").click()
+        page.locator("#step-success.active").wait_for(timeout=15000)
+    finally:
+        context.close()
+
+    assert mock_browser_engine.await_count == 2
+    assert mock_browser_engine.await_args.kwargs["password"] == "Secret@pass123"
+    status = _request_json("GET", f"{live_server}/link/sessions/{link_token}/status")
+    assert status["status"] == "completed"
+    assert status["public_token"].startswith("public-")

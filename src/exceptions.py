@@ -78,7 +78,10 @@ class ReadOnlyPolicyViolationError(PlaidifyError):
 
 
 class ConcurrentAccessError(PlaidifyError):
-    """Raised when another access flow is already active for the same site scope."""
+    """Raised when another access flow is already active for the same site credential."""
+
+    # The hosted page tells the user to wait a moment and try again.
+    error_code = LinkErrorCode.RATE_LIMITED
 
     def __init__(self, site: str):
         super().__init__(
@@ -89,6 +92,24 @@ class ConcurrentAccessError(PlaidifyError):
             status_code=409,
         )
         self.site = site
+
+
+class LockServiceUnavailableError(PlaidifyError):
+    """Raised when the shared access-lock store (Redis) cannot be reached in production."""
+
+    def __init__(self):
+        super().__init__(
+            message="The connection service is temporarily unavailable. Please try again shortly.",
+            status_code=503,
+        )
+
+
+class AccessJobCancelledError(PlaidifyError):
+    """Raised when an access job is cancelled (Link closed, an explicit cancel, or shutdown) before it finished."""
+
+    def __init__(self, job_id: str = "", message: str = "The access job was cancelled."):
+        super().__init__(message=message, status_code=409)
+        self.job_id = job_id
 
 
 class AuthenticationError(PlaidifyError):

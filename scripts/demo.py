@@ -13,7 +13,10 @@ Usage::
     python scripts/demo.py
 
     # No-MFA variant:
-    python scripts/demo.py --no-mfa
+    python scripts/demo.py --site demo_saas
+
+    # Every bundled site (OTP, security question, no MFA):
+    python scripts/demo.py --all
 
     # Smoke-test an already-running Plaidify (you supply a reachable demo portal
     # and DEMO_MODE=true on the server):
@@ -31,6 +34,7 @@ import base64
 import multiprocessing
 import os
 import secrets
+import signal
 import sys
 import tempfile
 import time
@@ -119,6 +123,12 @@ def _step(msg: str) -> None:
     print(f"\n\033[1m▶ {msg}\033[0m", flush=True)
 
 
+def _stop_on_sigterm(signum, frame) -> None:
+    # SIGTERM (docker stop, kill) would end this process without the cleanup
+    # in main(), orphaning the portals and the API; stop the way Ctrl+C does.
+    raise KeyboardInterrupt
+
+
 def _spawn(target, *args) -> multiprocessing.Process:
     proc = multiprocessing.Process(target=target, args=args, daemon=True)
     proc.start()
@@ -168,17 +178,10 @@ def run_journey(base_url: str, site: str, username: str, password: str, mfa_code
     status = payload.get("status")
     _log(f"Status: {status}  job_id={job_id}")
 
+    mfa_submitted = False
     if status == "mfa_required":
-        if not mfa_code:
-            _log("⚠ Site issued an MFA challenge but no demo code is configured.")
-        _step("Submitting MFA challenge (POST /mfa/submit)")
-        mfa = client.post(
-            "/mfa/submit",
-            headers=auth,
-            params={"session_id": session_id, "code": mfa_code or ""},
-        )
-        mfa.raise_for_status()
-        _log(f"MFA: {mfa.json().get('status')}")
+        _submit_mfa(client, auth, session_id, mfa_code)
+        mfa_submitted = True
 
     _step("Polling the access job until completion (GET /access_jobs/{job_id})")
     result: dict = {}
@@ -190,6 +193,12 @@ def run_journey(base_url: str, site: str, username: str, password: str, mfa_code
         if job_status != last_status:
             _log(f"Job status: {job_status}")
             last_status = job_status
+        # /connect answers "pending"; the challenge surfaces later, when the
+        # job flips to "mfa_required" mid-poll.
+        if job_status == "mfa_required" and not mfa_submitted:
+            _submit_mfa(client, auth, job.get("session_id") or session_id, mfa_code)
+            mfa_submitted = True
+            continue
         if job_status in {"completed", "succeeded"}:
             result = job.get("result") or {}
             break
@@ -201,6 +210,19 @@ def run_journey(base_url: str, site: str, username: str, password: str, mfa_code
 
     client.close()
     return result
+
+
+def _submit_mfa(client: httpx.Client, auth: dict, session_id: str | None, mfa_code: str | None) -> None:
+    if not mfa_code:
+        raise RuntimeError("Site issued an MFA challenge but no demo code is configured.")
+    _step("Submitting MFA challenge (POST /mfa/submit)")
+    mfa = client.post(
+        "/mfa/submit",
+        headers=auth,
+        json={"session_id": session_id, "code": mfa_code},
+    )
+    mfa.raise_for_status()
+    _log(f"MFA: {mfa.json().get('status')}")
 
 
 def _print_result(result: dict) -> None:
@@ -252,6 +274,7 @@ def main() -> int:
         help="Bind host for the self-hosted API (use 0.0.0.0 in containers).",
     )
     args = parser.parse_args()
+    signal.signal(signal.SIGTERM, _stop_on_sigterm)
 
     selected_sites = list(DEMO_SITES) if (args.all or args.serve) else [args.site]
 
@@ -303,7 +326,27 @@ def main() -> int:
 
         if args.serve:
             _step("Sandbox is running — explore the hosted Link UI")
-            _log(f"Hosted Link UI:  {base_url}/link")
+            # /link needs a live session token; mint one for a sandbox user.
+            with httpx.Client(base_url=base_url, timeout=30.0) as client:
+                suffix = secrets.token_hex(4)
+                reg = client.post(
+                    "/auth/register",
+                    json={
+                        "username": f"sandbox_{suffix}",
+                        "email": f"sandbox_{suffix}@plaidify.dev",
+                        "password": "SandboxPass123!",
+                    },
+                )
+                reg.raise_for_status()
+                session = client.post(
+                    "/link/sessions", headers={"Authorization": f"Bearer {reg.json()['access_token']}"}
+                )
+                session.raise_for_status()
+            link = session.json()
+            _log(f"Hosted Link UI:  {base_url}/link?token={link['link_token']}")
+            _log(
+                f"                 (one session, valid {link['expires_in'] // 60} min; restart --serve for a fresh one)"
+            )
             _log(f"API docs:        {base_url}/docs")
             _log("Discoverable demo sites:")
             for s in selected_sites:

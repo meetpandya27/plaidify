@@ -1,8 +1,10 @@
 # Optional KMS provider SDKs for Plaidify.
 #
 # Install only the one matching your KMS_PROVIDER. These are intentionally kept
-# out of the core requirements.txt so the base image stays lean and the
-# security audit (pip-audit on requirements.txt) isn't gated on cloud SDKs.
+# out of the core requirements.txt so the base image stays lean. The image
+# installs them from the hash-locked requirements-kms.lock (constrained to
+# requirements.lock) when built with --build-arg INSTALL_KMS=true; CI audits
+# that lock too. Regenerate it after editing this file (see requirements.txt).
 #
 #   pip install -r requirements-kms.txt          # all providers
 #   pip install boto3                            # AWS only

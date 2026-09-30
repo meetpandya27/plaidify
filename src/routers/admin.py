@@ -1,10 +1,11 @@
 """Administrator-only endpoints (RBAC). Requires an admin user (is_admin)."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from src.audit import record_audit_event
-from src.database import User, get_db
+from src.auth_utils import end_user_sessions
+from src.database import ApiKey, User, get_db
 from src.dependencies import get_admin_user
 from src.logging_config import get_logger
 
@@ -26,11 +27,13 @@ def _serialize_user(u: User) -> dict:
 
 @router.get("/users")
 async def list_users(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     admin: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    """List all users (admin only)."""
-    users = db.query(User).order_by(User.id).all()
+    """List users (admin only), by id."""
+    users = db.query(User).order_by(User.id).offset(offset).limit(limit).all()
     return {"users": [_serialize_user(u) for u in users], "count": len(users)}
 
 
@@ -57,19 +60,38 @@ async def set_user_active(
     admin: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    """Activate or deactivate a user account (admin only)."""
+    """Activate or deactivate a user account (admin only).
+
+    Deactivation takes effect at once: every refresh token is revoked, every
+    access token stops working (token version bump) and every API key,
+    agents' included, is revoked. Reactivating does not bring those back;
+    the user signs in again and issues new keys.
+    """
     target = db.query(User).filter(User.id == user_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
     if target.id == admin.id and not active:
         raise HTTPException(status_code=400, detail="Admins cannot deactivate their own account.")
     target.is_active = active
+    revoked: dict[str, int] = {}
+    if not active:
+        revoked["refresh_tokens"] = end_user_sessions(db, target.id)
+        revoked["api_keys"] = (
+            db.query(ApiKey)
+            .filter(ApiKey.user_id == target.id, ApiKey.is_active == True)  # noqa: E712
+            .update({ApiKey.is_active: False}, synchronize_session=False)
+        )
     db.commit()
     record_audit_event(
         db,
         "admin",
         "set_user_active",
         user_id=admin.id,
-        metadata={"target_user_id": user_id, "active": active},
+        metadata={"target_user_id": user_id, "active": active, "revoked": revoked},
     )
+    if not active:
+        logger.info(
+            "User deactivated; sessions and API keys revoked",
+            extra={"extra_data": {"target_user_id": user_id, **revoked}},
+        )
     return {"status": "updated", "user_id": user_id, "is_active": active}

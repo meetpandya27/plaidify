@@ -14,6 +14,7 @@ public sealed class PlaidifyLinkClientException(message: String) : RuntimeExcept
     ) : PlaidifyLinkClientException(message)
 
     public class Decoding(message: String) : PlaidifyLinkClientException(message)
+    public class Encryption(message: String) : PlaidifyLinkClientException(message)
 }
 
 /** Status payload returned by `GET /link/sessions/{token}/status`. */
@@ -24,6 +25,8 @@ public data class PlaidifyLinkSessionStatus(
     @SerialName("mfa_type") val mfaType: String? = null,
     @SerialName("session_id") val sessionId: String? = null,
     @SerialName("public_token") val publicToken: String? = null,
+    @SerialName("job_id") val jobId: String? = null,
+    val message: String? = null,
     @SerialName("error_message") val errorMessage: String? = null,
 )
 
@@ -41,9 +44,17 @@ public data class PlaidifyOrganization(
     @SerialName("auth_style") val authStyle: String? = null,
 )
 
+/** `GET /organizations/search` — the matches are under `results`. */
 @Serializable
 public data class PlaidifyOrganizationSearchResponse(
-    val organizations: List<PlaidifyOrganization>,
+    val results: List<PlaidifyOrganization>,
+    val count: Int? = null,
+)
+
+/** `GET /encryption/public_key/{link_token}`. */
+@Serializable
+public data class PlaidifyEncryptionKey(
+    @SerialName("public_key") val publicKey: String,
 )
 
 /** Encrypted credential pair posted to `/connect`. */
@@ -52,7 +63,19 @@ public data class PlaidifyEncryptedCredentials(
     val password: String,
 )
 
-/** Response payload from `/connect` and `/mfa/submit`. */
+/** Extra detail on a connect / MFA reply; `message` is the prompt to show. */
+@Serializable
+public data class PlaidifyConnectMetadata(
+    val message: String? = null,
+)
+
+/**
+ * Response payload from `/connect` and `/mfa/submit`.
+ *
+ * `status` is `connected`, `mfa_required`, `pending` (still running — poll
+ * the session), `mfa_submitted` (code accepted; poll the session) or
+ * `error` (with [error]).
+ */
 @Serializable
 public data class PlaidifyConnectResponse(
     val status: String,
@@ -61,5 +84,6 @@ public data class PlaidifyConnectResponse(
     @SerialName("public_token") val publicToken: String? = null,
     @SerialName("job_id") val jobId: String? = null,
     val message: String? = null,
-    @SerialName("error_message") val errorMessage: String? = null,
+    val error: String? = null,
+    val metadata: PlaidifyConnectMetadata? = null,
 )

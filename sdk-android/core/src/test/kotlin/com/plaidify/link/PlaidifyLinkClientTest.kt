@@ -29,9 +29,20 @@ class PlaidifyLinkClientTest {
     }
 
     @Test
-    fun mfaSubmitUrl() {
-        val url = PlaidifyLinkUrlBuilder.mfaSubmit("https://api.example.com", "sess-1", "123456")
-        assertEquals("https://api.example.com/mfa/submit?session_id=sess-1&code=123456", url)
+    fun submitMfaPostsCodeInBodyNotUrl() = runTest {
+        val stub = StubHttpClient(listOf(StubHttpClient.Response(200, """{"status":"mfa_submitted"}""")))
+        val client = PlaidifyLinkClient(
+            serverUrl = "https://api.example.com",
+            linkToken = "tok",
+            http = stub,
+        )
+        val response = client.submitMfa(sessionId = "sess-1", code = "123456")
+        assertEquals("mfa_submitted", response.status)
+
+        val recorded = stub.recordedRequests.first()
+        assertEquals("POST", recorded.method)
+        assertEquals("https://api.example.com/mfa/submit", recorded.url)
+        assertEquals("""{"session_id":"sess-1","code":"123456"}""", recorded.body)
     }
 
     @Test
@@ -105,6 +116,75 @@ class PlaidifyLinkClientTest {
         assertTrue(body.contains("\"site\":\"rbc\""))
         assertTrue(body.contains("\"encrypted_username\":\"u-enc\""))
         assertTrue(body.contains("\"encrypted_password\":\"p-enc\""))
+    }
+}
+
+class PlaidifyLinkClientContractTest {
+    private fun client(vararg responses: StubHttpClient.Response) = StubHttpClient(responses.toList()).let {
+        it to PlaidifyLinkClient(serverUrl = "https://api.example.com/", linkToken = "lnk-1", http = it)
+    }
+
+    @Test
+    fun searchDecodesResults() = runTest {
+        val (_, client) = client(
+            StubHttpClient.Response(
+                200,
+                """{"results":[{"organization_id":"org-1","name":"Anchor Point Bank","site":"hydro_one","auth_style":"username_password","logo_url":"data:x"}],"count":1}""",
+            )
+        )
+        val response = client.searchOrganizations(site = "hydro_one", limit = 1)
+        assertEquals(listOf("hydro_one"), response.results.map { it.site })
+        assertEquals(1, response.count)
+    }
+
+    @Test
+    fun getsTheSessionEncryptionKey() = runTest {
+        val (stub, client) = client(StubHttpClient.Response(200, """{"link_token":"lnk-1","public_key":"PEM"}"""))
+        assertEquals("PEM", client.getEncryptionPublicKey().publicKey)
+        assertEquals("https://api.example.com/encryption/public_key/lnk-1", stub.recordedRequests.single().url)
+    }
+
+    @Test
+    fun mfaErrorReplyCarriesTheReason() = runTest {
+        val (_, client) = client(
+            StubHttpClient.Response(200, """{"status":"error","error":"MFA session not found or expired."}""")
+        )
+        val response = client.submitMfa("gone", "123456")
+        assertEquals("error", response.status)
+        assertEquals("MFA session not found or expired.", response.error)
+    }
+
+    @Test
+    fun validationErrorsReadAsText() = runTest {
+        val (_, client) = client(
+            StubHttpClient.Response(422, """{"detail":[{"loc":["body","code"],"msg":"Field required"}]}""")
+        )
+        val error = assertFailsWith<PlaidifyLinkClientException.Http> { client.submitMfa("s", "") }
+        assertEquals(422, error.status)
+        assertEquals("Field required", error.message)
+    }
+
+    @Test
+    fun plaidifyErrorBodyKeepsItsCode() = runTest {
+        val (_, client) = client(
+            StubHttpClient.Response(429, """{"error":"Too many attempts","error_code":"rate_limited"}""")
+        )
+        val error = assertFailsWith<PlaidifyLinkClientException.Http> { client.getStatus() }
+        assertEquals("rate_limited", error.errorCode)
+        assertEquals("Too many attempts", error.message)
+    }
+
+    @Test
+    fun hostedLinkUrlCarriesTheThemeTheOnlyWayThePageReadsIt() {
+        val url = PlaidifyLinkUrlBuilder.hostedLink(
+            serverUrl = "https://api.example.com/",
+            linkToken = "lnk 1",
+            theme = PlaidifyLinkTheme(accentColor = "#0b8f73", logo = "data:image/png;base64,ab+c/d="),
+        )
+        assertEquals(
+            "https://api.example.com/link?token=lnk%201&accent=%230b8f73&logo=data%3Aimage%2Fpng%3Bbase64%2Cab%2Bc%2Fd%3D",
+            url,
+        )
     }
 }
 

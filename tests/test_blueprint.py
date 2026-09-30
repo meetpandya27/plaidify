@@ -24,6 +24,7 @@ from src.core.blueprint import (
     TransformType,
     convert_v1_to_v2,
     load_blueprint,
+    load_blueprint_from_dict,
 )
 
 # ── Step Model Tests ──────────────────────────────────────────────────────────
@@ -148,6 +149,7 @@ class TestMFAConfig:
 class TestBlueprintV2:
     def test_minimal_blueprint(self):
         bp = BlueprintV2(
+            schema_version="2.0",
             name="Test Site",
             domain="test.com",
             auth=AuthConfig(
@@ -165,6 +167,7 @@ class TestBlueprintV2:
 
     def test_full_blueprint(self):
         bp = BlueprintV2(
+            schema_version="2.0",
             name="Full Site",
             domain="full.example.com",
             tags=["banking", "us"],
@@ -175,6 +178,7 @@ class TestBlueprintV2:
             mfa=MFAConfig(
                 detection=MFADetection(selector="#mfa"),
                 type=MFAType.OTP_INPUT,
+                input_selector="#mfa input",
             ),
             extract={
                 "balance": ExtractionField(selector="#bal", type=FieldType.CURRENCY),
@@ -244,6 +248,7 @@ class TestLoadBlueprint:
         bp_file.write_text(
             json.dumps(
                 {
+                    "schema_version": "1.0",
                     "name": "File Test",
                     "login_url": "https://file.com/login",
                     "fields": {"username": "#u", "password": "#p", "submit": "#s"},
@@ -464,3 +469,244 @@ class TestBlueprintV3:
         assert bp.is_llm_adaptive
         assert bp.page_context == "Energy dashboard"
         assert bp.fallback_selectors == {"account_number": "span.acc-num"}
+
+
+# ── Strict schema (ENG-14) ───────────────────────────────────────────────────
+
+
+def _v2(**overrides):
+    data = {
+        "schema_version": "2.0",
+        "name": "Strict",
+        "domain": "strict.example",
+        "auth": {
+            "type": "form",
+            "steps": [
+                {"action": "goto", "url": "https://strict.example/login"},
+                {"action": "fill", "selector": "#u", "value": "{{username}}"},
+                {"action": "click", "selector": "#go", "wait_for_navigation": True},
+            ],
+        },
+        "extract": {"balance": {"selector": "#balance", "type": "currency"}},
+    }
+    data.update(overrides)
+    return data
+
+
+def _with_steps(*steps):
+    return _v2(auth={"type": "form", "steps": list(steps)})
+
+
+class TestStrictSchema:
+    def test_valid_blueprint_loads(self):
+        assert load_blueprint_from_dict(_v2()).name == "Strict"
+
+    def test_missing_schema_version_is_an_error_not_v1(self):
+        data = _v2()
+        del data["schema_version"]
+        with pytest.raises(ValueError, match="schema_version is required"):
+            load_blueprint_from_dict(data)
+
+    def test_schema_version_required_on_the_model(self):
+        with pytest.raises(ValidationError):
+            BlueprintV2(
+                name="x",
+                domain="x.example",
+                auth=AuthConfig(steps=[BlueprintStep(action=StepAction.GOTO, url="https://x.example")]),
+            )
+
+    @pytest.mark.parametrize(
+        "location, data",
+        [
+            ("top level", _v2(descriptoin="typo")),
+            ("step", _with_steps({"action": "click", "selector": "#a", "wait_for_navigaton": True})),
+            ("step timeout typo", _with_steps({"action": "wait", "selector": "#a", "timout": 5})),
+            ("field", _v2(extract={"balance": {"selector": "#b", "tpye": "currency"}})),
+            ("rate limit", _v2(rate_limit={"max_requests_per_minute": 3})),
+        ],
+    )
+    def test_unknown_keys_are_rejected(self, location, data):
+        with pytest.raises(ValidationError):
+            load_blueprint_from_dict(data)
+
+    @pytest.mark.parametrize(
+        "step, message",
+        [
+            ({"action": "goto"}, "require url"),
+            ({"action": "fill", "value": "x"}, "require selector"),
+            ({"action": "fill", "selector": "#a"}, "require value"),
+            ({"action": "click"}, "require selector"),
+            ({"action": "select", "selector": "#a"}, "require value"),
+            ({"action": "wait"}, "require a selector, or a timeout"),
+            ({"action": "execute_js"}, "require script"),
+            ({"action": "conditional", "condition_selector": "#a"}, "then_steps and/or else_steps"),
+            ({"action": "iframe", "iframe_selector": "#f"}, "require steps"),
+            ({"action": "iframe", "steps": [{"action": "click", "selector": "#a"}]}, "iframe_selector"),
+        ],
+    )
+    def test_each_action_requires_its_fields(self, step, message):
+        with pytest.raises(ValidationError, match=message):
+            load_blueprint_from_dict(_with_steps({"action": "goto", "url": "https://strict.example"}, step))
+
+    def test_fields_that_do_not_apply_to_an_action_are_rejected(self):
+        with pytest.raises(ValidationError, match="do not take url"):
+            load_blueprint_from_dict(_with_steps({"action": "click", "selector": "#a", "url": "https://x"}))
+
+    @pytest.mark.parametrize("timeout", [0, -5, 10**9])
+    def test_out_of_range_timeouts_are_rejected(self, timeout):
+        with pytest.raises(ValidationError):
+            load_blueprint_from_dict(_with_steps({"action": "wait", "selector": "#a", "timeout": timeout}))
+
+    def test_extract_action_no_longer_exists(self):
+        with pytest.raises(ValidationError):
+            load_blueprint_from_dict(_with_steps({"action": "extract", "selector": "#a"}))
+
+    def test_unknown_placeholder_is_rejected(self):
+        with pytest.raises(ValidationError, match="unknown variable"):
+            load_blueprint_from_dict(_with_steps({"action": "fill", "selector": "#p", "value": "{{pasword}}"}))
+
+    @pytest.mark.parametrize(
+        "url", ["file:///etc/passwd", "javascript:alert(1)", "chrome://settings", "data:text/html,x"]
+    )
+    def test_goto_only_accepts_http_urls(self, url):
+        with pytest.raises(ValidationError, match="http"):
+            load_blueprint_from_dict(_with_steps({"action": "goto", "url": url}))
+
+    def test_wait_with_only_a_timeout_is_a_pause(self):
+        bp = load_blueprint_from_dict(_with_steps({"action": "wait", "timeout": 500}))
+        assert bp.auth.steps[0].selector is None and bp.auth.steps[0].timeout == 500
+
+    def test_iframe_step_with_nested_steps(self):
+        bp = load_blueprint_from_dict(
+            _with_steps(
+                {"action": "iframe", "iframe_selector": "#login", "steps": [{"action": "click", "selector": "#a"}]}
+            )
+        )
+        assert bp.auth.steps[0].steps[0].selector == "#a"
+
+    def test_selector_strategy_needs_selectors(self):
+        with pytest.raises(ValidationError, match="needs a selector"):
+            load_blueprint_from_dict(_v2(extract={"balance": {"type": "currency", "description": "x"}}))
+
+    def test_code_mfa_needs_an_input_selector(self):
+        with pytest.raises(ValidationError, match="input_selector"):
+            load_blueprint_from_dict(_v2(mfa={"detection": {"selector": "#otp"}, "type": "otp_input"}))
+
+    def test_push_mfa_does_not_need_an_input_selector(self):
+        bp = load_blueprint_from_dict(_v2(mfa={"detection": {"selector": "#push"}, "type": "push"}))
+        assert bp.mfa.type == MFAType.PUSH
+
+    def test_declared_targets_must_stay_on_the_blueprints_domains(self):
+        with pytest.raises(ValidationError, match="not on the blueprint's domain"):
+            load_blueprint_from_dict(_v2(logout_targets=["https://evil.example/logout"]))
+        bp = load_blueprint_from_dict(_v2(logout_targets=["https://login.strict.example/logout", "/signout"]))
+        assert len(bp.cleanup_targets()) == 2
+
+    def test_domain_must_be_a_bare_host(self):
+        for bad in ("https://strict.example", "strict.example/path", "user@strict.example"):
+            with pytest.raises(ValidationError):
+                load_blueprint_from_dict(_v2(domain=bad))
+
+    def test_outcome_checks_need_a_selector_or_valid_text(self):
+        with pytest.raises(ValidationError, match="selector and/or a text"):
+            load_blueprint_from_dict(_v2(auth={**_v2()["auth"], "failure": {}}))
+        with pytest.raises(ValidationError, match="regular expression"):
+            load_blueprint_from_dict(_v2(auth={**_v2()["auth"], "failure": {"text": "(unclosed"}}))
+
+    def test_fallback_selectors_must_name_known_fields(self):
+        with pytest.raises(ValidationError, match="unknown fields"):
+            load_blueprint_from_dict(_v2(fallback_selectors={"nope": "#x"}))
+
+    def test_sensitive_field_names(self):
+        bp = load_blueprint_from_dict(
+            _v2(
+                extract={
+                    "account": {"selector": "#a", "sensitive": True},
+                    "balance": {"selector": "#b"},
+                    "rows": {
+                        "selector": ".r",
+                        "type": "list",
+                        "fields": {"card": {"selector": ".c", "sensitive": True}, "amt": {"selector": ".a"}},
+                    },
+                }
+            )
+        )
+        assert bp.sensitive_field_names() == ["account", "rows[].card"]
+
+
+class TestBundledConnectors:
+    def test_every_bundled_connector_loads(self):
+        from src.core.blueprint import BUNDLED_CONNECTORS_DIR
+
+        files = sorted(BUNDLED_CONNECTORS_DIR.glob("*.json"))
+        assert files
+        for path in files:
+            load_blueprint(path)
+
+    def test_every_json_in_connectors_is_listed_as_bundled(self):
+        from src.core.blueprint import BUNDLED_CONNECTOR_SITES, BUNDLED_CONNECTORS_DIR
+
+        assert {p.stem for p in BUNDLED_CONNECTORS_DIR.glob("*.json")} == set(BUNDLED_CONNECTOR_SITES)
+
+    def test_hydro_one_rate_limit_is_read(self):
+        bp = load_blueprint(Path("connectors/hydro_one.json"))
+        assert bp.rate_limit.max_requests_per_hour == 180
+        assert bp.rate_limit.min_interval_seconds == 30
+        assert bp.auth.failure is not None and bp.auth.success is not None
+
+    def test_bundled_connectors_declare_targets_and_outcomes(self):
+        for name in ("demo_bank", "demo_saas", "demo_utility", "internal_bank", "hydro_one"):
+            bp = load_blueprint(Path(f"connectors/{name}.json"))
+            assert bp.auth.submit_targets, name
+            assert bp.auth.failure is not None, name
+            assert bp.logout_targets, name
+            if bp.mfa is not None:
+                assert bp.mfa.submit_targets, name
+
+
+class TestTrustAndExecution:
+    def test_bundled_connector_is_trusted(self):
+        from src.core.blueprint import BUNDLED_CONNECTORS_DIR, TrustTier, resolve_trust_tier
+
+        path = BUNDLED_CONNECTORS_DIR / "hydro_one.json"
+        assert resolve_trust_tier(path, load_blueprint(path)) is TrustTier.BUNDLED
+
+    def test_copy_outside_the_repo_is_untrusted(self, tmp_path):
+        from src.core.blueprint import TrustTier, resolve_trust_tier
+
+        copy = tmp_path / "hydro_one.json"
+        copy.write_text(Path("connectors/hydro_one.json").read_text())
+        tier = resolve_trust_tier(copy, load_blueprint(copy))
+        assert tier is TrustTier.UNTRUSTED
+        assert not tier.allows_javascript
+
+    def test_operator_can_vouch_for_a_connector(self, tmp_path):
+        from src.core.blueprint import TrustTier, resolve_trust_tier
+
+        path = tmp_path / "intranet.json"
+        path.write_text(json.dumps(_v2()))
+        bp = load_blueprint(path)
+        assert resolve_trust_tier(path, bp, operator_trusted=["intranet"]) is TrustTier.OPERATOR
+        assert resolve_trust_tier(path, bp, operator_trusted=["other"]) is TrustTier.UNTRUSTED
+
+    def test_generated_blueprints_are_never_trusted(self, tmp_path):
+        from src.core.blueprint import TrustTier, resolve_trust_tier
+
+        path = tmp_path / "gen.json"
+        path.write_text(json.dumps(_v2(tags=["auto_generated"])))
+        assert resolve_trust_tier(path, load_blueprint(path), operator_trusted=["gen"]) is TrustTier.UNTRUSTED
+
+    @pytest.mark.parametrize(
+        "tags, demo, allow, expected",
+        [
+            (["utility"], False, False, True),
+            (["internal", "fixture"], False, False, False),
+            (["sandbox", "demo"], False, False, False),
+            (["internal"], True, False, True),
+            (["sandbox"], False, True, True),
+        ],
+    )
+    def test_executability(self, tags, demo, allow, expected):
+        from src.core.blueprint import blueprint_is_executable
+
+        assert blueprint_is_executable(tags, demo_mode=demo, allow_internal=allow) is expected

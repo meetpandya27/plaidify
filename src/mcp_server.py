@@ -9,28 +9,37 @@ Provides tools for:
   - check_connection_status(link_token): check link session progress
   - fetch_data(access_token): retrieve extracted data
   - submit_mfa(session_id, code): submit MFA verification
+  - get_job_status(job_id): progress, MFA prompt or outcome of an access job
   - request_consent(access_token, scopes): request scoped data access
   - list_connections(): list active connections
 
 Usage (stdio):
     python -m src.mcp_server
 
-Usage (HTTP SSE):
-    python -m src.mcp_server --transport sse --port 3001
+Usage (HTTP, SSE or streamable HTTP):
+    python -m src.mcp_server --transport sse --port 3001 [--host 127.0.0.1]
+    python -m src.mcp_server --transport streamable-http --port 3001
+
+The HTTP transports listen on 127.0.0.1 by default. Anyone who can reach the
+port acts with PLAIDIFY_API_KEY, so only bind another interface behind your
+own authentication, and list the host names clients use in
+PLAIDIFY_MCP_ALLOWED_HOSTS (DNS-rebinding protection).
 
 Environment variables:
-    PLAIDIFY_SERVER_URL  — Base URL of the Plaidify API (default: http://localhost:8000)
-    PLAIDIFY_API_KEY     — JWT token or API key for authenticated endpoints
+    PLAIDIFY_SERVER_URL        — Base URL of the Plaidify API (default: http://localhost:8000)
+    PLAIDIFY_API_KEY           — API key (pk_…, sent as X-API-Key) or a user JWT (sent as a Bearer token)
+    PLAIDIFY_MCP_ALLOWED_HOSTS — Comma-separated Host values accepted when bound to a non-loopback host
 """
 
 from __future__ import annotations
 
+import argparse
 import os
-import sys
 from typing import Any, Optional
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 # ── Server Setup ──────────────────────────────────────────────────────────────
 
@@ -45,7 +54,7 @@ mcp = FastMCP(
         "2. connect_site(site, username, password) — direct extraction\n"
         "   OR connect_utility_account(site) → user opens link → check_connection_status()\n"
         "3. For scoped access: request_consent() before fetch_data()\n"
-        "4. If MFA required: submit_mfa(session_id, code)\n\n"
+        "4. If MFA required: submit_mfa(session_id, code), then get_job_status(job_id)\n\n"
         "Sandbox: when the server runs with DEMO_MODE=true, list_available_sites() "
         "returns connectable demo sites — demo_utility (OTP, code 123456), "
         "demo_bank (security question, answer 'plaidify'), and demo_saas (no MFA). "
@@ -61,7 +70,8 @@ PLAIDIFY_API_KEY = os.environ.get("PLAIDIFY_API_KEY", "")
 def _headers() -> dict[str, str]:
     h: dict[str, str] = {"Content-Type": "application/json"}
     if PLAIDIFY_API_KEY:
-        # Support both API keys (pk_...) and JWT tokens
+        # API keys (pk_…, agents pk_agent_…) travel only in X-API-Key; a user
+        # JWT is a Bearer token.
         if PLAIDIFY_API_KEY.startswith("pk_"):
             h["X-API-Key"] = PLAIDIFY_API_KEY
         else:
@@ -151,7 +161,8 @@ async def connect_site(site: str, username: str, password: str) -> str:
     """Connect to a site and extract data directly with credentials.
 
     This is the simplest integration — provide credentials and get data back.
-    If MFA is required, you'll receive a session_id to use with submit_mfa().
+    If MFA is required, you'll receive a session_id to use with submit_mfa();
+    a slow connection answers with a job_id to follow with get_job_status().
 
     Args:
         site: Site identifier from list_available_sites() (e.g. "hydro_one").
@@ -180,14 +191,22 @@ async def connect_site(site: str, username: str, password: str) -> str:
 
     status = data.get("status", "unknown")
 
+    job_id = data.get("job_id")
     if status == "mfa_required":
         session_id = data.get("session_id", "")
         mfa_type = data.get("mfa_type", "unknown")
+        follow_up = f"\nThen follow the connection with get_job_status('{job_id}')." if job_id else ""
         return (
             f"MFA required ({mfa_type}).\n"
             f"Session ID: {session_id}\n\n"
             f"Ask the user for their verification code, then call:\n"
-            f"  submit_mfa(session_id='{session_id}', code='<user_code>')"
+            f"  submit_mfa(session_id='{session_id}', code='<user_code>')" + follow_up
+        )
+
+    if status == "pending" and job_id:
+        return (
+            f"The connection to {site} is still running (job {job_id}).\n"
+            f"Call get_job_status('{job_id}') to follow it; it may ask for an MFA code."
         )
 
     if status == "connected":
@@ -220,16 +239,10 @@ async def connect_utility_account(site: str) -> str:
     try:
         data = await _api("POST", "/link/sessions", params={"site": site})
     except httpx.HTTPStatusError as e:
-        if e.response.status_code in (401, 403):
-            # Fall back to unauthenticated encryption session
-            data = await _api("POST", "/encryption/session")
-            link_token = data.get("link_token", "")
-            return (
-                f"Link session created (unauthenticated mode).\n"
-                f"Link token: {link_token}\n"
-                f"Link URL: {PLAIDIFY_SERVER_URL}/link?token={link_token}&site={site}\n\n"
-                f"Ask the user to open this URL to connect their {site} account."
-            )
+        if e.response.status_code == 401:
+            return "Authentication required. Set PLAIDIFY_API_KEY to an API key (pk_...) or a user access token."
+        if e.response.status_code == 403:
+            return f"This API key or agent is not allowed to connect '{site}'."
         return f"Error creating link session: {e.response.text}"
 
     link_token = data.get("link_token", "")
@@ -285,9 +298,14 @@ async def check_connection_status(link_token: str) -> str:
         "verifying_mfa": "Verifying MFA code...",
         "completed": "Connection successful! The user has been authenticated.",
         "error": "An error occurred during the connection.",
+        "exited": "The user closed the link before finishing.",
         "expired": "This session has expired. Create a new one with connect_utility_account().",
     }
     lines.append(f"\n{status_messages.get(status, 'Unknown status.')}")
+
+    if status == "error" and data.get("error_message"):
+        code = data.get("error_code")
+        lines.append(f"Error{f' ({code})' if code else ''}: {data['error_message']}")
 
     # If completed, include public token for exchange
     if status == "completed":
@@ -352,12 +370,13 @@ async def fetch_data(access_token: str, consent_token: Optional[str] = None) -> 
     Returns:
         Extracted data from the connected site in a readable format.
     """
-    params: dict[str, str] = {"access_token": access_token}
+    # In the body, never the URL: a query string lands in access logs.
+    body: dict[str, str] = {"access_token": access_token}
     if consent_token:
-        params["consent_token"] = consent_token
+        body["consent_token"] = consent_token
 
     try:
-        data = await _api("GET", "/fetch_data", params=params)
+        data = await _api("POST", "/fetch_data", json=body)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 401:
             return "Invalid access token. The user may need to re-authenticate."
@@ -395,11 +414,10 @@ async def submit_mfa(session_id: str, code: str) -> str:
         Result of the MFA submission (success or error).
     """
     try:
-        # The API expects query params, not JSON body
         data = await _api(
             "POST",
             "/mfa/submit",
-            params={
+            json={
                 "session_id": session_id,
                 "code": code,
             },
@@ -413,10 +431,70 @@ async def submit_mfa(session_id: str, code: str) -> str:
     if status == "mfa_submitted":
         return (
             "MFA code submitted successfully. The connection will resume.\n"
-            "Check the connection status or try connect_site() again."
+            "Follow it with get_job_status(job_id) or check_connection_status(link_token)."
         )
 
     return f"MFA submission result: {status}"
+
+
+@mcp.tool()
+async def get_job_status(job_id: str) -> str:
+    """Check the progress of an access job (a connection started by connect_site()).
+
+    Use this after connect_site() answers "pending", or after submit_mfa(), to
+    see whether the job is still running, waiting for an MFA code, finished,
+    or failed.
+
+    Args:
+        job_id: The job_id returned by connect_site().
+
+    Returns:
+        The job's status; the MFA prompt when one is waiting; the extracted
+        fields when it completed; the error when it failed.
+    """
+    try:
+        data = await _api("GET", f"/access_jobs/{job_id}")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return f"Access job '{job_id}' not found."
+        if e.response.status_code == 401:
+            return "Authentication required. Set PLAIDIFY_API_KEY."
+        return f"Error checking job status: {e.response.text}"
+
+    status = data.get("status", "unknown")
+    site = data.get("site", "unknown")
+    lines = [f"Job {job_id} ({site}): {status}"]
+    metadata = data.get("metadata") or {}
+
+    if status == "mfa_required":
+        session_id = data.get("session_id", "")
+        prompt = metadata.get("question") or metadata.get("message") or "Ask the user for their verification code."
+        if metadata.get("mfa_error") == "invalid_code":
+            remaining = metadata.get("attempts_remaining")
+            lines.append(
+                "The site rejected the last code." + (f" {remaining} attempt(s) left." if remaining is not None else "")
+            )
+        lines.append(f"MFA required ({data.get('mfa_type', 'unknown')}): {prompt}")
+        lines.append(f"Then call: submit_mfa(session_id='{session_id}', code='<user_code>')")
+    elif status in ("pending", "running"):
+        if data.get("mfa_state") == "verifying":
+            lines.append("The verification code was received; the site is checking it.")
+        else:
+            lines.append("Still running. Check again in a few seconds.")
+    elif status == "completed":
+        result = data.get("result") or {}
+        extracted = result.get("data") if isinstance(result, dict) else None
+        if extracted:
+            lines.append(f"Extracted {len(extracted)} fields:\n")
+            lines.append(_format_data(extracted))
+        else:
+            fields = metadata.get("result_fields") or []
+            lines.append("Completed." + (f" Fields: {', '.join(fields)}" if fields else ""))
+    else:
+        error = data.get("error_message") or "The connection could not be completed."
+        code = data.get("error_code")
+        lines.append(f"Error{f' ({code})' if code else ''}: {error}")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -497,26 +575,69 @@ async def list_connections() -> str:
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    transport = "stdio"
-    port = 3001
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
-    args = sys.argv[1:]
-    i = 0
-    while i < len(args):
-        if args[i] == "--transport" and i + 1 < len(args):
-            transport = args[i + 1]
-            i += 2
-        elif args[i] == "--port" and i + 1 < len(args):
-            port = int(args[i + 1])
-            i += 2
-        elif args[i] == "--server-url" and i + 1 < len(args):
-            PLAIDIFY_SERVER_URL = args[i + 1]
-            i += 2
-        else:
-            i += 1
 
-    if transport == "sse":
-        mcp.run(transport="sse", port=port)
-    else:
+def configure_http_transport(host: str, port: int, allowed_hosts: Optional[list[str]] = None) -> None:
+    """Point the SSE / streamable-HTTP transports at ``host:port``.
+
+    FastMCP reads the bind address from ``mcp.settings`` (``run()`` takes no
+    port), and sets its DNS-rebinding protection for a loopback host when it is
+    constructed, so both are set here.
+    """
+    mcp.settings.host = host
+    mcp.settings.port = port
+    if host in _LOOPBACK_HOSTS:
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
+            allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"],
+        )
+        return
+    hosts = [entry.strip() for entry in (allowed_hosts or []) if entry.strip()]
+    if not hosts:
+        raise SystemExit(
+            f"Binding the MCP server to {host} exposes PLAIDIFY_API_KEY to everyone who can reach it. "
+            "Put it behind your own authentication and set PLAIDIFY_MCP_ALLOWED_HOSTS (or --allowed-host) "
+            "to the host names clients use."
+        )
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[entry if ":" in entry else f"{entry}:*" for entry in hosts],
+        allowed_origins=[f"https://{entry}" for entry in hosts] + [f"http://{entry}" for entry in hosts],
+    )
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    global PLAIDIFY_SERVER_URL, _client
+
+    parser = argparse.ArgumentParser(description="Plaidify MCP server")
+    parser.add_argument("--transport", choices=("stdio", "sse", "streamable-http"), default="stdio")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address for the HTTP transports.")
+    parser.add_argument("--port", type=int, default=3001, help="Port for the HTTP transports.")
+    parser.add_argument("--server-url", help="Base URL of the Plaidify API (overrides PLAIDIFY_SERVER_URL).")
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=None,
+        help="Host header value accepted on a non-loopback bind (repeatable).",
+    )
+    args = parser.parse_args(argv)
+
+    if args.server_url:
+        PLAIDIFY_SERVER_URL = args.server_url
+        _client = None
+
+    if args.transport == "stdio":
         mcp.run(transport="stdio")
+        return
+
+    allowed_hosts = args.allowed_host or [
+        entry for entry in os.environ.get("PLAIDIFY_MCP_ALLOWED_HOSTS", "").split(",") if entry.strip()
+    ]
+    configure_http_transport(args.host, args.port, allowed_hosts)
+    mcp.run(transport=args.transport)
+
+
+if __name__ == "__main__":
+    main()

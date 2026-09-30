@@ -25,64 +25,119 @@ __export(src_exports, {
   Plaidify: () => Plaidify,
   PlaidifyError: () => PlaidifyError,
   RateLimitError: () => RateLimitError,
-  ServerError: () => ServerError
+  ServerError: () => ServerError,
+  buildHostedLinkUrl: () => buildHostedLinkUrl
 });
 module.exports = __toCommonJS(src_exports);
 
 // src/errors.ts
 var PlaidifyError = class extends Error {
-  constructor(message, statusCode) {
+  constructor(message, statusCode, errorCode) {
     super(message);
     this.name = "PlaidifyError";
     this.statusCode = statusCode;
     this.detail = message;
+    this.errorCode = errorCode;
   }
 };
 var AuthenticationError = class extends PlaidifyError {
-  constructor(message = "Authentication failed") {
-    super(message, 401);
+  constructor(message = "Authentication failed", errorCode) {
+    super(message, 401, errorCode);
     this.name = "AuthenticationError";
   }
 };
 var NotFoundError = class extends PlaidifyError {
-  constructor(message = "Resource not found") {
-    super(message, 404);
+  constructor(message = "Resource not found", errorCode) {
+    super(message, 404, errorCode);
     this.name = "NotFoundError";
   }
 };
 var RateLimitError = class extends PlaidifyError {
-  constructor(message = "Rate limit exceeded") {
-    super(message, 429);
+  constructor(message = "Rate limit exceeded", errorCode) {
+    super(message, 429, errorCode);
     this.name = "RateLimitError";
   }
 };
 var ServerError = class extends PlaidifyError {
-  constructor(message = "Internal server error") {
-    super(message, 500);
+  constructor(message = "Internal server error", errorCode) {
+    super(message, 500, errorCode);
     this.name = "ServerError";
   }
 };
 
+// src/link-url.ts
+function buildHostedLinkUrl(serverUrl, linkToken, options = {}, base) {
+  const url = new URL(`${serverUrl.replace(/\/+$/, "")}/link`, base);
+  url.searchParams.set("token", linkToken);
+  if (options.origin) {
+    url.searchParams.set("origin", options.origin);
+  }
+  const theme = options.theme;
+  if (theme?.accentColor) {
+    url.searchParams.set("accent", theme.accentColor);
+  }
+  if (theme?.bgColor) {
+    url.searchParams.set("bg", theme.bgColor);
+  }
+  if (theme?.borderRadius) {
+    url.searchParams.set("radius", theme.borderRadius);
+  }
+  if (theme?.logo) {
+    url.searchParams.set("logo", theme.logo);
+  }
+  return url.toString();
+}
+
 // src/client.ts
+function isApiKey(credential) {
+  return credential.startsWith("pk_");
+}
+function errorMessage(body, status) {
+  const detail = body?.detail;
+  if (typeof detail === "string" && detail) {
+    return detail;
+  }
+  if (Array.isArray(detail) && detail.length > 0) {
+    return detail.map((issue) => issue && typeof issue.msg === "string" ? issue.msg : JSON.stringify(issue)).join("; ");
+  }
+  if (typeof body?.error === "string" && body.error) {
+    return body.error;
+  }
+  return `HTTP ${status}`;
+}
 async function raiseForStatus(response) {
   if (response.ok) return;
-  let detail = `HTTP ${response.status}`;
+  let body = null;
   try {
-    const body = await response.json();
-    detail = body.detail || detail;
+    body = await response.json();
   } catch {
   }
+  const detail = errorMessage(body, response.status);
+  const errorCode = typeof body?.error_code === "string" ? body.error_code : void 0;
   switch (response.status) {
     case 401:
-      throw new AuthenticationError(detail);
+      throw new AuthenticationError(detail, errorCode);
     case 404:
-      throw new NotFoundError(detail);
+      throw new NotFoundError(detail, errorCode);
     case 429:
-      throw new RateLimitError(detail);
+      throw new RateLimitError(detail, errorCode);
     default:
-      if (response.status >= 500) throw new ServerError(detail);
-      throw new PlaidifyError(detail, response.status);
+      if (response.status >= 500) throw new ServerError(detail, errorCode);
+      throw new PlaidifyError(detail, response.status, errorCode);
   }
+}
+function parseScopes(raw) {
+  if (Array.isArray(raw)) {
+    return raw.filter((scope) => typeof scope === "string");
+  }
+  if (typeof raw === "string" && raw) {
+    try {
+      return parseScopes(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 var Plaidify = class {
   constructor(config) {
@@ -96,29 +151,42 @@ var Plaidify = class {
     this.token = token;
   }
   // ── HTTP layer ─────────────────────────────────────────────────────────
-  headers() {
-    const h = { "Content-Type": "application/json" };
-    if (this.token) h["Authorization"] = `Bearer ${this.token}`;
-    else if (this.apiKey) h["X-API-Key"] = this.apiKey;
-    return h;
+  authHeaders() {
+    const credential = this.token ?? this.apiKey;
+    if (!credential) {
+      return {};
+    }
+    if (credential === this.apiKey || isApiKey(credential)) {
+      return { "X-API-Key": credential };
+    }
+    return { Authorization: `Bearer ${credential}` };
   }
-  async request(method, path, body, params) {
+  async request(method, path, options = {}) {
     let url = `${this.baseUrl}${path}`;
-    if (params) {
+    if (options.params) {
       const qs = new URLSearchParams();
-      for (const [k, v] of Object.entries(params)) {
+      for (const [k, v] of Object.entries(options.params)) {
         if (v !== void 0 && v !== null) qs.set(k, String(v));
       }
       const qsStr = qs.toString();
       if (qsStr) url += `?${qsStr}`;
+    }
+    const headers = { Accept: "application/json", ...this.authHeaders() };
+    let body;
+    if (options.form) {
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+      body = new URLSearchParams(options.form).toString();
+    } else if (options.json !== void 0) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(options.json);
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
     try {
       const response = await fetch(url, {
         method,
-        headers: this.headers(),
-        body: body ? JSON.stringify(body) : void 0,
+        headers,
+        body,
         signal: controller.signal
       });
       await raiseForStatus(response);
@@ -128,13 +196,13 @@ var Plaidify = class {
     }
   }
   get(path, params) {
-    return this.request("GET", path, void 0, params);
+    return this.request("GET", path, { params });
   }
-  post(path, body) {
-    return this.request("POST", path, body);
+  post(path, json) {
+    return this.request("POST", path, { json });
   }
-  patch(path, body) {
-    return this.request("PATCH", path, body);
+  patch(path, json) {
+    return this.request("PATCH", path, { json });
   }
   del(path) {
     return this.request("DELETE", path);
@@ -150,8 +218,8 @@ var Plaidify = class {
   async listBlueprints() {
     return this.get("/blueprints");
   }
-  async getBlueprint(name) {
-    return this.get(`/blueprints/${encodeURIComponent(name)}`);
+  async getBlueprint(site) {
+    return this.get(`/blueprints/${encodeURIComponent(site)}`);
   }
   // ── Connect ────────────────────────────────────────────────────────────
   async connect(site, username, password, options) {
@@ -165,7 +233,7 @@ var Plaidify = class {
   async submitMfa(sessionId, code) {
     return this.post("/mfa/submit", {
       session_id: sessionId,
-      mfa_code: code
+      code
     });
   }
   async listAccessJobs(options) {
@@ -195,13 +263,17 @@ var Plaidify = class {
     }
   }
   // ── Auth ───────────────────────────────────────────────────────────────
-  async register(email, password) {
-    const result = await this.post("/auth/register", { email, password });
+  /** Create an account and use its access token for later calls. */
+  async register(username, email, password) {
+    const result = await this.post("/auth/register", { username, email, password });
     if (result.access_token) this.token = result.access_token;
     return result;
   }
-  async login(email, password) {
-    const result = await this.post("/auth/login", { email, password });
+  /** Log in (OAuth2 password form at POST /auth/token) and keep the token. */
+  async login(username, password) {
+    const result = await this.request("POST", "/auth/token", {
+      form: { username, password }
+    });
     if (result.access_token) this.token = result.access_token;
     return result;
   }
@@ -210,8 +282,9 @@ var Plaidify = class {
   }
   // ── Link Flow ──────────────────────────────────────────────────────────
   async createLinkSession(site) {
-    const path = site ? `/link/sessions?site=${encodeURIComponent(site)}` : "/link/sessions";
-    return this.post(path);
+    return this.request("POST", "/link/sessions", {
+      params: site ? { site } : void 0
+    });
   }
   async createPublicLinkSession() {
     return this.post("/link/sessions/public");
@@ -220,6 +293,7 @@ var Plaidify = class {
     return this.post("/link/bootstrap", {
       site: options?.site,
       allowed_origin: options?.allowedOrigin,
+      allowed_origins: options?.allowedOrigins,
       scopes: options?.scopes
     });
   }
@@ -229,30 +303,21 @@ var Plaidify = class {
     });
   }
   getLinkUrl(linkToken, options) {
-    const url = new URL(`${this.baseUrl}/link`);
-    url.searchParams.set("token", linkToken);
-    if (options?.origin) {
-      url.searchParams.set("origin", options.origin);
-    }
-    const theme = options?.theme;
-    if (theme?.accentColor) {
-      url.searchParams.set("accent", theme.accentColor);
-    }
-    if (theme?.bgColor) {
-      url.searchParams.set("bg", theme.bgColor);
-    }
-    if (theme?.borderRadius) {
-      url.searchParams.set("radius", theme.borderRadius);
-    }
-    if (theme?.logo) {
-      url.searchParams.set("logo", theme.logo);
-    }
-    return url.toString();
+    return buildHostedLinkUrl(this.baseUrl, linkToken, options);
   }
-  async registerWebhook(linkToken, url) {
-    return this.post("/webhooks", {
+  /**
+   * Register a webhook for a link session. Each delivery carries
+   * `X-Plaidify-Delivery` (the same id on every retry, for de-duplication),
+   * `X-Plaidify-Timestamp` (Unix seconds) and `X-Plaidify-Signature`:
+   * `sha256=` + hex HMAC-SHA256, keyed with `secret`, of
+   * `` `${timestamp}.${rawBody}` ``. Recompute it over the raw body and reject
+   * timestamps older than a few minutes.
+   */
+  async registerWebhook(linkToken, url, secret) {
+    return this.post("/webhooks/register", {
       link_token: linkToken,
-      url
+      url,
+      secret
     });
   }
   async exchangePublicToken(publicToken) {
@@ -302,19 +367,21 @@ var Plaidify = class {
     return this.del(`/agents/${encodeURIComponent(agentId)}`);
   }
   // ── Consent ────────────────────────────────────────────────────────────
-  async requestConsent(accessToken, scopes, agentName, durationSeconds = 3600) {
+  async requestConsent(accessToken, scopes, agentName, durationSeconds = 3600, options) {
     return this.post("/consent/request", {
       access_token: accessToken,
       scopes,
       agent_name: agentName,
+      agent_description: options?.agentDescription,
       duration_seconds: durationSeconds
     });
   }
-  async approveConsent(consentId) {
-    return this.post(`/consent/${consentId}/approve`);
+  /** `requestId` is the `request_id` returned by {@link requestConsent}. */
+  async approveConsent(requestId) {
+    return this.post(`/consent/${encodeURIComponent(requestId)}/approve`);
   }
-  async denyConsent(consentId) {
-    return this.post(`/consent/${consentId}/deny`);
+  async denyConsent(requestId) {
+    return this.post(`/consent/${encodeURIComponent(requestId)}/deny`);
   }
   async listConsents() {
     return this.get("/consent");
@@ -323,6 +390,7 @@ var Plaidify = class {
     return this.del(`/consent/${encodeURIComponent(consentToken)}`);
   }
   // ── API Keys ───────────────────────────────────────────────────────────
+  /** The raw key is only in this response (`key`) — store it now. */
   async createApiKey(name, options) {
     return this.post("/api-keys", {
       name,
@@ -331,7 +399,8 @@ var Plaidify = class {
     });
   }
   async listApiKeys() {
-    return this.get("/api-keys");
+    const keys = await this.get("/api-keys");
+    return keys.map((key) => ({ ...key, scopes: parseScopes(key.scopes) }));
   }
   async revokeApiKey(keyId) {
     return this.del(`/api-keys/${encodeURIComponent(keyId)}`);
@@ -363,23 +432,27 @@ var Plaidify = class {
     return this.get("/audit/verify");
   }
   // ── Scheduled Refresh ──────────────────────────────────────────────────
-  async scheduleRefresh(accessToken, intervalSeconds = 3600) {
+  async scheduleRefresh(accessToken, intervalSeconds = 3600, options) {
     return this.post("/refresh/schedule", {
       access_token: accessToken,
-      interval_seconds: intervalSeconds
+      interval_seconds: intervalSeconds,
+      schedule_format: options?.scheduleFormat
     });
   }
   async unscheduleRefresh(accessToken) {
     return this.del(`/refresh/schedule/${encodeURIComponent(accessToken)}`);
   }
+  /** The caller's own schedules, tokens masked. */
   async listRefreshJobs() {
     return this.get("/refresh/jobs");
   }
   // ── Fetch Data ─────────────────────────────────────────────────────────
+  /** Tokens go in the body: a query string would land in access logs. */
   async fetchData(accessToken, consentToken) {
-    const params = { access_token: accessToken };
-    if (consentToken) params.consent_token = consentToken;
-    return this.get("/fetch_data", params);
+    return this.post("/fetch_data", {
+      access_token: accessToken,
+      consent_token: consentToken
+    });
   }
 };
 // Annotate the CommonJS export names for ESM import in node:
@@ -389,6 +462,7 @@ var Plaidify = class {
   Plaidify,
   PlaidifyError,
   RateLimitError,
-  ServerError
+  ServerError,
+  buildHostedLinkUrl
 });
 //# sourceMappingURL=index.js.map

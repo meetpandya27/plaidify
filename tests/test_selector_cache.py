@@ -4,6 +4,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from src.core.selector_cache import (
     DEFAULT_TTL,
     MAX_FAILURES,
@@ -388,3 +390,44 @@ class TestSelfHealing:
         assert entry is not None
         assert entry.selectors == {"new": "selector"}
         assert entry.failure_count == 0
+
+
+# ── Malformed entries (ENG-08) ────────────────────────────────────────────────
+
+
+class TestSelectorShapes:
+    @pytest.mark.parametrize(
+        "selectors",
+        [
+            ["#bal"],
+            {},
+            {"balance": ""},
+            {"balance": ["#bal"]},
+            {"rows": {"row": "tr"}},
+            {"rows": {"row": "", "fields": {"a": "td"}}},
+            {"rows": {"row": "tr", "fields": {"a": 5}}},
+        ],
+    )
+    def test_malformed_selector_maps_are_refused(self, selectors):
+        with pytest.raises(ValueError):
+            SelectorCache().put("bank.test", "/dash", selectors, confidence=0.9)
+
+    def test_well_formed_maps_are_accepted(self):
+        cache = SelectorCache()
+        cache.put(
+            "bank.test", "/dash", {"balance": "#bal", "rows": {"row": "tr", "fields": {"a": "td"}}}, confidence=0.9
+        )
+        assert cache.get("bank.test", "/dash") is not None
+
+    def test_malformed_entries_on_disk_are_skipped(self, tmp_path):
+        path = tmp_path / "cache.json"
+        good = SelectorCache(persist_path=str(path))
+        good.put("bank.test", "/good", {"balance": "#bal"}, confidence=0.9)
+        data = json.loads(path.read_text())
+        data["bad-shape"] = {"domain": "bank.test", "page_path": "/bad", "selectors": ["#x"], "created_at": 1}
+        data["bad-entry"] = "not a dict"
+        path.write_text(json.dumps(data))
+
+        loaded = SelectorCache(persist_path=str(path))
+        assert loaded.size == 1
+        assert loaded.get("bank.test", "/good") is not None

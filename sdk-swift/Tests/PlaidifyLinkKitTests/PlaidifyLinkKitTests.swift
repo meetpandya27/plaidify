@@ -57,11 +57,67 @@ final class PlaidifyLinkKitTests: XCTestCase {
 
     func testTerminalEventsDismissTheSheet() {
         let connected = PlaidifyLinkMessageParser.parse(string: "{\"source\":\"plaidify-link\",\"event\":\"CONNECTED\"}")
+        let exit = PlaidifyLinkMessageParser.parse(string: "{\"source\":\"plaidify-link\",\"event\":\"EXIT\",\"reason\":\"user_exit\",\"error_code\":\"rate_limited\"}")
         let mfa = PlaidifyLinkMessageParser.parse(string: "{\"source\":\"plaidify-link\",\"event\":\"MFA_REQUIRED\"}")
 
         XCTAssertEqual(connected?.isTerminal, true)
         XCTAssertEqual(connected?.shouldDismissSheet, true)
+        XCTAssertEqual(exit?.shouldDismissSheet, true)
+        XCTAssertEqual(exit?.errorCode, "rate_limited")
         XCTAssertEqual(mfa?.isTerminal, false)
         XCTAssertEqual(mfa?.shouldDismissSheet, false)
+    }
+
+    func testErrorDoesNotDismissTheSheet() {
+        // The page shows retry / choose-another-provider after an ERROR.
+        let error = PlaidifyLinkMessageParser.parse(string: "{\"source\":\"plaidify-link\",\"event\":\"ERROR\",\"error\":\"bad password\"}")
+        XCTAssertEqual(error?.name, .error)
+        XCTAssertEqual(error?.isTerminal, false)
+        XCTAssertEqual(error?.shouldDismissSheet, false)
+    }
+
+    func testLogoDataURIKeepsItsPlusSigns() throws {
+        let logo = "data:image/png;base64,iVBORw0KGgo+AAA/BBB="
+        let configuration = PlaidifyHostedLinkConfiguration(
+            serverURL: URL(string: "https://api.example.com")!,
+            token: "lnk-1",
+            theme: PlaidifyLinkTheme(logo: logo)
+        )
+        let components = try XCTUnwrap(URLComponents(url: configuration.hostedLinkURL(), resolvingAgainstBaseURL: false))
+        XCTAssertFalse(components.percentEncodedQuery?.contains("+") ?? true)
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "logo" })?.value, logo)
+    }
+
+    // MARK: Origin checks (LNK-11)
+
+    func testBridgeAcceptsOnlyThePlaidifyMainFrame() throws {
+        let origin = try XCTUnwrap(PlaidifyLinkOrigin(url: URL(string: "https://api.example.com/link?token=x")!))
+
+        XCTAssertTrue(origin.acceptsMessage(isMainFrame: true, scheme: "https", host: "api.example.com", port: 0))
+        XCTAssertTrue(origin.acceptsMessage(isMainFrame: true, scheme: "https", host: "API.example.com", port: 443))
+        // A frame inside the page, even on the same origin.
+        XCTAssertFalse(origin.acceptsMessage(isMainFrame: false, scheme: "https", host: "api.example.com", port: 0))
+        // The web view navigated elsewhere.
+        XCTAssertFalse(origin.acceptsMessage(isMainFrame: true, scheme: "https", host: "evil.example", port: 0))
+        XCTAssertFalse(origin.acceptsMessage(isMainFrame: true, scheme: "http", host: "api.example.com", port: 0))
+        XCTAssertFalse(origin.acceptsMessage(isMainFrame: true, scheme: "https", host: "api.example.com", port: 8443))
+    }
+
+    func testNavigationStaysOnThePlaidifyOrigin() throws {
+        let origin = try XCTUnwrap(PlaidifyLinkOrigin(url: URL(string: "http://localhost:8000")!))
+        let decide = { (url: String, mainFrame: Bool) in
+            PlaidifyLinkNavigationPolicy.decide(url: URL(string: url), isMainFrame: mainFrame, allowedOrigin: origin)
+        }
+
+        XCTAssertEqual(decide("http://localhost:8000/link?token=abc", true), .allow)
+        XCTAssertEqual(decide("http://localhost:8000/ui-next/assets/app.js", false), .allow)
+        XCTAssertEqual(
+            decide("https://bank.example/help", true),
+            .openExternally(URL(string: "https://bank.example/help")!)
+        )
+        XCTAssertEqual(decide("https://tracker.example/frame", false), .cancel)
+        XCTAssertEqual(decide("http://localhost:9999/", false), .cancel)
+        XCTAssertEqual(decide("javascript:alert(1)", true), .cancel)
+        XCTAssertEqual(decide("file:///etc/passwd", true), .cancel)
     }
 }

@@ -328,3 +328,29 @@ class TestVisionPromptBuilding:
         prompt = extractor._build_vision_prompt(SAMPLE_FIELDS)
 
         assert "## Page Context" not in prompt
+
+
+class TestScreenshotReplies:
+    """The vision reply is held to the requested fields (ENG-07, ENG-16)."""
+
+    @pytest.mark.asyncio
+    async def test_strict_schema_without_selectors_is_requested(self):
+        provider = make_mock_provider({"data": {"account_number": "A", "balance": 1.0}, "confidence": 0.9})
+        await MultimodalExtractor(provider).extract_from_screenshot(make_mock_page(), SAMPLE_FIELDS)
+
+        response_format = provider._call.call_args.kwargs["response_format"]
+        assert response_format["type"] == "json_schema"
+        schema = response_format["schema"]
+        assert set(schema["properties"]) == {"data", "confidence"}
+        assert schema["properties"]["data"]["additionalProperties"] is False
+
+    @pytest.mark.asyncio
+    async def test_unrequested_keys_are_dropped(self):
+        provider = make_mock_provider(
+            {"data": {"account_number": "A", "balance": 1.0, "ssn": "123-45-6789"}, "confidence": 0.9}
+        )
+        result = await MultimodalExtractor(provider).extract_from_screenshot(make_mock_page(), SAMPLE_FIELDS)
+        assert result.data == {"account_number": "A", "balance": 1.0}
+
+    def test_system_prompt_frames_the_screenshot_as_untrusted(self):
+        assert "untrusted" in VISION_SYSTEM_PROMPT
