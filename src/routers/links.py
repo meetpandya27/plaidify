@@ -1,15 +1,22 @@
 """
 Link token flow endpoints: create_link, submit_credentials, submit_instructions,
 fetch_data, link/token CRUD, public token exchange.
+
+Every endpoint accepts a user's access token or an API key (X-API-Key); an
+API key's or agent's site and scope restrictions apply. Tokens and
+credentials travel only in JSON bodies, never in the URL, and only their
+fingerprints reach logs and the audit trail.
 """
 
+import asyncio
 import base64
+import binascii
 import json as json_mod
 import uuid
-from datetime import datetime, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func, update
 from sqlalchemy.orm import Session
 
 from src import session_store
@@ -17,26 +24,38 @@ from src.access_jobs import run_access_job
 from src.audit import record_audit_event
 from src.config import get_settings
 from src.core.engine import connect_to_site
-from src.crypto import decrypt_with_session_key, destroy_session_key, generate_keypair
+from src.crypto import decrypt_with_session_key, destroy_session_key, generate_keypair, token_fingerprint
 from src.database import (
     AccessToken,
     ConsentGrant,
+    ConsentRequest,
     Link,
     PublicToken,
+    ScheduledRefreshJob,
     User,
+    as_utc,
     decrypt_credential_for_user,
     encrypt_credential_for_user,
     get_current_key_version,
     get_db,
+    utcnow,
 )
 from src.dependencies import (
     constrain_requested_scopes,
     ensure_site_allowed_for_request,
-    get_current_user,
+    get_auth_context,
     get_current_user_or_api_key,
     get_principal_allowed_scopes,
+    load_scope_set,
 )
 from src.logging_config import get_logger
+from src.models import (
+    CreateLinkRequest,
+    FetchDataRequest,
+    PublicTokenExchangeRequest,
+    SubmitCredentialsRequest,
+    SubmitInstructionsRequest,
+)
 
 settings = get_settings()
 logger = get_logger("api.links")
@@ -47,10 +66,69 @@ router = APIRouter(tags=["links"])
 _PUBLIC_TOKEN_TTL_MINUTES = 10
 
 
+# ── Cleanup helpers (also used by /disconnect and account deletion) ──────────
+
+
+def unschedule_refresh_jobs(access_tokens: Iterable[str] = (), *, user_id: Optional[int] = None) -> None:
+    """Drop refresh jobs from this process's scheduler, so it stops running (and re-saving) them.
+
+    ``access_tokens`` are the tokens being deleted; ``user_id`` drops every job
+    of that user (account deletion).
+    """
+    from src.routers.refresh import _get_refresh_scheduler
+
+    try:
+        scheduler = _get_refresh_scheduler()
+        tokens = set(access_tokens)
+        if user_id is not None:
+            tokens.update(job.access_token for job in scheduler.jobs_for_user(user_id))
+        for token in tokens:
+            scheduler.unschedule(token)
+    except Exception:
+        logger.exception("Could not unschedule refresh jobs")
+
+
+def delete_access_tokens(db: Session, tokens: list[str]) -> int:
+    """Delete access tokens, with their stored credentials and everything that hangs off them.
+
+    Consents, public tokens and scheduled refreshes of the tokens go too (the
+    database cascades on PostgreSQL; SQLite does not enforce foreign keys),
+    and their refresh jobs are unscheduled. Does not commit; returns the
+    number of access tokens deleted.
+    """
+    if not tokens:
+        return 0
+    unschedule_refresh_jobs(tokens)
+    for column in (
+        ConsentGrant.access_token,
+        ConsentRequest.access_token,
+        PublicToken.access_token,
+        ScheduledRefreshJob.access_token,
+    ):
+        db.query(column.class_).filter(column.in_(tokens)).delete(synchronize_session=False)
+    return db.query(AccessToken).filter(AccessToken.token.in_(tokens)).delete(synchronize_session=False)
+
+
+def end_link_session(link_token: str) -> None:
+    """Forget a link's hosted session and ephemeral key, so the link cannot be reconnected."""
+    try:
+        session_store.delete_link_session(link_token)
+        destroy_session_key(link_token)
+    except Exception as exc:
+        logger.warning(
+            "Could not clear the hosted session of a deleted link",
+            extra={"extra_data": {"link_token": token_fingerprint(link_token), "error": type(exc).__name__}},
+        )
+
+
+# ── Link flow ─────────────────────────────────────────────────────────────────
+
+
 @router.post("/create_link")
 async def create_link(
     request: Request,
-    site: str,
+    site: str = Query(..., min_length=1, max_length=64),
+    body: Optional[CreateLinkRequest] = None,
     user: User = Depends(get_current_user_or_api_key),
     db: Session = Depends(get_db),
 ):
@@ -60,57 +138,46 @@ async def create_link(
     Step 1 of the Plaid-style multi-step flow.
     Optionally accepts a JSON body with ``scopes`` — a list of field names
     or scope strings (e.g. ``["balance", "transactions"]``) that will be
-    enforced on data retrieval. If omitted, all fields are allowed.
+    enforced on data retrieval (omit for all fields, ``[]`` for none) — and a
+    ``refresh_schedule`` registered when credentials are submitted.
+    Everything is validated before the link is created.
     """
-    # Parse optional scopes / refresh_schedule from JSON body
-    scopes = None
-    refresh_schedule = None
-    try:
-        body = await request.json()
-        if body:
-            scopes = body.get("scopes")
-            refresh_schedule = body.get("refresh_schedule")
-    except Exception:
-        pass  # No body or non-JSON body is fine
-
     ensure_site_allowed_for_request(request, site)
-    effective_scopes = constrain_requested_scopes(request, scopes)
+    effective_scopes = constrain_requested_scopes(request, body.scopes if body else None)
 
-    link_token = str(uuid.uuid4())
-    new_link = Link(link_token=link_token, site=site, user_id=user.id)
-    db.add(new_link)
-    db.commit()
-
-    # Generate ephemeral RSA keypair for client-side encryption
-    public_key_pem = generate_keypair(link_token)
-
-    logger.info("Link created", extra={"extra_data": {"site": site, "user_id": user.id}})
-    result = {"link_token": link_token, "public_key": public_key_pem}
-    if effective_scopes is not None:
-        session_store.set_link_scopes(link_token, json_mod.dumps(effective_scopes))
-        result["scopes"] = effective_scopes
-    if refresh_schedule is not None:
+    directive = None
+    if body is not None and body.refresh_schedule is not None:
         # Validate the directive eagerly so /create_link rejects bad input
         # rather than silently failing later in /submit_credentials.
-        from src.scheduled_refresh import resolve_schedule
+        from src.scheduled_refresh import MIN_INTERVAL_SECONDS, resolve_schedule
 
-        if not isinstance(refresh_schedule, dict):
-            raise HTTPException(status_code=400, detail="refresh_schedule must be an object.")
         try:
             fmt, resolved_interval = resolve_schedule(
-                schedule_format=refresh_schedule.get("schedule_format") or refresh_schedule.get("format"),
-                interval_seconds=refresh_schedule.get("interval_seconds", 3600),
+                schedule_format=body.refresh_schedule.schedule_format,
+                interval_seconds=body.refresh_schedule.interval_seconds,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        from src.scheduled_refresh import MIN_INTERVAL_SECONDS
-
         if resolved_interval < MIN_INTERVAL_SECONDS:
             raise HTTPException(
                 status_code=400,
                 detail=f"Minimum interval is {MIN_INTERVAL_SECONDS} seconds (5 minutes).",
             )
         directive = {"schedule_format": fmt, "interval_seconds": resolved_interval}
+
+    link_token = str(uuid.uuid4())
+    db.add(Link(link_token=link_token, site=site, user_id=user.id))
+    db.commit()
+
+    # Ephemeral RSA keypair for client-side encryption (CPU-heavy: off the event loop)
+    public_key_pem = await asyncio.to_thread(generate_keypair, link_token)
+
+    logger.info("Link created", extra={"extra_data": {"site": site, "user_id": user.id}})
+    result = {"link_token": link_token, "public_key": public_key_pem}
+    if effective_scopes is not None:
+        session_store.set_link_scopes(link_token, json_mod.dumps(effective_scopes))
+        result["scopes"] = effective_scopes
+    if directive is not None:
         session_store.set_link_refresh_schedule(link_token, json_mod.dumps(directive))
         result["refresh_schedule"] = directive
     return result
@@ -118,34 +185,34 @@ async def create_link(
 
 @router.post("/submit_credentials")
 async def submit_credentials(
-    link_token: str,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
-    encrypted_username: Optional[str] = None,
-    encrypted_password: Optional[str] = None,
+    request: Request,
+    body: SubmitCredentialsRequest,
     user: User = Depends(get_current_user_or_api_key),
     db: Session = Depends(get_db),
 ):
     """
-    Submit credentials for a link token.
+    Submit credentials for a link token (JSON body; never the query string).
 
     Step 2 of the multi-step flow. Credentials are encrypted at rest.
-    Accepts plaintext or RSA-OAEP encrypted credentials.
+    Accepts plaintext or RSA-OAEP encrypted credentials; the link's one-time
+    key is destroyed once it has decrypted them.
     """
+    link_token = body.link_token
     existing_link = db.query(Link).filter_by(link_token=link_token, user_id=user.id).first()
     if not existing_link:
         raise HTTPException(status_code=404, detail="Invalid link token.")
+    ensure_site_allowed_for_request(request, existing_link.site)
 
     # Resolve credentials — encrypted takes precedence
-    if encrypted_username and encrypted_password:
+    if body.encrypted_username and body.encrypted_password:
         try:
-            plain_user = decrypt_with_session_key(link_token, base64.b64decode(encrypted_username))
-            plain_pass = decrypt_with_session_key(link_token, base64.b64decode(encrypted_password))
-            destroy_session_key(link_token)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-    elif username and password:
-        plain_user, plain_pass = username, password
+            plain_user = decrypt_with_session_key(link_token, base64.b64decode(body.encrypted_username))
+            plain_pass = decrypt_with_session_key(link_token, base64.b64decode(body.encrypted_password))
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=400, detail=str(exc) or "Failed to decrypt credentials.")
+        destroy_session_key(link_token)
+    elif body.username and body.password:
+        plain_user, plain_pass = body.username, body.password
     else:
         raise HTTPException(
             status_code=422,
@@ -170,20 +237,22 @@ async def submit_credentials(
     )
     db.add(new_token)
     db.commit()
+    auth_context = get_auth_context(request)
     logger.info(
         "Credentials submitted",
-        extra={"extra_data": {"link_token": link_token, "user_id": user.id}},
+        extra={"extra_data": {"link_token": token_fingerprint(link_token), "user_id": user.id}},
     )
     record_audit_event(
         db,
         "token",
         "create",
         user_id=user.id,
-        resource=access_token,
-        metadata={"link_token": link_token},
+        agent_id=auth_context.agent_id if auth_context else None,
+        resource=token_fingerprint(access_token),
+        metadata={"link_token": token_fingerprint(link_token), "site": existing_link.site},
     )
     result = {"access_token": access_token}
-    if token_scopes:
+    if token_scopes is not None:
         result["scopes"] = json_mod.loads(token_scopes)
 
     # If /create_link attached a refresh_schedule directive, register it now
@@ -209,92 +278,97 @@ async def submit_credentials(
                 "schedule_format": directive.get("schedule_format"),
             }
         except Exception:
-            logger.exception("Failed to apply deferred refresh_schedule for %s", link_token)
+            logger.exception("Failed to apply deferred refresh_schedule for %s", token_fingerprint(link_token))
     return result
+
+
+def _owned_token_with_site(db: Session, user: User, access_token: str) -> tuple[AccessToken, Link]:
+    token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user.id).first()
+    if not token_record:
+        raise HTTPException(status_code=401, detail="Invalid access token.")
+    link = db.query(Link).filter_by(link_token=token_record.link_token, user_id=user.id).first()
+    if not link:
+        raise HTTPException(status_code=401, detail="Linked data not found.")
+    return token_record, link
 
 
 @router.post("/submit_instructions")
 async def submit_instructions(
-    access_token: str,
-    instructions: str,
-    user: User = Depends(get_current_user),
+    request: Request,
+    body: SubmitInstructionsRequest,
+    user: User = Depends(get_current_user_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Store processing instructions for an access token."""
-    token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user.id).first()
-    if not token_record:
-        raise HTTPException(status_code=401, detail="Invalid access token.")
-    token_record.instructions = instructions
+    token_record, link = _owned_token_with_site(db, user, body.access_token)
+    ensure_site_allowed_for_request(request, link.site)
+    token_record.instructions = body.instructions
     db.commit()
     return {"status": "Instructions stored successfully"}
 
 
-@router.get("/fetch_data")
+def _consented_fields(db: Session, user: User, body: FetchDataRequest, agent_id: Optional[str]) -> Optional[set[str]]:
+    """The fields a consent grant allows, after checking it may be used here.
+
+    An agent's API key must present a grant bound to that agent and to this
+    access token; the owner (a login or an ordinary API key) may present any
+    of their grants to narrow the result, or none.
+    """
+    if not body.consent_token:
+        if agent_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "An agent needs the user's consent to read this data: request it with POST "
+                    "/consent/request and send the approved consent_token."
+                ),
+            )
+        return None
+
+    grant = db.query(ConsentGrant).filter_by(token=body.consent_token, user_id=user.id).first()
+    if not grant:
+        raise HTTPException(status_code=401, detail="Invalid consent token.")
+    if grant.revoked:
+        raise HTTPException(status_code=403, detail="Consent has been revoked.")
+    if utcnow() > as_utc(grant.expires_at):
+        raise HTTPException(status_code=403, detail="Consent token has expired.")
+    if grant.access_token != body.access_token:
+        raise HTTPException(
+            status_code=403,
+            detail="Consent token does not match the access token.",
+        )
+    if agent_id and grant.agent_id != agent_id:
+        raise HTTPException(status_code=403, detail="This consent was not granted to this agent.")
+    fields = load_scope_set(grant.scopes)
+    return fields if fields is not None else set()
+
+
+@router.post("/fetch_data")
 async def fetch_data(
     request: Request,
-    access_token: str,
-    consent_token: Optional[str] = None,
+    body: FetchDataRequest,
     user: User = Depends(get_current_user_or_api_key),
     db: Session = Depends(get_db),
 ):
     """
-    Fetch data using a previously submitted access token.
+    Fetch data using a previously submitted access token (JSON body; never the query string).
 
     Step 3 of the multi-step flow. Decrypts credentials, connects to the site,
     and returns extracted data.
 
-    If a consent_token is provided, the returned data is filtered to only the
-    scopes granted by that consent.
+    The returned fields are the intersection of the access token's scopes,
+    the caller's (API key or agent) scopes and, when a ``consent_token`` is
+    sent, the scopes of that consent. An agent's API key must send a consent
+    token granted to that agent.
     """
-    token_record = db.query(AccessToken).filter_by(token=access_token, user_id=user.id).first()
-    if not token_record:
-        raise HTTPException(status_code=401, detail="Invalid access token.")
+    token_record, link = _owned_token_with_site(db, user, body.access_token)
+    auth_context = ensure_site_allowed_for_request(request, link.site)
+    agent_id = auth_context.agent_id if auth_context else None
 
-    site = db.query(Link).filter_by(link_token=token_record.link_token, user_id=user.id).first()
-    if not site:
-        raise HTTPException(status_code=401, detail="Linked data not found.")
+    allowed_fields = _consented_fields(db, user, body, agent_id)
 
-    auth_context = ensure_site_allowed_for_request(request, site.site)
-
-    # Validate consent token if provided
-    allowed_fields = None
-    if consent_token:
-        grant = db.query(ConsentGrant).filter_by(token=consent_token, user_id=user.id).first()
-        if not grant:
-            raise HTTPException(status_code=401, detail="Invalid consent token.")
-        if grant.revoked:
-            raise HTTPException(status_code=403, detail="Consent has been revoked.")
-        grant_expires = grant.expires_at
-        if grant_expires.tzinfo is None:
-            grant_expires = grant_expires.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) > grant_expires:
-            raise HTTPException(status_code=403, detail="Consent token has expired.")
-        if grant.access_token != access_token:
-            raise HTTPException(
-                status_code=403,
-                detail="Consent token does not match the access token.",
-            )
-        scopes = json_mod.loads(grant.scopes)
-        # Extract field names from scopes like "read:current_bill" -> "current_bill"
-        allowed_fields = set()
-        for scope in scopes:
-            if ":" in scope:
-                allowed_fields.add(scope.split(":", 1)[1])
-            else:
-                allowed_fields.add(scope)
-
-    # Also check access token scopes
-    token_allowed = None
-    if token_record.scopes:
-        token_scopes_list = json_mod.loads(token_record.scopes)
-        token_allowed = set()
-        for scope in token_scopes_list:
-            if ":" in scope:
-                token_allowed.add(scope.split(":", 1)[1])
-            else:
-                token_allowed.add(scope)
-
-    # Merge: use the most restrictive set of allowed fields
+    # Also check access token scopes; merge to the most restrictive set.
+    token_allowed = load_scope_set(token_record.scopes)
     if allowed_fields is not None and token_allowed is not None:
         allowed_fields = allowed_fields & token_allowed
     elif token_allowed is not None:
@@ -312,22 +386,22 @@ async def fetch_data(
 
     job, response_data = await run_access_job(
         db,
-        site=site.site,
+        site=link.site,
         job_type="fetch_data",
         executor=connect_to_site,
         executor_kwargs={
-            "site": site.site,
+            "site": link.site,
             "username": username,
             "password": password,
             "extract_fields": sorted(allowed_fields) if allowed_fields is not None else None,
         },
         user_id=user.id,
         metadata={
-            "access_token_prefix": access_token[:12],
+            "access_token_fingerprint": token_fingerprint(body.access_token),
             "auth_method": auth_context.auth_method if auth_context else "jwt",
-            "agent_id": auth_context.agent_id if auth_context else None,
+            "agent_id": agent_id,
             "api_key_id": auth_context.api_key_id if auth_context else None,
-            "consent_token_provided": consent_token is not None,
+            "consent_token_provided": body.consent_token is not None,
             "extract_fields": sorted(allowed_fields) if allowed_fields is not None else [],
             "instructions_present": bool(user_instructions),
         },
@@ -336,9 +410,9 @@ async def fetch_data(
     if user_instructions:
         response_data["instructions_applied"] = user_instructions
 
-    # Filter data by scopes if applicable (consent + access token)
+    # Filter data by scopes if applicable (consent + access token + caller)
     if allowed_fields is not None and "data" in response_data:
-        response_data["data"] = {k: v for k, v in response_data["data"].items() if k in allowed_fields}
+        response_data["data"] = {k: v for k, v in (response_data["data"] or {}).items() if k in allowed_fields}
         response_data["scopes_applied"] = sorted(allowed_fields)
 
     record_audit_event(
@@ -346,8 +420,12 @@ async def fetch_data(
         "data_access",
         "fetch_data",
         user_id=user.id,
-        resource=access_token,
-        metadata={"site": site.site},
+        agent_id=agent_id,
+        resource=token_fingerprint(body.access_token),
+        metadata={
+            "site": link.site,
+            "consent_token": token_fingerprint(body.consent_token) if body.consent_token else None,
+        },
     )
 
     return response_data
@@ -356,57 +434,102 @@ async def fetch_data(
 # ── Link & Token Management ──────────────────────────────────────────────────
 
 
+def _restrict_to_allowed_sites(request: Request, query, site_column):
+    """Limit a query to the sites the caller's API key or agent may reach."""
+    auth_context = get_auth_context(request)
+    if auth_context is None or auth_context.allowed_sites is None:
+        return query
+    return query.filter(func.lower(site_column).in_(sorted(auth_context.allowed_sites)))
+
+
 @router.get("/links")
-async def list_links(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """List all links for the current user."""
-    links = db.query(Link).filter_by(user_id=user.id).all()
+async def list_links(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_current_user_or_api_key),
+    db: Session = Depends(get_db),
+):
+    """List the current user's links (oldest first), limited to the caller's allowed sites."""
+    query = _restrict_to_allowed_sites(request, db.query(Link).filter_by(user_id=user.id), Link.site)
+    links = query.order_by(Link.created_at, Link.link_token).offset(offset).limit(limit).all()
     return [{"link_token": link.link_token, "site": link.site} for link in links]
 
 
 @router.delete("/links/{link_token}")
 async def delete_link(
+    request: Request,
     link_token: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_or_api_key),
     db: Session = Depends(get_db),
 ):
-    """Delete a link and all its associated access tokens."""
+    """Delete a link and all its associated access tokens (and their credentials, consents and refresh jobs)."""
     link = db.query(Link).filter_by(link_token=link_token, user_id=user.id).first()
     if not link:
         raise HTTPException(status_code=404, detail="Link not found.")
-    db.query(AccessToken).filter_by(link_token=link_token, user_id=user.id).delete()
+    ensure_site_allowed_for_request(request, link.site)
+    site = link.site
+    tokens = [token for (token,) in db.query(AccessToken.token).filter_by(link_token=link_token, user_id=user.id)]
+    revoked = delete_access_tokens(db, tokens)
     db.delete(link)
     db.commit()
+    end_link_session(link_token)
+    auth_context = get_auth_context(request)
     record_audit_event(
         db,
         "token",
         "link_deleted",
         user_id=user.id,
-        resource=link_token,
-        metadata={"site": link.site},
+        agent_id=auth_context.agent_id if auth_context else None,
+        resource=token_fingerprint(link_token),
+        metadata={"site": site, "tokens_deleted": revoked},
     )
     return {"status": "Link and associated tokens deleted."}
 
 
 @router.get("/tokens")
-async def list_tokens(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """List all access tokens for the current user."""
-    tokens = db.query(AccessToken).filter_by(user_id=user.id).all()
+async def list_tokens(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_current_user_or_api_key),
+    db: Session = Depends(get_db),
+):
+    """List the current user's access tokens (oldest first), limited to the caller's allowed sites."""
+    query = (
+        db.query(AccessToken)
+        .join(Link, AccessToken.link_token == Link.link_token)
+        .filter(AccessToken.user_id == user.id)
+    )
+    query = _restrict_to_allowed_sites(request, query, Link.site)
+    tokens = query.order_by(AccessToken.created_at, AccessToken.token).offset(offset).limit(limit).all()
     return [{"token": t.token, "link_token": t.link_token} for t in tokens]
 
 
 @router.delete("/tokens/{token}")
 async def delete_token(
+    request: Request,
     token: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_or_api_key),
     db: Session = Depends(get_db),
 ):
-    """Delete a specific access token."""
+    """Delete a specific access token (its stored credentials, consents and refresh job go with it)."""
     token_obj = db.query(AccessToken).filter_by(token=token, user_id=user.id).first()
     if not token_obj:
         raise HTTPException(status_code=404, detail="Token not found.")
-    db.delete(token_obj)
+    link = db.query(Link).filter_by(link_token=token_obj.link_token).first()
+    ensure_site_allowed_for_request(request, link.site if link else "")
+    delete_access_tokens(db, [token])
     db.commit()
-    record_audit_event(db, "token", "revoke", user_id=user.id, resource=token)
+    auth_context = get_auth_context(request)
+    record_audit_event(
+        db,
+        "token",
+        "revoke",
+        user_id=user.id,
+        agent_id=auth_context.agent_id if auth_context else None,
+        resource=token_fingerprint(token),
+    )
     return {"status": "Token deleted."}
 
 
@@ -416,7 +539,8 @@ async def delete_token(
 @router.post("/exchange/public_token")
 async def exchange_public_token(
     request: Request,
-    user: User = Depends(get_current_user),
+    body: PublicTokenExchangeRequest,
+    user: User = Depends(get_current_user_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Exchange a one-time public_token for a permanent access_token.
@@ -425,31 +549,39 @@ async def exchange_public_token(
       link_token → public_token (short-lived, client-safe) → access_token (permanent, server-only)
 
     The public_token can only be exchanged once and expires after 10 minutes.
+    The exchange is one conditional UPDATE, so of concurrent requests with
+    the same token exactly one gets the access token.
     """
-    body = await request.json()
-    public_token = body.get("public_token")
-    if not public_token:
-        raise HTTPException(status_code=422, detail="public_token is required.")
-
-    pt = db.query(PublicToken).filter_by(token=public_token).first()
+    pt = db.query(PublicToken).filter_by(token=body.public_token).first()
     if not pt:
         raise HTTPException(status_code=404, detail="Invalid public_token.")
     if pt.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized to exchange this token.")
-    if pt.exchanged:
-        raise HTTPException(status_code=410, detail="public_token has already been exchanged.")
-    expires_at = pt.expires_at.replace(tzinfo=timezone.utc) if pt.expires_at.tzinfo is None else pt.expires_at
-    if datetime.now(timezone.utc) > expires_at:
-        raise HTTPException(status_code=410, detail="public_token has expired.")
+    link = db.query(Link).filter_by(link_token=pt.link_token).first()
+    ensure_site_allowed_for_request(request, link.site if link else "")
 
-    # Mark as exchanged (single-use)
-    pt.exchanged = True
+    claimed = db.execute(
+        update(PublicToken)
+        .where(
+            PublicToken.token == body.public_token,
+            PublicToken.exchanged.isnot(True),
+            PublicToken.expires_at > utcnow(),
+        )
+        .values(exchanged=True)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed != 1:
+        db.rollback()
+        db.refresh(pt)
+        if pt.exchanged:
+            raise HTTPException(status_code=410, detail="public_token has already been exchanged.")
+        raise HTTPException(status_code=410, detail="public_token has expired.")
     db.commit()
 
     logger.info(
         "Public token exchanged",
         extra={
-            "extra_data": {"link_token": pt.link_token, "user_id": user.id},
+            "extra_data": {"link_token": token_fingerprint(pt.link_token), "user_id": user.id},
         },
     )
     return {"access_token": pt.access_token}

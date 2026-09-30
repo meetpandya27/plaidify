@@ -7,7 +7,7 @@ No hardcoded secrets — the app will fail fast if required secrets are not set.
 
 from typing import Optional
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -60,9 +60,8 @@ class Settings(BaseSettings):
     kms_key_id: Optional[str] = Field(
         default=None,
         description=(
-            "Provider-specific key identifier. AWS: CMK ARN or alias. "
-            "Azure: key name (vault URL comes from KMS_AZURE_VAULT_URL). "
-            "Vault: transit key name."
+            "AWS KMS key ARN or alias (the 'aws' provider only; KMS_AWS_KEY_ID is read when unset). "
+            "Azure and Vault name their keys with KMS_AZURE_KEY_NAME / KMS_VAULT_KEY_NAME."
         ),
     )
     kms_region: Optional[str] = Field(
@@ -100,7 +99,11 @@ class Settings(BaseSettings):
     )
     oauth_github_client_id: Optional[str] = Field(
         default=None,
-        description="GitHub OAuth app client id (informational; GitHub tokens are app-scoped).",
+        description=(
+            "GitHub OAuth app client id. Required, with OAUTH_GITHUB_CLIENT_SECRET, when github is an "
+            "allowed provider: each token is checked with GitHub as issued to this app, so another "
+            "app's token is refused."
+        ),
     )
     oauth_auto_register: bool = Field(
         default=True,
@@ -210,7 +213,11 @@ class Settings(BaseSettings):
     )
     rate_limit_default: str = Field(
         default="60/minute",
-        description="Default rate limit for all other endpoints. Format: 'N/period'.",
+        description=(
+            "Limit for every route without its own, per client IP and path. Health probes, /metrics, "
+            "the hosted-link page and its assets, its event stream and status polls are exempt. "
+            "Format: 'N/period'."
+        ),
     )
 
     # ── Resilience ────────────────────────────────────────────
@@ -260,7 +267,11 @@ class Settings(BaseSettings):
     )
     access_job_reclaim_idle_ms: int = Field(
         default=30000,
-        description="Milliseconds before a worker may reclaim an unacked access job stream message.",
+        description=(
+            "Milliseconds an access-job stream message may go without a heartbeat before another worker "
+            "may claim it. A running job renews its claim every ACCESS_JOB_HEARTBEAT_SECONDS, so only the "
+            "messages of a dead worker are reclaimed; a reclaimed job runs only if it never started."
+        ),
     )
     access_job_worker_block_ms: int = Field(
         default=5000,
@@ -269,6 +280,118 @@ class Settings(BaseSettings):
     access_job_worker_concurrency: int = Field(
         default=2,
         description="Number of concurrent access job consumers in a worker process.",
+    )
+
+    # ── Jobs ──────────────────────────────────────────────────
+    # Access-job liveness, the background services (scheduled refresh,
+    # webhook outbox, stuck-job reaper) and webhook delivery.
+    access_job_heartbeat_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "How often a running access job renews its claim: its scope lock, its stream message "
+            "(redis-worker mode) and its heartbeat row. Keep it well below ACCESS_JOB_RECLAIM_IDLE_MS "
+            "and ACCESS_JOB_STALE_AFTER_SECONDS."
+        ),
+    )
+    access_job_stale_after_seconds: int = Field(
+        default=90,
+        ge=10,
+        description=(
+            "A running access job whose heartbeat is older than this is orphaned (the process running it "
+            "died): the reaper fails it, frees its lock and ends its hosted-link session."
+        ),
+    )
+    access_job_queue_timeout_seconds: int = Field(
+        default=600,
+        ge=10,
+        description="An access job still waiting for an executor this long after it was queued is failed.",
+    )
+    access_job_deadline_margin_seconds: int = Field(
+        default=120,
+        ge=0,
+        description=(
+            "Slack added to ENGINE_TIMEOUT_SECONDS + MFA_TIMEOUT_SECONDS to form an access job's hard "
+            "deadline, after which it is cancelled and failed."
+        ),
+    )
+    access_job_drain_seconds: float = Field(
+        default=25.0,
+        ge=0,
+        description=(
+            "On SIGTERM the executor stops taking jobs and gives running ones this long to finish before "
+            "cancelling them. Keep it below the orchestrator's stop grace period."
+        ),
+    )
+    access_job_reaper_interval_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="How often the reaper looks for access jobs past their deadline or with a stale heartbeat.",
+    )
+    background_services_enabled: bool = Field(
+        default=True,
+        description=(
+            "Let this process run the background services (scheduled refresh, webhook outbox, stuck-job "
+            "reaper). Each runs in one process at a time, under a lease. With "
+            "ACCESS_JOB_EXECUTION_MODE=redis-worker they run in the executor process, not the web workers."
+        ),
+    )
+    redis_socket_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Socket timeout for the link-session store's and the access-job dispatcher's Redis calls.",
+    )
+    link_event_keepalive_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Keep-alive interval of the GET /link/events/{token} server-sent event stream.",
+    )
+    refresh_tick_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="How often the refresh scheduler looks for due scheduled refreshes.",
+    )
+    refresh_max_concurrency: int = Field(
+        default=5,
+        ge=1,
+        description="Scheduled refreshes that may run at the same time.",
+    )
+    webhook_max_attempts: int = Field(
+        default=10,
+        ge=1,
+        description="Delivery attempts for one webhook event before it is marked failed.",
+    )
+    webhook_retry_base_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Delay before a webhook's first retry; it doubles on each attempt up to WEBHOOK_RETRY_MAX_SECONDS.",
+    )
+    webhook_retry_max_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description="Longest delay between two delivery attempts of a webhook event.",
+    )
+    webhook_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Timeout of one webhook delivery request.",
+    )
+    webhook_poll_interval_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="How often the webhook outbox looks for deliveries that are due.",
+    )
+    webhook_delivery_retention_days: int = Field(
+        default=7,
+        ge=1,
+        description="Days delivered and failed webhook deliveries stay listed before the outbox removes them.",
+    )
+    webhook_allow_private_targets: bool = Field(
+        default=False,
+        description=(
+            "Deliver webhooks to private-network addresses (10/8, 172.16/12, 192.168/16, fc00::/7). For "
+            "development networks only; ignored in production. Loopback is allowed outside production."
+        ),
     )
 
     # ── Browser Engine ────────────────────────────────────────
@@ -351,6 +474,91 @@ class Settings(BaseSettings):
         description="Fallback model if primary fails (e.g. 'gpt-4o' when primary is 'gpt-4o-mini').",
     )
 
+    # ── Engine ────────────────────────────────────────────────
+    engine_timeout_seconds: int = Field(
+        default=300,
+        gt=0,
+        description=(
+            "Automation time budget for one connection (navigation, login, extraction, logout). "
+            "Time spent waiting for the user to answer an MFA challenge is not counted; that has "
+            "its own budget, MFA_TIMEOUT_SECONDS."
+        ),
+    )
+    mfa_timeout_seconds: int = Field(
+        default=300,
+        gt=0,
+        description="How long a connection waits for the user to answer an MFA challenge before it ends as mfa_timeout.",
+    )
+    mfa_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        description="MFA codes the user may submit for one challenge before a rejected code fails the connection.",
+    )
+    engine_allow_internal_connectors: bool = Field(
+        default=False,
+        description=(
+            "Run connectors tagged internal/fixture/sandbox/demo, and let the browser reach loopback "
+            "addresses, outside DEMO_MODE. For tests and local development only."
+        ),
+    )
+    engine_trusted_connectors: str = Field(
+        default="",
+        description=(
+            "Comma-separated site keys in CONNECTORS_DIR that the operator vouches for. Connectors bundled "
+            "with Plaidify are trusted automatically; every other blueprint (generated, registry, "
+            "user-supplied) is untrusted: it may not run JavaScript and never reaches private networks."
+        ),
+    )
+    engine_redis_socket_timeout: float = Field(
+        default=2.0,
+        gt=0,
+        description="Socket timeout in seconds for the engine's Redis calls (MFA sessions, site rate limits).",
+    )
+    browser_chromium_sandbox: bool = Field(
+        default=True,
+        description=(
+            "Launch Chromium with its OS sandbox. Keep enabled: the browser renders third-party pages in "
+            "a process that also holds the service's secrets. Disable only where the sandbox cannot run."
+        ),
+    )
+    browser_block_private_networks: bool = Field(
+        default=True,
+        description=(
+            "Refuse browser requests to private, loopback, link-local, CGNAT and cloud-metadata addresses "
+            "for trusted connectors too (untrusted ones are always refused). Loopback is allowed in "
+            "DEMO_MODE or with ENGINE_ALLOW_INTERNAL_CONNECTORS."
+        ),
+    )
+    browser_max_download_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=0,
+        description="Largest read-phase download returned inline (base64) with a connection result; larger files are reported but omitted.",
+    )
+    llm_effort: Optional[str] = Field(
+        default="low",
+        description=(
+            "Reasoning effort requested from models that support it (Anthropic output_config.effort, "
+            "OpenAI reasoning_effort): 'low', 'medium', 'high', 'xhigh' or 'max'. Empty uses the model default."
+        ),
+    )
+    llm_server_side_fallbacks: bool = Field(
+        default=True,
+        description=(
+            "On Anthropic's first-party API, ask models whose safety classifiers can decline a request to "
+            "re-run a declined request on Anthropic's recommended fallback model (fallbacks: 'default')."
+        ),
+    )
+
+    @field_validator("llm_effort")
+    @classmethod
+    def validate_llm_effort(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not v.strip():
+            return None
+        v = v.strip().lower()
+        if v not in ("low", "medium", "high", "xhigh", "max"):
+            raise ValueError("llm_effort must be one of 'low', 'medium', 'high', 'xhigh', 'max'")
+        return v
+
     @field_validator("llm_provider")
     @classmethod
     def validate_llm_provider(cls, v: str) -> str:
@@ -395,7 +603,10 @@ class Settings(BaseSettings):
     # ── Health Check ─────────────────────────────────────────────
     health_check_token: Optional[str] = Field(
         default=None,
-        description="Optional bearer token for /health/detailed. If unset, detailed health is unrestricted; authenticated access remains valid when the token is configured.",
+        description=(
+            "Bearer token for GET /health/detailed; a login or API key also works once it is set. "
+            "In production the endpoint is off (404) until it is set; in development, unset leaves it open."
+        ),
     )
 
     # ── Audit Retention ───────────────────────────────────────────
@@ -404,15 +615,129 @@ class Settings(BaseSettings):
         description="Number of days to retain audit log entries. Older entries are archived/deleted.",
     )
 
-    @field_validator("database_url")
+    # ── Data ──────────────────────────────────────────────────────
+    audit_hmac_key: Optional[str] = Field(
+        default=None,
+        min_length=32,
+        description=(
+            "Secret (at least 32 characters) that signs the audit hash chain with HMAC-SHA256. Keep it "
+            "outside the database, e.g. in the secrets manager. If unset, a key is derived from "
+            "ENCRYPTION_KEY (HKDF), and rotating ENCRYPTION_KEY then re-seals the chain. "
+            'Generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"'
+        ),
+    )
+    audit_hmac_key_previous: Optional[str] = Field(
+        default=None,
+        min_length=32,
+        description="Previous AUDIT_HMAC_KEY, kept while rotating it so older audit entries still verify.",
+    )
+    result_retention_days: int = Field(
+        default=30,
+        ge=1,
+        description="Days an access job's stored (encrypted) result is kept before the cleanup job erases it.",
+    )
+
+    @field_validator("audit_hmac_key", "audit_hmac_key_previous", mode="before")
     @classmethod
-    def validate_database_url(cls, v: str, info) -> str:
-        env = info.data.get("env", "development")
-        if env == "production" and v.startswith("sqlite"):
-            raise ValueError(
-                "SQLite is not supported in production. Set DATABASE_URL to a PostgreSQL connection string."
-            )
-        return v
+    def empty_audit_key_is_unset(cls, v):
+        return v or None
+
+    # ── Ops ───────────────────────────────────────────────────────
+    access_worker_metrics_port: int = Field(
+        default=9101,
+        description=(
+            "Port on which the access-job executor (python -m src.access_job_worker) serves "
+            "/metrics and its /health liveness check. 0 disables. The web app serves /metrics itself."
+        ),
+    )
+
+    # ── API ───────────────────────────────────────────────────────
+    link_launch_secret: Optional[str] = Field(
+        default=None,
+        description=(
+            "Key (at least 32 characters) that signs hosted-link launch tokens. Kept apart from "
+            "JWT_SECRET_KEY so a launch token can never pass as a login. If unset, a key is derived "
+            "from JWT_SECRET_KEY (HKDF, fixed label)."
+        ),
+    )
+    docs_enabled: bool = Field(
+        default=False,
+        description="Serve /docs, /redoc and /openapi.json in production. They are always served outside production.",
+    )
+    metrics_token: Optional[str] = Field(
+        default=None,
+        description="When set, GET /metrics requires 'Authorization: Bearer <METRICS_TOKEN>'.",
+    )
+    oauth_github_client_secret: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("oauth_github_client_secret", "github_client_secret"),
+        description=(
+            "Client secret of the GitHub OAuth app (OAUTH_GITHUB_CLIENT_SECRET or GITHUB_CLIENT_SECRET). "
+            "GitHub tokens are checked against that app before they are trusted."
+        ),
+    )
+    rate_limit_encryption: str = Field(
+        default="10/minute",
+        description=(
+            "Per-client limit for the unauthenticated endpoints that generate an RSA key "
+            "(POST /encryption/session, GET /encryption/public_key/{token}). Format: 'N/period'."
+        ),
+    )
+    smtp_host: Optional[str] = Field(
+        default=None,
+        description="SMTP server for password-reset mail. Unset: reset emails are not sent (logged at WARNING).",
+    )
+    smtp_port: int = Field(default=587, ge=1, le=65535, description="SMTP port (587 for STARTTLS).")
+    smtp_username: Optional[str] = Field(default=None, description="SMTP login user; unset for no login.")
+    smtp_password: Optional[str] = Field(default=None, description="SMTP login password.")
+    smtp_from: Optional[str] = Field(
+        default=None,
+        description="From address of password-reset mail. Required together with SMTP_HOST.",
+    )
+    smtp_starttls: bool = Field(
+        default=True,
+        description="Upgrade the SMTP connection with STARTTLS before logging in or sending. Disable only for a local relay.",
+    )
+    smtp_timeout_seconds: float = Field(default=10.0, gt=0, description="Socket timeout for SMTP delivery.")
+    password_reset_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Your app's password-reset page, e.g. 'https://app.example.com/reset?token={token}'. When set, "
+            "the reset email links to it; otherwise the email carries the one-time code for POST /auth/reset-password."
+        ),
+    )
+
+    @field_validator(
+        "link_launch_secret",
+        "metrics_token",
+        "oauth_github_client_secret",
+        "smtp_host",
+        "smtp_username",
+        "smtp_password",
+        "smtp_from",
+        "password_reset_url",
+        mode="before",
+    )
+    @classmethod
+    def empty_api_setting_is_unset(cls, v):
+        return v or None
+
+    @model_validator(mode="after")
+    def _apply_production_rules(self) -> "Settings":
+        # Runs once every field is parsed. A field validator on database_url
+        # would run before ``env`` is parsed (field order), see the default
+        # "development" and never refuse SQLite.
+        if self.env == "production":
+            if self.database_url.strip().lower().startswith("sqlite"):
+                raise ValueError(
+                    "SQLite is not supported in production. Set DATABASE_URL to a PostgreSQL connection string."
+                )
+            # Self-registration is opt-in in production: unless
+            # REGISTRATION_ENABLED is set explicitly, accounts come from the
+            # BOOTSTRAP_USER_* settings or an administrator.
+            if "registration_enabled" not in self.model_fields_set:
+                self.registration_enabled = False
+        return self
 
     @field_validator("cors_origins")
     @classmethod

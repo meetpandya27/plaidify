@@ -1,13 +1,19 @@
 # Scheduled PostgreSQL backups for Plaidify on Kubernetes.
 #
-# Mirrors scripts/backup_db.sh (compressed pg_dump custom-format archives with
-# retention pruning) as an hourly CronJob writing to a PersistentVolume. Ship
-# the PV contents off-cluster (object storage) for real durability — see
-# docs/DISASTER_RECOVERY.md.
+# Runs the backup image from deploy/backup/Dockerfile (scripts/backup_db.sh
+# with the PostgreSQL 16 client and age): an hourly pg_dump, encrypted to your
+# age public key before it is written, verified, and pruned, on a
+# PersistentVolume. The compose equivalent is the `backup` service in
+# docker-compose.production.yml. Ship the volume's archives off-cluster
+# (object storage) for real durability — see docs/DISASTER_RECOVERY.md.
 #
 # Prerequisites:
+#   docker build -f deploy/backup/Dockerfile -t <registry>/plaidify-backup:<tag> .
+#   docker push <registry>/plaidify-backup:<tag>     # then set `image:` below
 #   kubectl create secret generic plaidify-secrets \
 #     --from-literal=database-url='postgresql://user:pass@host:5432/plaidify'
+#   kubectl create secret generic plaidify-backup-age \
+#     --from-file=recipients=./age-recipients.txt    # public keys only
 #
 # Apply:
 #   kubectl apply -f deploy/backup-cronjob.yaml
@@ -45,8 +51,11 @@ spec:
             fsGroup: 70
           containers:
             - name: backup
-              image: postgres:16-alpine
+              image: ghcr.io/your-org/plaidify-backup:latest # set to the image you pushed
               imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "-c"]
+              args:
+                - backup_db.sh backup && backup_db.sh verify
               env:
                 - name: DATABASE_URL
                   valueFrom:
@@ -57,20 +66,13 @@ spec:
                   value: /backups
                 - name: BACKUP_RETENTION
                   value: "168" # keep ~7 days of hourly backups
-              command: ["/bin/sh", "-c"]
-              args:
-                - |
-                  set -eu
-                  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-                  FILE="${BACKUP_DIR}/plaidify-${STAMP}.dump"
-                  echo "Creating backup -> ${FILE}"
-                  pg_dump --format=custom --no-owner --no-privileges --file="${FILE}" "${DATABASE_URL}"
-                  echo "Backup complete ($(du -h "${FILE}" | cut -f1))."
-                  # Retention: keep newest ${BACKUP_RETENTION} archives.
-                  ls -1t "${BACKUP_DIR}"/plaidify-*.dump 2>/dev/null \
-                    | tail -n +$((BACKUP_RETENTION + 1)) \
-                    | xargs -r rm -f
-                  echo "Retention prune complete."
+                - name: BACKUP_AGE_RECIPIENTS_FILE
+                  value: /etc/plaidify-backup/recipients
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
               resources:
                 requests:
                   cpu: "100m"
@@ -81,7 +83,17 @@ spec:
               volumeMounts:
                 - name: backups
                   mountPath: /backups
+                - name: age-recipients
+                  mountPath: /etc/plaidify-backup
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
           volumes:
             - name: backups
               persistentVolumeClaim:
                 claimName: plaidify-backups
+            - name: age-recipients
+              secret:
+                secretName: plaidify-backup-age
+            - name: tmp
+              emptyDir: {}

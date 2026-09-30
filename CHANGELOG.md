@@ -3,6 +3,96 @@
 All notable changes to Plaidify will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+No version has been tagged or published yet; the version string in the code
+and the SDKs is `0.3.0b1` / `0.3.0-beta.1`.
+
+---
+
+## [Unreleased]
+
+A full audit (September 2026) and the fixes that followed. Nothing had been
+deployed or published, so breaking changes were made wherever they closed a
+hole; they are all listed below. Every client must sign in again after
+upgrading.
+
+### Breaking changes
+
+**Authentication and tokens**
+- API keys (`pk_…`, agents `pk_agent_…`) are accepted only in the `X-API-Key` header; user JWTs only as `Authorization: Bearer`.
+- Access tokens carry `typ=access`, `aud=plaidify:api` and a token version `tv`; hosted-link launch tokens are signed with `LINK_LAUNCH_SECRET` (or a key derived from `JWT_SECRET_KEY`) for `aud=plaidify:link-launch` and can no longer be used as a login. Existing tokens stop working.
+- Refresh tokens are stored as hashes (downgrading past that migration deletes them all); presenting a rotated refresh token again revokes all of that user's refresh tokens.
+- Password reset, `POST /auth/sessions/revoke-all` and deactivating an account end every session at once.
+- Startup fails when `JWT_SECRET_KEY` is shorter than 32 characters, when `LINK_LAUNCH_SECRET` is short or equal to it, or when `OAUTH_ENABLED` is set without the enabled providers' client ids (and the GitHub client secret).
+- Self-registration is off in production unless `REGISTRATION_ENABLED` is set explicitly. The bootstrap administrator is only ever created, never promoted from an existing account; a clash stops startup in production.
+
+**API contract**
+- Secrets travel only in JSON bodies: `POST /mfa/submit {session_id, code}`, `POST /submit_credentials {link_token, username?, password?, encrypted_username?, encrypted_password?}`, `POST /fetch_data {access_token, consent_token?}` and `POST /submit_instructions`. The query-string forms and `GET /fetch_data` (now 405) are gone.
+- `POST /connect` requires an API key, an access token, or the `link_token` of a live hosted-link session (connectable state, same site, and an agent-created session keeps the agent's site limits). The caller owns a one-shot connect's job; its result is stored encrypted and readable at `GET /access_jobs/{job_id}`. Jobs without an owner return `result: null`.
+- `POST /disconnect` requires authentication and a JSON body `{link_token}`.
+- An agent's API key needs a consent grant bound to that agent to call `POST /fetch_data`; a grant's scopes limit the fields returned.
+- `POST /api-keys`: `scopes` is a JSON list (`"field"` or `"read:field"`), `expires_days` is 1–3650, unknown fields are rejected (422). Agents take `allowed_sites` / `allowed_scopes` lists; `[]` means none, a bare string is rejected. An empty or unreadable stored list denies everything.
+- List endpoints paginate with `limit` / `offset`: `/links`, `/tokens`, `/agents`, `/registry/search`, `/api-keys`.
+- `POST /blueprints/generate` is administrator-only and returns a draft; `save: true` writes it keyed by the URL's hostname, and it runs as an untrusted blueprint.
+- `GET /organizations/search` returns only organizations backed by a real connector unless `include_unsupported=true`.
+- `GET /audit/verify` is administrator-only. `GET /refresh/jobs` lists only the caller's schedules, with tokens masked; administrators use `GET /refresh/admin/jobs`.
+- Access jobs: new terminal status `mfa_timeout`; an unattended (scheduled) refresh that meets MFA ends as `failed` with `error_code: "mfa_required"` and disables its schedule (`needs_reauth`). Responses add `error_code`, `mfa_state` (`awaiting_code` / `verifying`) and `mfa_attempts`; after a rejected code `metadata.mfa_error = "invalid_code"` and `metadata.attempts_remaining`. New `POST /access_jobs/{job_id}/cancel`.
+- Webhooks: registering one requires owning the link or session; destinations must be public `https://` URLs in production; deliveries go through a durable outbox with retries. Each request carries `X-Plaidify-Delivery`, `X-Plaidify-Timestamp` and `X-Plaidify-Signature: sha256=<hex HMAC-SHA256 of "{timestamp}." + raw body>`, and the body gains `delivery_id` and `webhook_id`. `REFRESH_FAILED` gains `reason` (`needs_reauth` or `max_failures`).
+- Hosted link: `POST /link/sessions` takes an optional body `{site?, allowed_origins?}`; `GET /link/sessions/{token}/status` returns `allowed_origins`; `/link` rejects a URL with more than one `token` (400). The legacy static page (`/ui`, `frontend/`) is gone.
+- Timestamps in responses are timezone-aware (`+00:00`).
+- In production `/docs`, `/redoc` and `/openapi.json` are off unless `DOCS_ENABLED=true`, and `GET /health/detailed` answers 404 without `HEALTH_CHECK_TOKEN`. `GET /metrics` requires `METRICS_TOKEN` when it is set.
+
+**Hosted page and SDKs**
+- The hosted page never shows the public token (it goes to the host app only), sends `EXIT` only on an explicit exit or page teardown, and sends telemetry as `{"event": "TELEMETRY", "name": "step_view", …}` (the field was `event`). Theme parameters are `accent`, `bg`, `radius` and `logo` (a `data:` URI up to 32 KB); `?server=` works only in development builds.
+- JavaScript SDK: `login(username, password)` posts the OAuth2 form to `/auth/token`; `register` sends the username; `registerWebhook` posts to `/webhooks/register` with a secret; `createApiKey` takes a scope list; list methods return arrays; consent ids are strings.
+- Python SDK: `create_api_key(name, scopes=[…], expires_days=…)`; the CLI dropped `-p` (it prompts, or reads `--password-stdin`). `plaidify audit verify` / `audit logs` take a user's access token and refuse API keys up front; `plaidify login` prints one. JS `listRefreshJobs()` returns `{ jobs: RefreshJobInfo[] }` with masked tokens.
+- Swift and Android: the hosted web view is the default; the native Link screens run only with `experimentalNativeScreens`. New native session types; the Android bridge is `window.plaidifyLink.postMessage` and results come back through the Activity result.
+
+**Blueprints**
+- `schema_version` is required and unknown keys are rejected. The `extract` step action is removed; `iframe` runs its nested steps. New `auth.success` / `auth.failure`, `auth.submit_targets`, `mfa.submit_targets`, `logout_targets` and `allowed_domains`.
+- `execute_js` steps run only for trusted connectors (bundled, or listed in `ENGINE_TRUSTED_CONNECTORS`).
+- Number transforms return `null` instead of `0.0` for unparseable input.
+- `connectors/template_connector.py` is now `template_connector.py.example`.
+
+**Operations**
+- Python 3.10 is no longer supported (3.11–3.13). Install with `pip install --require-hashes -r requirements-dev.lock`.
+- OTLP endpoints without a scheme use TLS. Development compose ports bind to `127.0.0.1`, and development Redis has a password (`.secrets/redis_password`).
+- gunicorn no longer preloads the app; application code in the image is read-only.
+
+### Security
+- The read-only policy covers every phase: login and MFA may only submit to their declared targets, cleanup only to logout targets, navigation stays on the blueprint's domains, and private, loopback, link-local, CGNAT and cloud-metadata addresses are refused on every browser request. Service workers are blocked; TLS certificate checks are on; Chromium keeps its sandbox (the compose files apply `deploy/seccomp/chromium.json`).
+- No secrets in URLs; access logs redact secret query parameters and token-bearing path segments; typed values are scrubbed from browser error text; tokens are logged as fingerprints.
+- Per-user envelope encryption now also covers stored job results and webhook secrets and payloads. Key rotation re-wraps every user key (`plaidify rotate-key --re-encrypt`) with an `ENCRYPTION_KEY_PREVIOUS` fallback, and the KMS migration moves every secret and fails loudly on anything it skips.
+- The audit chain is an HMAC-SHA256 chain keyed by `AUDIT_HMAC_KEY` (or derived from `ENCRYPTION_KEY`), with serialized appends, a signed head row, checkpoints when pruning, key-rotation seals and streamed verification.
+- Sign-in throttling per username and address and per username (the throttle table holds only HMACs), OAuth tokens checked against this app's client ids, agent rate limits enforced, `RATE_LIMIT_DEFAULT` applied to every endpoint without its own limit (CORS wraps it, so browsers can read the 429), failed sign-ins audited without the typed username, request bodies capped for chunked uploads too, passwords over 72 bytes refused instead of truncated, and bad input answered with 4xx instead of 500.
+- The MCP server's HTTP transports bind `127.0.0.1` by default and check the `Host` header.
+
+### Reliability
+- Redis-worker mode tolerates restarts: heartbeats, conditional claims, a graceful SIGTERM drain, a reaper for orphaned or overdue jobs, and per-credential locks that fail closed without Redis in production.
+- Scheduled refresh runs from the database under a lease in one process; the webhook outbox and the maintenance jobs run under leases too (`src/background_services.py`).
+- The executor serves `/metrics` and `/health` on `ACCESS_WORKER_METRICS_PORT` (9101); metrics use Prometheus multiprocess mode, so one scrape covers every gunicorn worker.
+- The hosted page's MFA, "Try again" and event delivery work; the live-events stream no longer blocks a worker; browser crashes no longer jam the pool; wrong passwords and MFA rejections are detected.
+
+### Ops and CI
+- CI: lint of the whole repository, a lock-drift check with `pip-audit` and `npm audit`, tests on Python 3.11–3.13 with Redis, a Playwright job (hosted-link E2E, engine browser tests, the demo), a PostgreSQL migrations job, a container smoke test, client jobs (hosted page, JavaScript, Python, Swift, Android SDKs), configuration checks, CodeQL (Python, JavaScript/TypeScript, Actions) and a weekly dependency audit. Actions are pinned to commit SHAs.
+- Hash-locked requirement files for the app, development and KMS; the image installs them with `--require-hashes`, runs as a non-root user and has an allow-listed build context.
+- Production compose: nginx in front, a separate executor, migrations as a one-shot service, Redis with a password and persistence, an opt-in encrypted backup service. The Azure template puts PostgreSQL and Redis on a private network, connects as a least-privilege role and deploys only CI-green `main` after migrating; its workflow generates and keeps `AUDIT_HMAC_KEY`, `LINK_LAUNCH_SECRET` and `METRICS_TOKEN` in Key Vault and passes optional SMTP and bootstrap-administrator settings.
+- Monitoring: alert rules that match the exported metrics, with `promtool` tests; a dashboard that shows data.
+
+### Docs
+- Every setting is documented in `.env.example` and `docs/DEPLOYMENT.md`; the README, security, threat-model, compliance, operations and SDK docs describe what the code does now, including its known limits. The owner's pre-launch checklist is in `docs/RUNBOOK.md`.
+
+---
+
+## 2026-03-15 to 2026-06-23 — work never recorded here
+
+These changes landed on `main` between 0.3.0-alpha.1 and the audit without
+changelog entries or a release. Summarised from the git history:
+
+- **March 15–20** — LLM extraction: DOM simplification, OpenAI / Anthropic providers, structured prompts, a selector cache, blueprint schema v3 and a multimodal fallback (#1–#7). Agent integration: the hosted Link page, webhooks, the event stream, SDK helpers and the MCP server; public-token exchange; the blueprint registry (#22), consent engine (#24), access-token scoping (#25) and the audit hash chain (#27). Hydro One connector.
+- **April 15** — Phase 5: modular routers, the JavaScript SDK, KMS envelope encryption, scheduled refresh, API keys and agents, Locust load tests, gunicorn configuration.
+- **April 19–25** — Beta preparation (`0.3.0b1`, production compose, Azure deployment). Hosted link: event payloads stripped of tokens (#62), multi-origin framing (#63), reliable lifecycle events (#64); the React rewrite in `frontend-next/` became the default page (#69–#74) with a design system, institution branding, schema-driven forms, an error taxonomy, accessibility work, i18n and dark mode, loading states and UX telemetry (#75–#82). Native Swift (#83) and Android (#84) SDKs; refresh presets, `PATCH`, `create_link` binding and `REFRESH_FAILED` (#85); pluggable KMS providers (#86); ORM and migration alignment (#87).
+- **May 3** — `docs/SELF_HOST.md` (#100).
+- **June 23** — The runnable multi-site sandbox demo (#116); dependency updates for 16 advisories (#117); observability, security and operations hardening (#118); circuit breakers and retries (#119); OpenTelemetry tracing (#120); admin RBAC and session management (#121); account deletion, KMS health check and the DR runbook (#122); OAuth2 social login (#123); the monitoring stack and scheduled backups (#124); KMS provider tests (#125); HA parameters and the HA and load-testing guides (#126); the compliance matrix and threat model (#127); README (#128, #129).
 
 ---
 

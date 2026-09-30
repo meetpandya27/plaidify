@@ -29,10 +29,11 @@ export interface Messages {
   readonly search_placeholder: string;
   readonly consent_bullets: readonly string[];
   readonly success_message: string;
-  readonly public_token_label: string;
   readonly retry_cta: string;
   readonly continue_cta: string;
   readonly verify_cta: string;
+  readonly mfa_invalid_code: string;
+  readonly mfa_attempts_left: string;
   readonly live_select: string;
   readonly live_credentials: string;
   readonly live_connecting: string;
@@ -46,6 +47,8 @@ export interface Messages {
 // your app when verification finishes.") and the success message
 // ("Return to your app") — keep those wordings stable here.
 const EN_US: Messages = {
+  mfa_invalid_code: "That code didn't work. Check it and try again.",
+  mfa_attempts_left: "Attempts left: {count}",
   step_select_heading: "Select your provider",
   step_credentials_heading: "Enter your credentials",
   step_connecting_heading: "Connecting",
@@ -62,7 +65,6 @@ const EN_US: Messages = {
   ],
   success_message:
     "Your secure connection is complete. Return to your app to finish setup.",
-  public_token_label: "PUBLIC TOKEN",
   retry_cta: "Try again",
   continue_cta: "Continue",
   verify_cta: "Verify and continue",
@@ -79,6 +81,8 @@ const EN_US: Messages = {
 const EN_CA: Messages = EN_US;
 
 const FR_CA: Messages = {
+  mfa_invalid_code: "Ce code n'a pas fonctionné. Vérifiez-le et réessayez.",
+  mfa_attempts_left: "Tentatives restantes : {count}",
   step_select_heading: "Choisissez votre fournisseur",
   step_credentials_heading: "Entrez vos identifiants",
   step_connecting_heading: "Connexion en cours",
@@ -95,7 +99,6 @@ const FR_CA: Messages = {
   ],
   success_message:
     "Votre connexion sécurisée est établie. Retournez à votre application pour terminer la configuration.",
-  public_token_label: "JETON PUBLIC",
   retry_cta: "Réessayer",
   continue_cta: "Continuer",
   verify_cta: "Vérifier et continuer",

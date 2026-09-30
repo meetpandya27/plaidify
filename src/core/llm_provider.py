@@ -3,10 +3,20 @@ LLM Extraction Provider — pluggable interface for OpenAI, Anthropic, and local
 
 Provides a unified async interface for sending extraction prompts to LLMs and
 receiving structured JSON responses. Supports model fallback chains (e.g.
-try gpt-4o-mini first, fall back to gpt-4o) and enforces token budgets.
+try a cheap model first, fall back to a stronger one) and enforces token budgets.
+
+Every way a call can fail — HTTP errors, timeouts, network errors, a body that
+is not JSON, a reply that is not the JSON that was asked for, a refusal or a
+truncated answer — surfaces as ``LLMProviderError``, so callers can move on to
+the next model, the screenshot path or the fallback selectors.
+
+Requests are shaped per model: parameters a model rejects (sampling settings
+on current Claude models, ``max_tokens`` / ``temperature`` on OpenAI reasoning
+models) are left out, and if the API still objects to one it is dropped and
+the call retried once.
 
 Usage:
-    provider = create_provider("openai", api_key="sk-...", model="gpt-4o-mini")
+    provider = create_provider("openai", api_key="sk-...", model="gpt-5.4-mini")
     result = await provider.extract(prompt, max_tokens=4096)
     # result.content — raw text response
     # result.usage.prompt_tokens — input token usage
@@ -15,11 +25,14 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from src.config import get_settings
 from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError, retry_with_backoff
@@ -35,6 +48,14 @@ _llm_breaker = CircuitBreaker(
     reset_timeout=_settings.llm_circuit_reset_seconds,
 )
 
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
+ANTHROPIC_API_VERSION = "2023-06-01"
+ANTHROPIC_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+_ANTHROPIC_FIRST_PARTY_HOSTS = frozenset({"api.anthropic.com"})
+_MAX_RETRY_AFTER_SECONDS = 300.0
+_MAX_PARAMETER_RETRIES = 3
+
 # ── Data Classes ──────────────────────────────────────────────────────────────
 
 
@@ -45,6 +66,9 @@ class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+
+
+_FENCED_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -61,19 +85,39 @@ class LLMResponse:
     def parse_json(self) -> Any:
         """Extract JSON from the response content.
 
-        Handles responses that wrap JSON in markdown code fences.
+        Accepts bare JSON, JSON in a markdown code fence, and JSON wrapped in a
+        sentence of prose ("Here is the data: {...}").
+
+        Raises:
+            json.JSONDecodeError: when no JSON value can be found.
         """
         text = self.content.strip()
-        # Strip ```json ... ``` fencing
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as error:
+            first_error = error
+
+        fenced = _FENCED_BLOCK.search(text)
+        if fenced:
+            try:
+                return json.loads(fenced.group(1).strip())
+            except json.JSONDecodeError:
+                pass
         if text.startswith("```"):
-            lines = text.split("\n")
-            # Remove first line (```json or ```) and last line (```)
-            if lines[-1].strip() == "```":
-                lines = lines[1:-1]
-            else:
-                lines = lines[1:]
-            text = "\n".join(lines)
-        return json.loads(text)
+            # An opening fence with no closing one.
+            try:
+                return json.loads(text.split("\n", 1)[1] if "\n" in text else "")
+            except json.JSONDecodeError:
+                pass
+
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start, end = text.find(opener), text.rfind(closer)
+            if 0 <= start < end:
+                try:
+                    return json.loads(text[start : end + 1])
+                except json.JSONDecodeError:
+                    continue
+        raise first_error
 
 
 class LLMProviderError(Exception):
@@ -81,7 +125,7 @@ class LLMProviderError(Exception):
 
 
 class LLMRateLimitError(LLMProviderError):
-    """Raised when the LLM provider returns a rate-limit error (429)."""
+    """Raised when the LLM provider returns a rate-limit or overload error (429 / 529)."""
 
     def __init__(self, message: str, retry_after: Optional[float] = None):
         super().__init__(message)
@@ -94,6 +138,81 @@ class LLMAuthError(LLMProviderError):
 
 class LLMBudgetExceededError(LLMProviderError):
     """Raised when a request would exceed the token budget."""
+
+
+def parse_retry_after(headers: Any) -> Optional[float]:
+    """Seconds to wait before retrying, from ``retry-after-ms`` / ``retry-after``.
+
+    ``Retry-After`` may be delay-seconds or an HTTP date; anything unparseable
+    is ignored rather than raised. The result is clamped to [0, 300].
+    """
+    if not headers:
+        return None
+
+    def _get(name: str) -> Optional[str]:
+        try:
+            value = headers.get(name)
+        except Exception:
+            return None
+        return value if isinstance(value, str) and value.strip() else None
+
+    delay: Optional[float] = None
+    millis = _get("retry-after-ms")
+    if millis is not None:
+        try:
+            delay = float(millis) / 1000
+        except ValueError:
+            delay = None
+    if delay is None:
+        value = _get("retry-after")
+        if value is not None:
+            try:
+                delay = float(value)
+            except ValueError:
+                try:
+                    delay = parsedate_to_datetime(value).timestamp() - time.time()
+                except (TypeError, ValueError, IndexError, OverflowError):
+                    delay = None
+    if delay is None or delay != delay:  # NaN
+        return None
+    return max(0.0, min(_MAX_RETRY_AFTER_SECONDS, delay))
+
+
+def ensure_json_reply(response: LLMResponse) -> None:
+    """Raise LLMProviderError unless ``response`` carries parseable JSON."""
+    try:
+        response.parse_json()
+    except (ValueError, TypeError) as exc:
+        raise LLMProviderError(f"{response.provider} model {response.model} returned a reply that is not JSON") from exc
+
+
+def json_object_format() -> Dict[str, Any]:
+    return {"type": "json_object"}
+
+
+def json_schema_format(schema: Dict[str, Any], name: str = "extraction") -> Dict[str, Any]:
+    """A provider-neutral structured-output request: this exact JSON schema."""
+    return {"type": "json_schema", "name": name, "schema": schema}
+
+
+def _error_body(resp: Any) -> tuple[str, str]:
+    """(param, message) from an API error body, lower-cased; empty when unreadable."""
+    try:
+        body = resp.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        text = getattr(resp, "text", "")
+        return "", text.lower() if isinstance(text, str) else ""
+    error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    param = error.get("param") if isinstance(error.get("param"), str) else ""
+    message = error.get("message") if isinstance(error.get("message"), str) else ""
+    return param.lower(), message.lower()
+
+
+def _error_excerpt(resp: Any) -> str:
+    text = getattr(resp, "text", "")
+    return text[:500] if isinstance(text, str) else ""
 
 
 # ── Abstract Base ─────────────────────────────────────────────────────────────
@@ -111,24 +230,28 @@ class BaseLLMProvider(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.0,
         timeout: float = 60.0,
+        effort: Optional[str] = None,
     ):
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.timeout = timeout
+        self.effort = effort
 
     @abstractmethod
     async def _call(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         *,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        response_format: Optional[Dict[str, str]] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> LLMResponse:
         """Send messages to the LLM and return a response.
 
-        Subclasses implement HTTP call logic here.
+        ``response_format`` is provider-neutral: :func:`json_object_format` or
+        :func:`json_schema_format`. Messages may carry OpenAI-style content
+        parts (``text`` / ``image_url``); providers translate them.
         """
 
     async def extract(
@@ -139,6 +262,8 @@ class BaseLLMProvider(ABC):
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         json_mode: bool = True,
+        json_schema: Optional[Dict[str, Any]] = None,
+        schema_name: str = "extraction",
     ) -> LLMResponse:
         """Send an extraction prompt and return the response.
 
@@ -148,13 +273,24 @@ class BaseLLMProvider(ABC):
             max_tokens: Override default max_tokens for this call.
             temperature: Override default temperature for this call.
             json_mode: Request JSON output format from the model.
+            json_schema: Request output matching exactly this JSON schema
+                (structured outputs) where the model supports it.
+            schema_name: Name for the schema, where the API wants one.
+
+        Raises:
+            LLMProviderError: on any failure, including a reply that is not JSON
+                when JSON was requested.
         """
-        messages: List[Dict[str, str]] = []
+        messages: List[Dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        response_format = {"type": "json_object"} if json_mode else None
+        response_format: Optional[Dict[str, Any]] = None
+        if json_schema is not None:
+            response_format = json_schema_format(json_schema, schema_name)
+        elif json_mode:
+            response_format = json_object_format()
 
         with tracer.start_as_current_span("llm.extract") as _span:
             _span.set_attribute("llm.provider", self.provider_name)
@@ -167,6 +303,8 @@ class BaseLLMProvider(ABC):
             )
             _span.set_attribute("llm.prompt_tokens", response.usage.prompt_tokens)
             _span.set_attribute("llm.completion_tokens", response.usage.completion_tokens)
+        if response_format is not None:
+            ensure_json_reply(response)
         logger.info(
             "LLM extraction complete: provider=%s model=%s prompt_tokens=%d completion_tokens=%d latency_ms=%.1f",
             self.provider_name,
@@ -188,8 +326,29 @@ class BaseLLMProvider(ABC):
     async def __aexit__(self, *exc):
         await self.close()
 
+    async def _post(self, client: Any, path: str, payload: Dict[str, Any], **kwargs: Any) -> Any:
+        """POST, turning timeouts and network errors into LLMProviderError."""
+        import httpx
+
+        try:
+            return await client.post(path, json=payload, **kwargs)
+        except httpx.TimeoutException as exc:
+            raise LLMProviderError(f"{self.provider_name} request timed out after {self.timeout}s") from exc
+        except httpx.HTTPError as exc:
+            raise LLMProviderError(f"{self.provider_name} request failed: {type(exc).__name__}") from exc
+
 
 # ── OpenAI Provider ───────────────────────────────────────────────────────────
+
+
+_OPENAI_REASONING_MODEL = re.compile(r"^(?:o\d|gpt-(?:[5-9]|\d{2,}))")
+_OPENAI_EFFORTS = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "xhigh"}
+
+
+def is_openai_reasoning_model(model: str) -> bool:
+    """OpenAI reasoning models (o-series, GPT-5 and later) take max_completion_tokens and no temperature."""
+    name = (model or "").lower().rsplit("/", 1)[-1]
+    return bool(_OPENAI_REASONING_MODEL.match(name)) and "-chat" not in name
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -199,19 +358,21 @@ class OpenAIProvider(BaseLLMProvider):
 
     def __init__(
         self,
-        model: str = "gpt-4o-mini",
+        model: str = DEFAULT_OPENAI_MODEL,
         *,
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
         max_tokens: int = 4096,
         temperature: float = 0.0,
         timeout: float = 60.0,
+        effort: Optional[str] = None,
     ):
         super().__init__(
             model,
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=timeout,
+            effort=effort,
         )
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -231,45 +392,120 @@ class OpenAIProvider(BaseLLMProvider):
             )
         return self._client
 
+    def _payload(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: Optional[int],
+        temperature: Optional[float],
+        response_format: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"model": self.model, "messages": messages}
+        limit = max_tokens or self.max_tokens
+        if is_openai_reasoning_model(self.model):
+            payload["max_completion_tokens"] = limit
+            if self.effort in _OPENAI_EFFORTS:
+                payload["reasoning_effort"] = _OPENAI_EFFORTS[self.effort]
+        else:
+            payload["max_tokens"] = limit
+            payload["temperature"] = temperature if temperature is not None else self.temperature
+
+        if response_format and response_format.get("type") == "json_schema":
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_format.get("name", "extraction"),
+                    "schema": response_format["schema"],
+                    "strict": True,
+                },
+            }
+        elif response_format:
+            payload["response_format"] = response_format
+        return payload
+
+    @staticmethod
+    def _adapt(payload: Dict[str, Any], resp: Any) -> bool:
+        """Drop or rename the parameter a 400 complains about; True if the call is worth retrying."""
+        param, message = _error_body(resp)
+
+        def mentions(name: str) -> bool:
+            return param == name or name in message
+
+        if mentions("max_tokens") and "max_tokens" in payload:
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+            return True
+        if mentions("temperature") and "temperature" in payload:
+            payload.pop("temperature")
+            return True
+        if mentions("reasoning_effort") and "reasoning_effort" in payload:
+            payload.pop("reasoning_effort")
+            return True
+        if (param.startswith("response_format") or "response_format" in message or "json_schema" in message) and (
+            "response_format" in payload
+        ):
+            if payload["response_format"].get("type") == "json_schema":
+                payload["response_format"] = json_object_format()
+            else:
+                payload.pop("response_format")
+            return True
+        return False
+
     async def _call(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         *,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        response_format: Optional[Dict[str, str]] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> LLMResponse:
         client = self._get_client()
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "max_tokens": max_tokens or self.max_tokens,
-            "temperature": temperature if temperature is not None else self.temperature,
-        }
-        if response_format:
-            payload["response_format"] = response_format
+        payload = self._payload(messages, max_tokens, temperature, response_format)
 
         start = time.monotonic()
-        resp = await client.post("/chat/completions", json=payload)
+        for _attempt in range(_MAX_PARAMETER_RETRIES + 1):
+            resp = await self._post(client, "/chat/completions", payload)
+            if resp.status_code == 400 and _attempt < _MAX_PARAMETER_RETRIES and self._adapt(payload, resp):
+                logger.info("OpenAI rejected a parameter for %s; retrying without it", self.model)
+                continue
+            break
         latency_ms = (time.monotonic() - start) * 1000
 
         if resp.status_code == 429:
-            retry_after = resp.headers.get("retry-after")
             raise LLMRateLimitError(
                 "OpenAI rate limit exceeded",
-                retry_after=float(retry_after) if retry_after else None,
+                retry_after=parse_retry_after(resp.headers),
             )
         if resp.status_code in (401, 403):
             raise LLMAuthError(f"OpenAI authentication failed: {resp.status_code}")
         if resp.status_code != 200:
-            raise LLMProviderError(f"OpenAI API error {resp.status_code}: {resp.text[:500]}")
+            raise LLMProviderError(f"OpenAI API error {resp.status_code}: {_error_excerpt(resp)}")
 
-        data = resp.json()
-        choice = data["choices"][0]
-        usage = data.get("usage", {})
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise LLMProviderError("OpenAI returned a body that is not JSON") from exc
+
+        try:
+            choice = data["choices"][0]
+            message = choice.get("message") or {}
+            finish_reason = choice.get("finish_reason")
+            usage = data.get("usage") or {}
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise LLMProviderError("OpenAI returned an unexpected response shape") from exc
+
+        if message.get("refusal"):
+            raise LLMProviderError(f"OpenAI model {self.model} declined the request")
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        if finish_reason == "length":
+            raise LLMProviderError(f"OpenAI model {self.model} ran out of tokens before finishing its reply")
+        if finish_reason == "content_filter":
+            raise LLMProviderError(f"OpenAI model {self.model} reply was withheld by the content filter")
+        if not isinstance(content, str) or not content.strip():
+            raise LLMProviderError(f"OpenAI model {self.model} returned an empty reply")
 
         return LLMResponse(
-            content=choice["message"]["content"],
+            content=content,
             model=data.get("model", self.model),
             usage=TokenUsage(
                 prompt_tokens=usage.get("prompt_tokens", 0),
@@ -290,29 +526,100 @@ class OpenAIProvider(BaseLLMProvider):
 # ── Anthropic Provider ────────────────────────────────────────────────────────
 
 
+def _claude_name(model: str) -> str:
+    """The ``claude-…`` part of a model id (drops Bedrock / Vertex style prefixes)."""
+    name = (model or "").lower()
+    index = name.find("claude-")
+    return name[index:] if index >= 0 else name
+
+
+# Models that still accept temperature / top_p (Claude 3.x through the 4.6 family).
+# Opus 4.7 and everything newer reject sampling parameters with a 400.
+_ANTHROPIC_SAMPLING = re.compile(r"^claude-(?:3|instant|(?:opus|sonnet|haiku)-4(?:-[0-6])?(?:$|[-@]\d{6,8}|@))")
+# Models with structured outputs (output_config.format).
+_ANTHROPIC_STRUCTURED = re.compile(r"^claude-(?:fable-5|mythos-5|opus-5|sonnet-5|opus-4-8|haiku-4-5|opus-4-5|opus-4-1)")
+# Models that take output_config.effort.
+_ANTHROPIC_EFFORT = re.compile(r"^claude-(?:fable|mythos|opus-5|sonnet-5|opus-4-[5-8]|sonnet-4-6)")
+# Models whose safety classifiers can decline a request; they get server-side fallbacks.
+_ANTHROPIC_REFUSAL_CLASSIFIERS = re.compile(r"^claude-(?:opus-5|fable-5-1|mythos-5-1)")
+
+
+def anthropic_accepts_sampling(model: str) -> bool:
+    return bool(_ANTHROPIC_SAMPLING.match(_claude_name(model)))
+
+
+def anthropic_supports_structured_output(model: str) -> bool:
+    return bool(_ANTHROPIC_STRUCTURED.match(_claude_name(model)))
+
+
+def anthropic_effort(model: str, effort: Optional[str]) -> Optional[str]:
+    """The effort level to send for ``model``, mapped to what that model accepts."""
+    name = _claude_name(model)
+    if not effort or not _ANTHROPIC_EFFORT.match(name):
+        return None
+    if name.startswith("claude-opus-4-5"):
+        return effort if effort in ("low", "medium", "high") else "high"
+    if name.startswith(("claude-opus-4-6", "claude-sonnet-4-6")):
+        return "high" if effort == "xhigh" else effort
+    return effort
+
+
+def _anthropic_content(content: Any) -> Any:
+    """Translate OpenAI-style content parts into Anthropic content blocks (images first)."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return content
+    images: List[Dict[str, Any]] = []
+    others: List[Dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "image_url":
+            url = (part.get("image_url") or {}).get("url", "")
+            if url.startswith("data:"):
+                header, _, data = url.partition(",")
+                media_type = header[len("data:") :].split(";", 1)[0] or "image/png"
+                images.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
+            elif url:
+                images.append({"type": "image", "source": {"type": "url", "url": url}})
+        elif kind == "image":
+            images.append(part)
+        elif kind == "text":
+            others.append({"type": "text", "text": part.get("text", "")})
+        else:
+            others.append(part)
+    return images + others
+
+
 class AnthropicProvider(BaseLLMProvider):
-    """Anthropic Claude provider."""
+    """Anthropic Claude provider (Messages API over raw HTTP)."""
 
     provider_name = "anthropic"
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = DEFAULT_ANTHROPIC_MODEL,
         *,
         api_key: str,
         base_url: str = "https://api.anthropic.com",
         max_tokens: int = 4096,
         temperature: float = 0.0,
         timeout: float = 60.0,
+        effort: Optional[str] = None,
+        server_side_fallbacks: bool = True,
     ):
         super().__init__(
             model,
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=timeout,
+            effort=effort,
         )
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.server_side_fallbacks = server_side_fallbacks
         self._client: Optional[Any] = None
 
     def _get_client(self):
@@ -323,23 +630,28 @@ class AnthropicProvider(BaseLLMProvider):
                 base_url=self.base_url,
                 headers={
                     "x-api-key": self.api_key,
-                    "anthropic-version": "2023-06-01",
+                    "anthropic-version": ANTHROPIC_API_VERSION,
                     "Content-Type": "application/json",
                 },
                 timeout=self.timeout,
             )
         return self._client
 
-    async def _call(
-        self,
-        messages: List[Dict[str, str]],
-        *,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        response_format: Optional[Dict[str, str]] = None,
-    ) -> LLMResponse:
-        client = self._get_client()
+    def _wants_server_side_fallbacks(self) -> bool:
+        host = (urlsplit(self.base_url).hostname or "").lower()
+        return (
+            self.server_side_fallbacks
+            and host in _ANTHROPIC_FIRST_PARTY_HOSTS
+            and bool(_ANTHROPIC_REFUSAL_CLASSIFIERS.match(_claude_name(self.model)))
+        )
 
+    def _payload(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: Optional[int],
+        temperature: Optional[float],
+        response_format: Optional[Dict[str, Any]],
+    ) -> tuple[Dict[str, Any], Dict[str, str]]:
         # Anthropic uses a separate 'system' parameter
         system_text = None
         user_messages = []
@@ -347,36 +659,115 @@ class AnthropicProvider(BaseLLMProvider):
             if msg["role"] == "system":
                 system_text = msg["content"]
             else:
-                user_messages.append(msg)
+                user_messages.append({**msg, "content": _anthropic_content(msg.get("content"))})
 
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": user_messages,
             "max_tokens": max_tokens or self.max_tokens,
-            "temperature": temperature if temperature is not None else self.temperature,
         }
         if system_text:
             payload["system"] = system_text
+        if anthropic_accepts_sampling(self.model):
+            payload["temperature"] = temperature if temperature is not None else self.temperature
+
+        output_config: Dict[str, Any] = {}
+        effort = anthropic_effort(self.model, self.effort)
+        if effort:
+            output_config["effort"] = effort
+        if (
+            response_format
+            and response_format.get("type") == "json_schema"
+            and anthropic_supports_structured_output(self.model)
+        ):
+            output_config["format"] = {"type": "json_schema", "schema": response_format["schema"]}
+        if output_config:
+            payload["output_config"] = output_config
+
+        headers: Dict[str, str] = {}
+        if self._wants_server_side_fallbacks():
+            payload["fallbacks"] = "default"
+            headers["anthropic-beta"] = ANTHROPIC_FALLBACK_BETA
+        return payload, headers
+
+    @staticmethod
+    def _adapt(payload: Dict[str, Any], headers: Dict[str, str], resp: Any) -> bool:
+        """Drop the parameter a 400 complains about; True if the call is worth retrying."""
+        _param, message = _error_body(resp)
+        output_config = payload.get("output_config") or {}
+
+        if ("fallback" in message or "anthropic-beta" in message) and "fallbacks" in payload:
+            payload.pop("fallbacks")
+            headers.pop("anthropic-beta", None)
+            return True
+        if ("temperature" in message or "top_p" in message or "sampling" in message) and "temperature" in payload:
+            payload.pop("temperature")
+            return True
+        if "effort" in message and "effort" in output_config:
+            output_config.pop("effort")
+            if not output_config:
+                payload.pop("output_config", None)
+            return True
+        if ("output_config" in message or "format" in message or "schema" in message) and "format" in output_config:
+            output_config.pop("format")
+            if not output_config:
+                payload.pop("output_config", None)
+            return True
+        return False
+
+    async def _call(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+    ) -> LLMResponse:
+        client = self._get_client()
+        payload, headers = self._payload(messages, max_tokens, temperature, response_format)
 
         start = time.monotonic()
-        resp = await client.post("/v1/messages", json=payload)
+        for _attempt in range(_MAX_PARAMETER_RETRIES + 1):
+            if headers:
+                resp = await self._post(client, "/v1/messages", payload, headers=headers)
+            else:
+                resp = await self._post(client, "/v1/messages", payload)
+            if resp.status_code == 400 and _attempt < _MAX_PARAMETER_RETRIES and self._adapt(payload, headers, resp):
+                logger.info("Anthropic rejected a parameter for %s; retrying without it", self.model)
+                continue
+            break
         latency_ms = (time.monotonic() - start) * 1000
 
-        if resp.status_code == 429:
-            retry_after = resp.headers.get("retry-after")
+        if resp.status_code in (429, 529):
             raise LLMRateLimitError(
-                "Anthropic rate limit exceeded",
-                retry_after=float(retry_after) if retry_after else None,
+                "Anthropic rate limit exceeded" if resp.status_code == 429 else "Anthropic API overloaded",
+                retry_after=parse_retry_after(resp.headers),
             )
         if resp.status_code in (401, 403):
             raise LLMAuthError(f"Anthropic authentication failed: {resp.status_code}")
         if resp.status_code != 200:
-            raise LLMProviderError(f"Anthropic API error {resp.status_code}: {resp.text[:500]}")
+            raise LLMProviderError(f"Anthropic API error {resp.status_code}: {_error_excerpt(resp)}")
 
-        data = resp.json()
-        content_blocks = data.get("content", [])
-        text = "".join(b["text"] for b in content_blocks if b["type"] == "text")
-        usage = data.get("usage", {})
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise LLMProviderError("Anthropic returned a body that is not JSON") from exc
+        if not isinstance(data, dict):
+            raise LLMProviderError("Anthropic returned an unexpected response shape")
+
+        stop_reason = data.get("stop_reason")
+        if stop_reason == "refusal":
+            raise LLMProviderError(f"Anthropic model {data.get('model', self.model)} declined the request")
+        if stop_reason == "max_tokens":
+            raise LLMProviderError(f"Anthropic model {self.model} ran out of tokens before finishing its reply")
+
+        content_blocks = data.get("content") or []
+        text = "".join(
+            block.get("text", "") for block in content_blocks if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if not text.strip():
+            raise LLMProviderError(f"Anthropic model {self.model} returned an empty reply")
+        usage = data.get("usage") or {}
 
         return LLMResponse(
             content=text,
@@ -405,11 +796,12 @@ class FallbackChain(BaseLLMProvider):
 
     Useful for cost optimization: try a cheap model first, fall back to a
     more capable one if extraction fails or returns low-confidence results.
+    A reply that is not the JSON that was asked for counts as a failure.
 
     Usage:
         chain = FallbackChain([
-            OpenAIProvider(model="gpt-4o-mini", api_key=key),
-            OpenAIProvider(model="gpt-4o", api_key=key),
+            OpenAIProvider(model="gpt-5.4-mini", api_key=key),
+            OpenAIProvider(model="gpt-5.4", api_key=key),
         ])
         result = await chain.extract(prompt)
     """
@@ -426,16 +818,17 @@ class FallbackChain(BaseLLMProvider):
             max_tokens=first.max_tokens,
             temperature=first.temperature,
             timeout=first.timeout,
+            effort=getattr(first, "effort", None),
         )
         self.providers = list(providers)
 
     async def _call(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         *,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        response_format: Optional[Dict[str, str]] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> LLMResponse:
         async def _run_chain() -> LLMResponse:
             return await self._call_chain(
@@ -454,22 +847,25 @@ class FallbackChain(BaseLLMProvider):
 
     async def _call_chain(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         *,
         max_tokens: Optional[int],
         temperature: Optional[float],
-        response_format: Optional[Dict[str, str]],
+        response_format: Optional[Dict[str, Any]],
     ) -> LLMResponse:
         last_error: Optional[Exception] = None
         for provider in self.providers:
 
             async def _attempt(provider: BaseLLMProvider = provider) -> LLMResponse:
-                return await provider._call(
+                response = await provider._call(
                     messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     response_format=response_format,
                 )
+                if response_format is not None:
+                    ensure_json_reply(response)
+                return response
 
             try:
                 # Retry only genuinely transient (rate-limit) errors, honouring
@@ -510,6 +906,8 @@ def create_provider(
     max_tokens: int = 4096,
     temperature: float = 0.0,
     timeout: float = 60.0,
+    effort: Optional[str] = None,
+    server_side_fallbacks: Optional[bool] = None,
 ) -> BaseLLMProvider:
     """Create an LLM provider by name.
 
@@ -519,8 +917,10 @@ def create_provider(
         model: Model name (uses provider default if not specified).
         base_url: Override the API base URL (useful for Azure OpenAI / local servers).
         max_tokens: Max tokens for completions.
-        temperature: Sampling temperature (0.0 = deterministic).
+        temperature: Sampling temperature (0.0 = deterministic), for models that take one.
         timeout: HTTP timeout in seconds.
+        effort: Reasoning effort for models that take one ('low' … 'max').
+        server_side_fallbacks: Anthropic only; defaults to LLM_SERVER_SIDE_FALLBACKS.
 
     Returns:
         A configured LLM provider instance.
@@ -532,13 +932,20 @@ def create_provider(
         "max_tokens": max_tokens,
         "temperature": temperature,
         "timeout": timeout,
+        "effort": effort,
     }
     if base_url:
         kwargs["base_url"] = base_url
 
     if provider_type == "openai":
-        return OpenAIProvider(model=model or "gpt-4o-mini", **kwargs)
+        return OpenAIProvider(model=model or DEFAULT_OPENAI_MODEL, **kwargs)
     elif provider_type == "anthropic":
-        return AnthropicProvider(model=model or "claude-sonnet-4-20250514", **kwargs)
+        if server_side_fallbacks is None:
+            server_side_fallbacks = _settings.llm_server_side_fallbacks
+        return AnthropicProvider(
+            model=model or DEFAULT_ANTHROPIC_MODEL,
+            server_side_fallbacks=server_side_fallbacks,
+            **kwargs,
+        )
     else:
         raise ValueError(f"Unknown provider type: {provider_type!r}. Supported: 'openai', 'anthropic'")

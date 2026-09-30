@@ -26,6 +26,14 @@ VALID_USERS = {
 }
 BRAND = "CloudMail"
 
+
+def _error_html(message: str, element_id: str) -> str:
+    """The error line, carrying its id only when there is an error to show."""
+    if not message:
+        return "<p class='err'></p>"
+    return f"<p class='err' id='{element_id}' role='alert'>{message}</p>"
+
+
 STYLE = """
 <style>
   * { box-sizing:border-box; }
@@ -58,7 +66,7 @@ def _login_html(error: str = "") -> str:
 <body><div class='top'><strong>{BRAND}</strong><span class='tag'>Sandbox</span></div>
 <div class='wrap'><div class='box signin'>
   <h1>Welcome back</h1>
-  <p class='err'>{error}</p>
+  {_error_html(error, "login-error")}
   <form action='/signin' method='post'>
     <label for='user'>Username</label>
     <input type='text' id='user' name='user' autocomplete='off'>

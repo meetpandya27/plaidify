@@ -1,0 +1,38 @@
+# Alertmanager routing for Plaidify's alert rules (monitoring/alert_rules.yml).
+#
+# Receiver placeholder: every alert goes to one webhook whose URL is read from
+# a file, so it stays out of git. Create it before starting the stack:
+#
+#   printf '%s' 'https://hooks.example.com/your-endpoint' > .secrets/alertmanager_webhook_url
+#   chmod 644 .secrets/alertmanager_webhook_url   # read by a non-root user
+#
+# The webhook receives Alertmanager's JSON payload (version 4). To page or
+# chat instead, replace `webhook_configs` with the matching block, keeping
+# secrets in *_file fields, e.g.
+#   slack_configs:     [{ api_url_file: /run/secrets/slack_webhook_url, channel: "#plaidify-alerts" }]
+#   pagerduty_configs: [{ routing_key_file: /run/secrets/pagerduty_routing_key }]
+#   email_configs:     [{ to: oncall@example.com, auth_password_file: /run/secrets/smtp_password, ... }]
+# See https://prometheus.io/docs/alerting/latest/configuration/#receiver-integration-settings
+
+route:
+  receiver: default
+  group_by: ["alertname", "job"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: default
+      repeat_interval: 1h
+
+inhibit_rules:
+  # A missing or down target explains its other alerts; page for the cause.
+  - source_matchers: ['alertname=~"PlaidifyInstanceDown|PlaidifyTargetMissing|PlaidifyExecutorMissing"']
+    target_matchers: ['severity="warning"']
+    equal: ["job"]
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url_file: /run/secrets/alertmanager_webhook_url
+        send_resolved: true

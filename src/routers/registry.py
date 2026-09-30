@@ -3,14 +3,16 @@ Blueprint registry endpoints: publish, search, download, delete.
 """
 
 import json as json_mod
-from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from src.database import BlueprintRecord, User, get_db
+from src.database import BlueprintRecord, User, get_db, utcnow
 from src.dependencies import get_current_user
 from src.logging_config import get_logger
+from src.models import RegistryPublishRequest
 
 logger = get_logger("api.registry")
 
@@ -19,35 +21,43 @@ _VALID_QUALITY_TIERS = {"community", "tested", "certified"}
 router = APIRouter(prefix="/registry", tags=["registry"])
 
 
+def _may_manage(record: BlueprintRecord, user: User) -> bool:
+    """A claimed site is changed or removed only by its publisher or an administrator."""
+    return record.published_by == user.id or bool(getattr(user, "is_admin", False))
+
+
+def _next_version(version: str) -> str:
+    parts = (version or "1.0.0").split(".")
+    try:
+        parts[-1] = str(int(parts[-1]) + 1)
+    except ValueError:
+        parts.append("1")
+    return ".".join(parts)
+
+
 @router.post("/publish")
 async def registry_publish(
-    request: Request,
+    body: RegistryPublishRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Publish a blueprint to the registry.
 
     The full blueprint JSON is validated, and metadata is extracted and stored.
-    If a blueprint with the same site name exists and belongs to the same user,
-    it is updated (version bump).
+    The site key (from the blueprint's domain) is claimed by its first
+    publisher: only that user, or an administrator, can publish updates for it
+    (each update bumps the version).
     """
     from src.core.blueprint import load_blueprint_from_dict
 
-    body = await request.json()
-    blueprint_json = body.get("blueprint")
-    description = body.get("description", "")
-
-    if not blueprint_json:
-        raise HTTPException(
-            status_code=422,
-            detail="'blueprint' field is required (the full blueprint JSON object).",
-        )
-
+    blueprint_json = body.blueprint
     if isinstance(blueprint_json, str):
         try:
             blueprint_json = json_mod.loads(blueprint_json)
         except json_mod.JSONDecodeError:
             raise HTTPException(status_code=422, detail="'blueprint' is not valid JSON.")
+    if not isinstance(blueprint_json, dict) or not blueprint_json:
+        raise HTTPException(status_code=422, detail="'blueprint' must be a JSON object.")
 
     # Validate the blueprint by parsing it
     try:
@@ -55,14 +65,16 @@ async def registry_publish(
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid blueprint: {e}")
 
-    site = blueprint_json.get("domain", "").replace(".", "_").replace(" ", "_").lower()
+    domain = blueprint_json.get("domain") or ""
+    site = str(domain).replace(".", "_").replace(" ", "_").lower() if isinstance(domain, str) else ""
     if not site:
         site = bp.name.lower().replace(" ", "_")
+    description = body.description or ""
 
     # Check for existing blueprint
-    existing = db.query(BlueprintRecord).filter_by(site=site).first()
+    existing = db.query(BlueprintRecord).filter_by(site=site).with_for_update().first()
     if existing:
-        if existing.published_by != user.id:
+        if not _may_manage(existing, user):
             raise HTTPException(
                 status_code=403,
                 detail="A blueprint for this site already exists and belongs to another user.",
@@ -76,15 +88,12 @@ async def registry_publish(
         existing.has_mfa = bp.mfa is not None
         existing.blueprint_json = json_mod.dumps(blueprint_json)
         existing.extract_fields = json_mod.dumps(list(bp.extract.keys()))
-        existing.updated_at = datetime.now(timezone.utc)
-        # Bump version
-        parts = existing.version.split(".")
-        parts[-1] = str(int(parts[-1]) + 1)
-        existing.version = ".".join(parts)
+        existing.updated_at = utcnow()
+        existing.version = _next_version(existing.version)
         db.commit()
         logger.info(
             "Blueprint updated in registry",
-            extra={"extra_data": {"site": site, "version": existing.version}},
+            extra={"extra_data": {"site": site, "version": existing.version, "user_id": user.id}},
         )
         return {"status": "updated", "site": site, "version": existing.version}
 
@@ -105,7 +114,12 @@ async def registry_publish(
         published_by=user.id,
     )
     db.add(record)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Someone claimed the same site between our check and the insert.
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A blueprint for this site was just published; try again.")
     logger.info("Blueprint published to registry", extra={"extra_data": {"site": site}})
     return {
         "status": "published",
@@ -117,12 +131,14 @@ async def registry_publish(
 
 @router.get("/search")
 async def registry_search(
-    q: str | None = None,
-    tag: str | None = None,
+    q: str | None = Query(default=None, max_length=200),
+    tag: str | None = Query(default=None, max_length=100),
     tier: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """Search the blueprint registry by name, domain, tag, or quality tier."""
+    """Search the blueprint registry by name, domain, tag, or quality tier (most downloaded first)."""
     query = db.query(BlueprintRecord)
 
     if q:
@@ -143,7 +159,7 @@ async def registry_search(
             )
         query = query.filter_by(quality_tier=tier)
 
-    results = query.order_by(BlueprintRecord.downloads.desc()).all()
+    results = query.order_by(BlueprintRecord.downloads.desc(), BlueprintRecord.id).offset(offset).limit(limit).all()
     return {
         "results": [
             {
@@ -173,17 +189,22 @@ async def registry_get(
 ):
     """Download a blueprint from the registry.
 
-    Increments the download counter.
+    Increments the download counter (one atomic UPDATE, so concurrent
+    downloads are all counted).
     """
-    record = db.query(BlueprintRecord).filter_by(site=site_name).first()
+    counted = db.execute(
+        update(BlueprintRecord)
+        .where(BlueprintRecord.site == site_name)
+        .values(downloads=func.coalesce(BlueprintRecord.downloads, 0) + 1)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    db.commit()
+    record = db.query(BlueprintRecord).filter_by(site=site_name).first() if counted else None
     if not record:
         raise HTTPException(
             status_code=404,
             detail=f"Blueprint '{site_name}' not found in registry.",
         )
-
-    record.downloads = (record.downloads or 0) + 1
-    db.commit()
 
     return {
         "site": record.site,
@@ -208,14 +229,14 @@ async def registry_delete(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Remove a blueprint from the registry (owner only)."""
+    """Remove a blueprint from the registry (its publisher or an administrator)."""
     record = db.query(BlueprintRecord).filter_by(site=site_name).first()
     if not record:
         raise HTTPException(
             status_code=404,
             detail=f"Blueprint '{site_name}' not found in registry.",
         )
-    if record.published_by != user.id:
+    if not _may_manage(record, user):
         raise HTTPException(status_code=403, detail="Only the blueprint owner can delete it.")
     db.delete(record)
     db.commit()

@@ -1,9 +1,39 @@
+# Local development stack: Plaidify + PostgreSQL + Redis.
+# Setup: docs/DEPLOYMENT.md ("Quick Start"). Before the first start:
+#
+#   cp .env.example .env            # then set ENCRYPTION_KEY and JWT_SECRET_KEY
+#   mkdir -p .secrets && chmod 700 .secrets
+#   openssl rand -base64 32 > .secrets/postgres_password
+#   openssl rand -base64 32 > .secrets/redis_password
+#   chmod 644 .secrets/*   # containers read these as non-root users
+#
+# The passwords live only in .secrets/: Postgres, Redis and the app all read
+# the same files, and the image's entrypoint builds DATABASE_URL and REDIS_URL
+# from them. Every port listens on 127.0.0.1 only; Redis holds the keys that
+# decrypt hosted-link credentials, so it has a password here too.
+
+x-plaidify-backing-services: &plaidify-backing-services
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: ${POSTGRES_USER:-plaidify}
+  POSTGRES_DB: ${POSTGRES_DB:-plaidify}
+  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+  POSTGRES_SSLMODE: disable
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD_FILE: /run/secrets/redis_password
+  REDIS_SCHEME: redis
+  # Blank so the entrypoint builds both from the secrets above, even if .env
+  # sets them for running the app outside Docker.
+  DATABASE_URL: ""
+  REDIS_URL: ""
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-plaidify}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
@@ -13,7 +43,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U plaidify"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plaidify} -d ${POSTGRES_DB:-plaidify}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -26,10 +56,16 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command:
+      - /bin/sh
+      - -c
+      - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)"
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    secrets:
+      - redis_password
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep PONG"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -39,26 +75,56 @@ services:
           memory: 512M
           cpus: "0.5"
 
+  # The schema comes from Alembic, as in production, before the app starts.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      <<: *plaidify-backing-services
+      PYTHONUNBUFFERED: "1"
+      LOG_FORMAT: text
+    command: ["alembic", "upgrade", "head"]
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - postgres_password
+      - redis_password
+
   plaidify:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     environment:
-      - PYTHONUNBUFFERED=1
-      - LOG_FORMAT=text
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-plaidify}:${POSTGRES_PASSWORD:?err}@postgres:5432/${POSTGRES_DB:-plaidify}
-      - REDIS_URL=redis://redis:6379/0
+      <<: *plaidify-backing-services
+      PYTHONUNBUFFERED: "1"
+      LOG_FORMAT: text
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: gunicorn src.main:app -c gunicorn.conf.py
+      migrate:
+        condition: service_completed_successfully
+    secrets:
+      - postgres_password
+      - redis_password
+    # Chromium runs sandboxed as the unprivileged app user (see
+    # deploy/seccomp/chromium.json and docs/DEPLOYMENT.md).
+    security_opt:
+      - seccomp=./deploy/seccomp/chromium.json
+      - no-new-privileges:true
     stop_grace_period: 30s
     deploy:
       resources:
@@ -66,9 +132,11 @@ services:
           memory: 2G
           cpus: "2.0"
 
-  # TLS reverse proxy — mount your certs before enabling
+  # TLS reverse proxy — mount your certs before enabling. When enabled, set
+  # FORWARDED_ALLOW_IPS on the plaidify service as docker-compose.production.yml
+  # does, or HTTPS enforcement will redirect in a loop.
   # nginx:
-  #   image: nginx:1-alpine
+  #   image: nginx:1.30-alpine
   #   restart: unless-stopped
   #   ports:
   #     - "443:443"
@@ -87,6 +155,8 @@ services:
 secrets:
   postgres_password:
     file: ./.secrets/postgres_password
+  redis_password:
+    file: ./.secrets/redis_password
 
 volumes:
   pgdata:

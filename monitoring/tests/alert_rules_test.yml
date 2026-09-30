@@ -1,0 +1,190 @@
+# Unit tests for monitoring/alert_rules.yml, run by CI:
+#   promtool test rules monitoring/tests/alert_rules_test.yml
+# Series use the names and labels the app exports (see the rules file), so a
+# rename on either side fails here instead of silently never alerting.
+
+rule_files:
+  - ../alert_rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 5xx ratio on real traffic fires; half of all responses are errors.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="plaidify",instance="plaidify:8000",handler="/links",method="GET",status="5xx"}'
+        values: "0+10x30"
+      - series: 'http_requests_total{job="plaidify",instance="plaidify:8000",handler="/links",method="GET",status="2xx"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PlaidifyHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "High 5xx error rate (>5%)"
+              description: "More than 5% of HTTP responses have been 5xx for >5m. Current value: 50%."
+
+  # A failing health probe alone is not an error-rate incident.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="plaidify",instance="plaidify:8000",handler="/health",method="GET",status="5xx"}'
+        values: "0+10x30"
+      - series: 'http_requests_total{job="plaidify",instance="plaidify:8000",handler="/links",method="GET",status="2xx"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PlaidifyHighErrorRate
+        exp_alerts: []
+
+  # Half of the fast-path requests take longer than 1s.
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="plaidify",instance="plaidify:8000",handler="/links",method="GET"}'
+        values: "0+10x30"
+      - series: 'http_request_duration_seconds_bucket{job="plaidify",instance="plaidify:8000",handler="/links",method="GET",le="1.0"}'
+        values: "0+5x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PlaidifySlowRequests
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "More than 5% of API requests take over 1s"
+              description: "50% of requests to the API's fast paths took longer than 1s over the last 10m (p95 above 1s)."
+
+  # Browser-driven endpoints are slow by design and don't count.
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_count{job="plaidify",instance="plaidify:8000",handler="/links",method="GET"}'
+        values: "0+10x30"
+      - series: 'http_request_duration_seconds_bucket{job="plaidify",instance="plaidify:8000",handler="/links",method="GET",le="1.0"}'
+        values: "0+10x30"
+      - series: 'http_request_duration_seconds_count{job="plaidify",instance="plaidify:8000",handler="/connect",method="POST"}'
+        values: "0+100x30"
+      - series: 'http_request_duration_seconds_bucket{job="plaidify",instance="plaidify:8000",handler="/connect",method="POST",le="1.0"}'
+        values: "0+0x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PlaidifySlowRequests
+        exp_alerts: []
+
+  # Overall p95 from the high-resolution histogram: every request lands in
+  # the (10s, 30s] bucket, so p95 = 10 + 20 * 0.95 = 29s.
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_highr_seconds_bucket{job="plaidify",instance="plaidify:8000",le="10.0"}'
+        values: "0+0x40"
+      - series: 'http_request_duration_highr_seconds_bucket{job="plaidify",instance="plaidify:8000",le="30.0"}'
+        values: "0+10x40"
+      - series: 'http_request_duration_highr_seconds_bucket{job="plaidify",instance="plaidify:8000",le="+Inf"}'
+        values: "0+10x40"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PlaidifyHighLatencyP95
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Overall p95 latency above 10s"
+              description: "95th-percentile latency across all requests has exceeded 10s for >15m (current: 29s). Check target sites, the browser pool, and the LLM provider."
+
+  # The API is scraped, the executor is not.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="plaidify",instance="plaidify:8000"}'
+        values: "1x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PlaidifyExecutorMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: access-executor
+            exp_annotations:
+              summary: "Access-job executor scrape target is missing"
+              description: "No access-job executor is being scraped, so detached /connect jobs may not be running. Check the access-executor service and ACCESS_WORKER_METRICS_PORT."
+      - eval_time: 10m
+        alertname: PlaidifyTargetMissing
+        exp_alerts: []
+
+  # A scrape target that stops answering.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="access-executor",instance="access-executor:9101"}'
+        values: "1 1 0x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PlaidifyInstanceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: access-executor
+              instance: "access-executor:9101"
+            exp_annotations:
+              summary: "access-executor instance is down (access-executor:9101)"
+              description: "Prometheus has not been able to scrape access-executor at access-executor:9101 for >2m."
+
+  # The executor still answers scrapes but its event loop stopped at t=0.
+  - interval: 1m
+    input_series:
+      - series: 'plaidify_worker_heartbeat_timestamp_seconds{job="access-executor",instance="access-executor:9101"}'
+        values: "0x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PlaidifyExecutorStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: "access-executor:9101"
+            exp_annotations:
+              summary: "Access-job executor is stalled (access-executor:9101)"
+              description: "The executor's event loop has not run for 10m 0s. Jobs are not progressing; restart it and check its logs."
+
+  # A heartbeat that keeps up with the clock is healthy.
+  - interval: 1m
+    input_series:
+      - series: 'plaidify_worker_heartbeat_timestamp_seconds{job="access-executor",instance="access-executor:9101"}'
+        values: "0+60x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PlaidifyExecutorStalled
+        exp_alerts: []
+
+  # Half of the extractions fail.
+  - interval: 1m
+    input_series:
+      - series: 'plaidify_blueprint_extractions_total{job="access-executor",instance="access-executor:9101",site="demo_bank",status="error"}'
+        values: "0+5x40"
+      - series: 'plaidify_blueprint_extractions_total{job="access-executor",instance="access-executor:9101",site="demo_bank",status="success"}'
+        values: "0+5x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: PlaidifyExtractionFailureRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Blueprint extraction failure rate >20%"
+              description: "More than 20% of extractions have failed for >15m. Check connectors, browser pool, and LLM provider health."
+
+  # Four of five browser contexts busy.
+  - interval: 1m
+    input_series:
+      - series: 'plaidify_browser_pool_active_contexts{job="access-executor",instance="access-executor:9101"}'
+        values: "4x30"
+      - series: 'plaidify_browser_pool_capacity_contexts{job="access-executor",instance="access-executor:9101"}'
+        values: "5x30"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PlaidifyBrowserPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: access-executor
+              instance: "access-executor:9101"
+            exp_annotations:
+              summary: "Browser pool saturated (access-executor access-executor:9101)"
+              description: "80% of browser contexts have stayed busy for >10m; requests may be queuing. Scale the executor or raise BROWSER_POOL_SIZE."

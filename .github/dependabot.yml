@@ -1,29 +1,116 @@
+# Dependabot version and security updates.
+#
+# Reviewers: GitHub no longer supports `reviewers:` here on github.com;
+# .github/CODEOWNERS requests @meetpandya27 on every Dependabot PR instead.
+# Labels: `labels: []` keeps Dependabot from creating its own labels in this
+# repository (only the existing label set is used).
+#
+# Python: Dependabot bumps the pins in requirements*.txt, but it does not know
+# the hash-locked requirements*.lock files. CI's "Dependency locks" check fails
+# on such a PR until the locks are regenerated (the command is in the check's
+# output and at the top of requirements.txt).
+
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: weekly
+      day: monday
     open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "security"
-    reviewers:
-      - "meetpandya"
+    labels: []
     commit-message:
-      prefix: "deps"
+      prefix: deps
+    groups:
+      opentelemetry:
+        # API, SDK, exporter and instrumentation release together.
+        patterns:
+          - "opentelemetry-*"
+      test-and-lint:
+        patterns:
+          - "pytest*"
+          - "respx"
+          - "ruff"
+          - "locust"
+    ignore:
+      # passlib pins bcrypt below 5; replacing passlib is an application change.
+      - dependency-name: "bcrypt"
+        update-types: ["version-update:semver-major"]
 
-  - package-ecosystem: "docker"
-    directory: "/"
+  - package-ecosystem: npm
+    directory: "/frontend-next"
     schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-      - "docker"
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: []
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
+    groups:
+      frontend-dev-dependencies:
+        dependency-type: development
 
-  - package-ecosystem: "npm"
+  - package-ecosystem: npm
     directory: "/sdk-js"
     schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: []
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
+    groups:
+      sdk-js-dev-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    labels: []
+    commit-message:
+      prefix: ci
+    groups:
+      # Actions are pinned to commit SHAs; one PR moves them all.
+      actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directories:
+      - "/"
+      - "/deploy/backup"
+    schedule:
+      interval: weekly
+      day: monday
+    labels: []
+    commit-message:
+      prefix: deps
+    ignore:
+      # Node: stay on the active LTS line; move majors deliberately.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+      # Python: the major.minor is chosen with the lock files (generated for it).
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # PostgreSQL client tools follow the server's major version.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: docker-compose
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    labels: []
+    commit-message:
+      prefix: deps
+    ignore:
+      # A major PostgreSQL or Redis upgrade needs a data migration, not a tag bump.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "redis"
+        update-types: ["version-update:semver-major"]

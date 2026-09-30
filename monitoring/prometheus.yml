@@ -1,8 +1,9 @@
 # Prometheus scrape + alerting config for Plaidify.
 #
-# Targets the app's built-in /metrics endpoint (enabled by
-# prometheus-fastapi-instrumentator). Service names assume the
-# docker-compose.monitoring.yml stack; adjust targets for your environment.
+# Service names assume docker-compose.monitoring.yml attached to the
+# production compose network; adjust them for other environments. Targets are
+# found through Docker's DNS, so every replica of a scaled service
+# (`docker compose up --scale access-executor=2`) is scraped.
 
 global:
   scrape_interval: 15s
@@ -13,20 +14,40 @@ global:
 rule_files:
   - /etc/prometheus/alert_rules.yml
 
-# Wire Alertmanager here when you run one (left commented so Prometheus starts
-# cleanly without it).
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets: ["alertmanager:9093"]
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
 
 scrape_configs:
+  # The API. gunicorn's workers share prometheus_client's multiprocess
+  # directory, so one scrape returns the whole container's numbers.
+  # /metrics is scraped on the internal network over plain HTTP; the API
+  # answers it without the HTTPS redirect, and nginx never exposes it.
   - job_name: plaidify
     metrics_path: /metrics
+    dns_sd_configs:
+      - names: ["plaidify"]
+        type: A
+        port: 8000
+    # The API's METRICS_TOKEN as a bearer token, from .secrets/metrics_token
+    # (docker-compose.monitoring.yml). An API without METRICS_TOKEN ignores it.
+    authorization:
+      credentials_file: /run/secrets/metrics_token
+
+  # The access-job executor: its own endpoint on ACCESS_WORKER_METRICS_PORT.
+  # Browser, extraction and MFA metrics come from here when the API runs
+  # jobs in redis-worker mode.
+  - job_name: access-executor
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: ["access-executor"]
+        type: A
+        port: 9101
+
+  - job_name: alertmanager
     static_configs:
-      - targets: ["plaidify:8000"]
-        labels:
-          service: plaidify
+      - targets: ["alertmanager:9093"]
 
   - job_name: prometheus
     static_configs:

@@ -198,7 +198,7 @@ class TestExtractWithCachedSelectors:
 
                 result = await _extract_with_cached_selectors(
                     page=page,
-                    cached_selectors={"balance": "#balance"},
+                    cached_selectors={"balance": "#balance", "account_name": "#name"},
                     extraction_defs=blueprint.extract,
                     site="test",
                     domain="example.com",
@@ -247,7 +247,12 @@ class TestExtractWithLLM:
         with patch("src.core.engine._create_llm_provider", return_value=mock_provider):
             with patch("src.core.engine.DOMSimplifier") as MockSimp:
                 MockSimp.return_value.simplify = AsyncMock(return_value=mock_simplifier_result)
-                with patch("src.core.engine.get_selector_cache") as mock_cache_fn:
+                with (
+                    patch("src.core.engine.get_selector_cache") as mock_cache_fn,
+                    patch("src.core.engine.DataExtractor") as MockDE,
+                ):
+                    # The selectors reproduce the model's values on the live page.
+                    MockDE.return_value.extract = AsyncMock(return_value=dict(llm_data))
                     mock_cache = MagicMock()
                     mock_cache_fn.return_value = mock_cache
 
@@ -285,7 +290,11 @@ class TestExtractWithLLM:
         with patch("src.core.engine._create_llm_provider", return_value=mock_provider):
             with patch("src.core.engine.DOMSimplifier") as MockSimp:
                 MockSimp.return_value.simplify = AsyncMock(return_value=mock_simp_result)
-                with patch("src.core.engine.get_selector_cache") as mock_cache_fn:
+                with (
+                    patch("src.core.engine.get_selector_cache") as mock_cache_fn,
+                    patch("src.core.engine.DataExtractor") as MockDE,
+                ):
+                    MockDE.return_value.extract = AsyncMock(return_value={"balance": 99.0})
                     mock_cache = MagicMock()
                     mock_cache_fn.return_value = mock_cache
 
@@ -298,7 +307,7 @@ class TestExtractWithLLM:
                         "/dashboard",
                     )
 
-                    assert result == {"balance": 99.0}
+                    assert result["balance"] == 99.0
                     mock_cache.put.assert_not_called()
 
     @pytest.mark.asyncio
@@ -621,3 +630,171 @@ class TestSelectorCacheSingleton:
         assert isinstance(cache1, SelectorCache)
 
         engine_mod._selector_cache = None  # Cleanup
+
+
+# ── The model's answer is checked against the page (ENG-16, ENG-08, ENG-07) ──
+
+
+def _llm_run(response, reread, *, page_text="", blueprint=None):
+    """Run _extract_with_llm with a canned reply and canned page re-read values."""
+    blueprint = blueprint or make_v3_blueprint()
+    page = make_mock_page()
+    page.inner_text = AsyncMock(return_value=page_text)
+    provider = MagicMock()
+    provider.extract = AsyncMock(return_value=response)
+    provider.close = AsyncMock()
+    simplified = MagicMock(html="<html></html>", element_map={}, token_estimate=10)
+
+    async def run():
+        with (
+            patch("src.core.engine._create_llm_provider", return_value=provider),
+            patch("src.core.engine.DOMSimplifier") as MockSimp,
+            patch("src.core.engine.DataExtractor") as MockDE,
+            patch("src.core.engine.get_selector_cache") as cache_fn,
+        ):
+            MockSimp.return_value.simplify = AsyncMock(return_value=simplified)
+            MockDE.return_value.extract = AsyncMock(return_value=reread)
+            cache = MagicMock()
+            cache_fn.return_value = cache
+            result = await _extract_with_llm(page, blueprint, blueprint.extract, "test", "example.com", "/dash")
+            return result, cache, provider
+
+    return run()
+
+
+class TestVerifiedExtraction:
+    @pytest.mark.asyncio
+    async def test_page_value_wins_over_a_steered_answer(self):
+        # A memo on the page told the model to report a zero balance.
+        response = make_llm_response(
+            {"balance": 0.0, "account_name": "Jo"}, {"balance": "#balance", "account_name": "#name"}, confidence=0.99
+        )
+        result, cache, _ = await _llm_run(response, {"balance": 1234.56, "account_name": "Jo"})
+        assert result == {"balance": 1234.56, "account_name": "Jo"}
+        cache.put.assert_not_called()  # the selectors did not reproduce the answer
+
+    @pytest.mark.asyncio
+    async def test_unrequested_keys_never_come_back(self):
+        response = make_llm_response(
+            {"balance": 5.0, "account_name": "Jo", "routing_number": "021000021"},
+            {"balance": "#b", "account_name": "#n", "routing_number": "#r"},
+        )
+        result, _, _ = await _llm_run(response, {"balance": 5.0, "account_name": "Jo"})
+        assert set(result) == {"balance", "account_name"}
+
+    @pytest.mark.asyncio
+    async def test_values_without_a_working_selector_must_be_on_the_page(self):
+        response = make_llm_response({"balance": 42.5, "account_name": "Made Up Name"}, {})
+        result, cache, _ = await _llm_run(response, {}, page_text="Balance due: $42.50\nWelcome back, Jo")
+        assert result == {"balance": 42.5, "account_name": None}
+        cache.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prompt_prefix_selectors_are_not_cached(self):
+        response = make_llm_response(
+            {"balance": 5.0, "account_name": "Jo"},
+            {"balance": 'div[data-pid="p4"]', "account_name": "#n"},
+        )
+        result, cache, _ = await _llm_run(response, {"account_name": "Jo"}, page_text="$5.00")
+        assert result == {"balance": 5.0, "account_name": "Jo"}
+        cache.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_structured_output_schema_is_requested(self):
+        response = make_llm_response({"balance": 5.0, "account_name": "Jo"}, {"balance": "#b", "account_name": "#n"})
+        _, _, provider = await _llm_run(response, {"balance": 5.0, "account_name": "Jo"})
+        schema = provider.extract.call_args.kwargs["json_schema"]
+        assert schema["additionalProperties"] is False
+        assert set(schema["properties"]["data"]["properties"]) == {"balance", "account_name"}
+
+    @pytest.mark.asyncio
+    async def test_reply_that_is_not_json_falls_through_to_the_next_method(self):
+        from src.core.llm_provider import LLMResponse, TokenUsage
+
+        garbage = LLMResponse(content="I could not find it.", model="m", usage=TokenUsage(), latency_ms=1, provider="x")
+        result, _, _ = await _llm_run(garbage, {})
+        assert result is None
+
+
+class TestFallbackOrder:
+    @pytest.mark.asyncio
+    async def test_llm_failure_reaches_the_fallback_selectors(self):
+        blueprint = make_v3_blueprint(fallback_selectors={"balance": "#bal"})
+        provider = MagicMock()
+        provider.extract = AsyncMock(side_effect=LLMProviderError("timed out"))
+        provider._call = AsyncMock(side_effect=LLMProviderError("timed out"))
+        provider.close = AsyncMock()
+        page = make_mock_page()
+
+        with (
+            patch("src.core.engine._create_llm_provider", return_value=provider),
+            patch("src.core.engine.get_selector_cache") as cache_fn,
+            patch("src.core.engine.DataExtractor") as MockDE,
+        ):
+            cache_fn.return_value.get.return_value = None
+            MockDE.return_value.extract = AsyncMock(return_value={"balance": 12.5})
+            data, method = await _extract_llm_adaptive(page, blueprint, blueprint.extract, "test")
+
+        assert (data, method) == ({"balance": 12.5}, "fallback_selectors")
+        provider._call.assert_awaited()  # the screenshot path was tried on the way
+
+    @pytest.mark.asyncio
+    async def test_list_shaped_cache_entry_does_not_crash_the_pipeline(self):
+        blueprint = make_v3_blueprint(fallback_selectors={"balance": "#bal"})
+        entry = MagicMock(selectors=["#bal"], confidence=0.9, hit_count=0)
+        with (
+            patch("src.core.engine.get_selector_cache") as cache_fn,
+            patch("src.core.engine._extract_with_llm", new_callable=AsyncMock, return_value=None),
+            patch("src.core.engine._extract_with_multimodal", new_callable=AsyncMock, return_value=None),
+            patch("src.core.engine.DataExtractor") as MockDE,
+        ):
+            cache_fn.return_value.get.return_value = entry
+            MockDE.return_value.extract = AsyncMock(return_value={"balance": 3.0})
+            data, method = await _extract_llm_adaptive(make_mock_page(), blueprint, blueprint.extract, "test")
+        assert method == "fallback_selectors"
+
+    @pytest.mark.asyncio
+    async def test_cached_selectors_that_find_nothing_count_as_failures(self):
+        blueprint = make_v3_blueprint()
+        with (
+            patch("src.core.engine.DataExtractor") as MockDE,
+            patch("src.core.engine.get_selector_cache") as cache_fn,
+        ):
+            MockDE.return_value.extract = AsyncMock(return_value={"balance": 10.0, "account_name": None})
+            cache = MagicMock()
+            cache_fn.return_value = cache
+            result = await _extract_with_cached_selectors(
+                make_mock_page(), {"balance": "#b", "account_name": "#n"}, blueprint.extract, "t", "example.com", "/d"
+            )
+        assert result is None
+        cache.record_failure.assert_called_once_with("example.com", "/d")
+        cache.record_success.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_partial_cache_coverage_is_skipped_not_failed(self):
+        blueprint = make_v3_blueprint()
+        with patch("src.core.engine.get_selector_cache") as cache_fn:
+            cache = MagicMock()
+            cache_fn.return_value = cache
+            result = await _extract_with_cached_selectors(
+                make_mock_page(), {"balance": "#b"}, blueprint.extract, "t", "example.com", "/d"
+            )
+        assert result is None
+        cache.record_failure.assert_not_called()
+
+
+class TestProviderSettings:
+    def test_effort_is_passed_to_the_provider(self):
+        with patch("src.core.engine.settings") as mock_settings:
+            mock_settings.llm_provider = "anthropic"
+            mock_settings.llm_api_key = "sk-ant"
+            mock_settings.llm_model = None
+            mock_settings.llm_base_url = None
+            mock_settings.llm_max_tokens = 4096
+            mock_settings.llm_temperature = 0.0
+            mock_settings.llm_timeout = 60.0
+            mock_settings.llm_fallback_model = None
+            mock_settings.llm_effort = "medium"
+            provider = _create_llm_provider()
+        assert provider.model == "claude-opus-5"
+        assert provider.effort == "medium"

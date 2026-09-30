@@ -26,10 +26,13 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from src.core.blueprint import (
+    GENERATED_TAG,
     BlueprintV2,
+    FieldType,
 )
 from src.core.dom_simplifier import DOMSimplifier
 from src.core.llm_provider import BaseLLMProvider, LLMProviderError
+from src.core.network_policy import parse_domain_rule, split_url
 from src.logging_config import get_logger
 
 logger = get_logger("blueprint_generator")
@@ -148,6 +151,45 @@ class GeneratedBlueprint:
     warnings: List[str] = field(default_factory=list)
 
 
+_EMPTY_DISCOVERY = dict(
+    username_selector=None,
+    password_selector=None,
+    submit_selector=None,
+    pre_login_steps=[],
+    mfa_likely=False,
+    mfa_hints="",
+    page_title="",
+    confidence=0.0,
+)
+_SCALAR_TYPES = frozenset(t.value for t in FieldType) - {FieldType.LIST.value, FieldType.TABLE.value}
+_FIELD_NAME = re.compile(r"[^a-z0-9_]+")
+
+
+def _discovery_from(result: Any) -> LoginFormDiscovery:
+    """A LoginFormDiscovery from a model reply, tolerating any shape the model returned."""
+    if not isinstance(result, dict):
+        return LoginFormDiscovery(**_EMPTY_DISCOVERY)
+
+    def selector(value: Any) -> Optional[str]:
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    try:
+        confidence = max(0.0, min(1.0, float(result.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    steps = result.get("pre_login_steps")
+    return LoginFormDiscovery(
+        username_selector=selector(result.get("username_selector")),
+        password_selector=selector(result.get("password_selector")),
+        submit_selector=selector(result.get("submit_selector")),
+        pre_login_steps=[step for step in steps if isinstance(step, dict)] if isinstance(steps, list) else [],
+        mfa_likely=bool(result.get("mfa_likely", False)),
+        mfa_hints=str(result.get("mfa_hints", "")),
+        page_title=str(result.get("page_title", "")),
+        confidence=confidence,
+    )
+
+
 # ── Blueprint Generator ──────────────────────────────────────────────────────
 
 
@@ -186,8 +228,15 @@ class BlueprintGenerator:
             GeneratedBlueprint with the generated blueprint and metadata.
         """
         parsed = urlparse(url)
-        domain = parsed.netloc or parsed.hostname or "unknown"
-        site_key = _domain_to_site_key(domain)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("The login URL may not carry credentials (user:pass@host).")
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            raise ValueError("The login URL has no hostname.")
+        # The key and domain come from the hostname only: "https://chase:x@attacker.example"
+        # must never become the "chase" connector.
+        domain = hostname if parsed.port in (None, 80, 443) else f"{hostname}:{parsed.port}"
+        site_key = _domain_to_site_key(hostname)
 
         logger.info(
             "Generating blueprint for %s (domain=%s, site_key=%s)",
@@ -221,6 +270,14 @@ class BlueprintGenerator:
         if not login_discovery.submit_selector:
             warnings.append("Could not identify login submit button. Blueprint uses form submit fallback.")
 
+        # Where the login form posts: read from the page, never guessed by the model.
+        login_target = await self._discover_form_target(page, login_discovery.password_selector)
+        if login_target is None:
+            warnings.append(
+                "Could not tell where the login form submits; auth.submit_targets allows any path on "
+                f"{hostname}. Narrow it before saving."
+            )
+
         # Step 3: Discover extraction fields based on site type
         extraction_fields = await self._discover_fields(
             site_type=site_type,
@@ -241,6 +298,17 @@ class BlueprintGenerator:
             login_discovery=login_discovery,
             extraction_fields=extraction_fields,
             site_type=site_type,
+            login_target=login_target,
+        )
+        if blueprint_json.get("allowed_domains"):
+            warnings.append(
+                "The login form submits to another host ("
+                + ", ".join(blueprint_json["allowed_domains"])
+                + "); it was added to allowed_domains. Check it belongs to the same organisation."
+            )
+        warnings.append(
+            "Add auth.success and auth.failure indicators so a wrong password is reported as invalid "
+            "credentials instead of a timeout."
         )
 
         # Step 5: Validate via Pydantic
@@ -278,29 +346,29 @@ class BlueprintGenerator:
                 json_mode=True,
             )
             result = response.parse_json()
-        except (LLMProviderError, json.JSONDecodeError, ValueError) as e:
+        except (LLMProviderError, json.JSONDecodeError, ValueError, TypeError) as e:
             logger.warning("DOM-based login discovery failed: %s", e)
-            return LoginFormDiscovery(
-                username_selector=None,
-                password_selector=None,
-                submit_selector=None,
-                pre_login_steps=[],
-                mfa_likely=False,
-                mfa_hints="",
-                page_title="",
-                confidence=0.0,
-            )
+            return LoginFormDiscovery(**_EMPTY_DISCOVERY)
 
-        return LoginFormDiscovery(
-            username_selector=result.get("username_selector"),
-            password_selector=result.get("password_selector"),
-            submit_selector=result.get("submit_selector"),
-            pre_login_steps=result.get("pre_login_steps", []),
-            mfa_likely=bool(result.get("mfa_likely", False)),
-            mfa_hints=str(result.get("mfa_hints", "")),
-            page_title=str(result.get("page_title", "")),
-            confidence=float(result.get("confidence", 0.0)),
-        )
+        return _discovery_from(result)
+
+    async def _discover_form_target(self, page: Any, password_selector: Optional[str]) -> Optional[str]:
+        """The absolute URL the login form submits to, read from the live page."""
+        if not password_selector:
+            return None
+        try:
+            action = await page.eval_on_selector(
+                password_selector,
+                "(el) => (el.form ? el.form.action : null)",
+            )
+        except Exception:
+            return None
+        if not isinstance(action, str):
+            return None
+        scheme, host, _port, _path, has_userinfo = split_url(action)
+        if scheme not in ("http", "https") or not host or has_userinfo:
+            return None
+        return action.split("#", 1)[0]
 
     # ── Vision-Based Login Discovery ──────────────────────────────────────────
 
@@ -313,16 +381,7 @@ class BlueprintGenerator:
             )
         except Exception as e:
             logger.warning("Screenshot capture failed: %s", e)
-            return LoginFormDiscovery(
-                username_selector=None,
-                password_selector=None,
-                submit_selector=None,
-                pre_login_steps=[],
-                mfa_likely=False,
-                mfa_hints="",
-                page_title="",
-                confidence=0.0,
-            )
+            return LoginFormDiscovery(**_EMPTY_DISCOVERY)
 
         screenshot_b64 = base64.b64encode(screenshot_bytes).decode("ascii")
 
@@ -349,29 +408,11 @@ class BlueprintGenerator:
         try:
             response = await self.vision_provider._call(messages)
             result = response.parse_json()
-        except (LLMProviderError, json.JSONDecodeError, ValueError) as e:
+        except (LLMProviderError, json.JSONDecodeError, ValueError, TypeError) as e:
             logger.warning("Vision-based login discovery failed: %s", e)
-            return LoginFormDiscovery(
-                username_selector=None,
-                password_selector=None,
-                submit_selector=None,
-                pre_login_steps=[],
-                mfa_likely=False,
-                mfa_hints="",
-                page_title="",
-                confidence=0.0,
-            )
+            return LoginFormDiscovery(**_EMPTY_DISCOVERY)
 
-        return LoginFormDiscovery(
-            username_selector=result.get("username_selector"),
-            password_selector=result.get("password_selector"),
-            submit_selector=result.get("submit_selector"),
-            pre_login_steps=result.get("pre_login_steps", []),
-            mfa_likely=bool(result.get("mfa_likely", False)),
-            mfa_hints=str(result.get("mfa_hints", "")),
-            page_title=str(result.get("page_title", "")),
-            confidence=float(result.get("confidence", 0.0)),
-        )
+        return _discovery_from(result)
 
     # ── Field Discovery ───────────────────────────────────────────────────────
 
@@ -399,8 +440,11 @@ class BlueprintGenerator:
                 max_tokens=2048,
                 json_mode=True,
             )
-            return response.parse_json()
-        except (LLMProviderError, json.JSONDecodeError, ValueError) as e:
+            discovered = response.parse_json()
+            if not isinstance(discovered, dict) or not isinstance(discovered.get("fields"), list):
+                raise ValueError("field discovery reply has no 'fields' list")
+            return discovered
+        except (LLMProviderError, json.JSONDecodeError, ValueError, TypeError) as e:
             logger.warning("Field discovery failed: %s", e)
             # Return minimal default fields
             return {
@@ -439,8 +483,15 @@ class BlueprintGenerator:
         login_discovery: LoginFormDiscovery,
         extraction_fields: Dict[str, Any],
         site_type: Optional[str],
+        login_target: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Assemble the final blueprint JSON from discovered components."""
+        """Assemble the final blueprint JSON from discovered components.
+
+        Every step carries exactly the fields its action needs, the login form
+        may only submit to ``login_target`` (or, when that is unknown, anywhere
+        on the site's own host), and field names and types are normalised so
+        the draft validates.
+        """
 
         # Build auth steps
         auth_steps: List[Dict[str, Any]] = []
@@ -453,12 +504,13 @@ class BlueprintGenerator:
             }
         )
 
-        # Pre-login steps (e.g., dismiss cookie banner)
+        # Pre-login steps (e.g., dismiss cookie banner). Only clicks: the model
+        # does not get to add navigation or scripts to a login flow.
         for step in login_discovery.pre_login_steps:
-            if step.get("selector"):
+            if step.get("action", "click") == "click" and isinstance(step.get("selector"), str) and step["selector"]:
                 auth_steps.append(
                     {
-                        "action": step.get("action", "click"),
+                        "action": "click",
                         "selector": step["selector"],
                     }
                 )
@@ -496,28 +548,42 @@ class BlueprintGenerator:
         # Step 5: Wait for post-login page load
         auth_steps.append(
             {
-                "action": "wait",
+                "action": "wait_for_navigation",
                 "timeout": 10000,
             }
         )
 
+        # Where the login form may submit
+        allowed_domains: List[str] = []
+        submit_targets = ["/*"]
+        if login_target:
+            _scheme, target_host, target_port, _path, _userinfo = split_url(login_target)
+            if not parse_domain_rule(domain).allows(target_host, target_port):
+                allowed_domains.append(target_host)
+            submit_targets = [login_target.split("?", 1)[0]]
+
         # Build extraction fields
         extract: Dict[str, Any] = {}
         for f in extraction_fields.get("fields", []):
-            fname = f.get("name", "unnamed")
+            if not isinstance(f, dict):
+                continue
+            fname = _FIELD_NAME.sub("_", str(f.get("name", "")).strip().lower()).strip("_")
+            if not fname or fname in extract:
+                continue
+            ftype = str(f.get("type", "text")).strip().lower()
             extract[fname] = {
-                "type": f.get("type", "text"),
-                "description": f.get("description", ""),
+                "type": ftype if ftype in _SCALAR_TYPES else "text",
+                "description": str(f.get("description", "")),
             }
             if f.get("example"):
-                extract[fname]["example"] = f["example"]
+                extract[fname]["example"] = str(f["example"])
             if f.get("sensitive"):
                 extract[fname]["sensitive"] = True
 
         # Build tags
-        tags = ["auto_generated"]
+        tags = [GENERATED_TAG]
         if site_type:
-            tags.append(site_type)
+            tags.append(str(site_type))
 
         # Assemble blueprint
         blueprint: Dict[str, Any] = {
@@ -526,12 +592,10 @@ class BlueprintGenerator:
             "domain": domain,
             "tags": tags,
             "extraction_strategy": "llm_adaptive",
-            "page_context": extraction_fields.get(
-                "page_context",
-                f"Dashboard for {site_name}",
-            ),
+            "page_context": str(extraction_fields.get("page_context") or f"Dashboard for {site_name}"),
             "auth": {
                 "type": "form",
+                "submit_targets": submit_targets,
                 "steps": auth_steps,
             },
             "extract": extract,
@@ -552,7 +616,10 @@ class BlueprintGenerator:
                 "handler": "user_prompt",
                 "input_selector": "input[type='tel'], input[name*='otp'], input[name*='code']",
                 "submit_selector": "button[type='submit'], input[type='submit']",
+                "submit_targets": ["/*"],
             }
+        if allowed_domains:
+            blueprint["allowed_domains"] = allowed_domains
 
         return blueprint
 

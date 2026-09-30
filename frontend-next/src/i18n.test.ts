@@ -24,7 +24,6 @@ describe("i18n", () => {
       "Return a secure completion back to your app when verification finishes.",
     );
     expect(MESSAGES["en-US"].success_message).toContain("Return to your app");
-    expect(MESSAGES["en-US"].public_token_label).toBe("PUBLIC TOKEN");
   });
 
   it("getMessages falls back to the default locale", () => {
@@ -54,7 +53,6 @@ describe("i18n", () => {
   it("fr-CA translates consent bullets", () => {
     const fr = MESSAGES["fr-CA"];
     expect(fr.consent_bullets[0]).toContain("fournisseur");
-    expect(fr.public_token_label).toBe("JETON PUBLIC");
   });
 
   it("resolveTheme parses ?theme=", () => {

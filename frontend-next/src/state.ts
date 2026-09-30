@@ -41,7 +41,8 @@ export interface Institution {
 }
 
 export interface SuccessPayload {
-  readonly accessToken: string;
+  // The public token goes to the embedding app through events only; the
+  // end user has no use for it, so the UI never holds it.
   readonly summary?: string;
 }
 
@@ -62,6 +63,7 @@ export type FlowEvent =
   | { type: "RESET" }
   | { type: "SELECT_INSTITUTION"; institution: Institution }
   | { type: "BACK_TO_PICKER" }
+  | { type: "RETRY" }
   | { type: "SUBMIT_CREDENTIALS" }
   | { type: "MFA_REQUIRED"; prompt: string }
   | { type: "SUBMIT_MFA" }
@@ -94,6 +96,17 @@ export function flowReducer(state: FlowState, event: FlowEvent): FlowState {
 
     case "BACK_TO_PICKER":
       return initialFlowState;
+
+    case "RETRY":
+      // Try the same provider again; without one there is nothing to retry.
+      if (!state.institution) {
+        return initialFlowState;
+      }
+      return {
+        ...initialFlowState,
+        step: "credentials",
+        institution: state.institution,
+      };
 
     case "SUBMIT_CREDENTIALS":
       if (state.step !== "credentials" && state.step !== "error") {

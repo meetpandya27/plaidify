@@ -244,3 +244,80 @@ class TestRegistryDelete:
     def test_delete_requires_auth(self, client):
         resp = client.delete("/registry/some_site")
         assert resp.status_code == 401
+
+
+# ── Claimed sites, counters and paging (JOB-22) ───────────────────────────────
+
+
+def _make_admin(client, headers):
+    from src.database import User
+    from tests.conftest import TestSessionLocal
+
+    user_id = client.get("/auth/me", headers=headers).json()["id"]
+    with TestSessionLocal() as db:
+        db.get(User, user_id).is_admin = True
+        db.commit()
+
+
+class TestClaimedSites:
+    def test_admin_can_update_and_remove_a_claimed_site(self, client, auth_headers, second_user_headers):
+        bp = _make_blueprint()
+        site = client.post("/registry/publish", json={"blueprint": bp}, headers=auth_headers).json()["site"]
+        _make_admin(client, second_user_headers)
+
+        updated = client.post("/registry/publish", json={"blueprint": bp}, headers=second_user_headers)
+        assert updated.status_code == 200
+        assert updated.json()["version"] == "1.0.1"
+        # The claim stays with its publisher.
+        assert client.post("/registry/publish", json={"blueprint": bp}, headers=auth_headers).status_code == 200
+        assert client.delete(f"/registry/{site}", headers=second_user_headers).status_code == 200
+
+    def test_publish_body_is_validated(self, client, auth_headers):
+        assert client.post("/registry/publish", json={"blueprint": ["a"]}, headers=auth_headers).status_code == 422
+        assert client.post("/registry/publish", json={"blueprint": "[]"}, headers=auth_headers).status_code == 422
+        too_long = {"blueprint": _make_blueprint(), "description": "x" * 5000}
+        assert client.post("/registry/publish", json=too_long, headers=auth_headers).status_code == 422
+        assert client.post("/registry/publish", content=b"{", headers=auth_headers).status_code == 422
+
+
+class TestCountersAndPaging:
+    def test_concurrent_downloads_are_all_counted(self, client, auth_headers):
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        from src.main import app
+
+        site = client.post("/registry/publish", json={"blueprint": _make_blueprint()}, headers=auth_headers).json()[
+            "site"
+        ]
+        statuses = []
+
+        def download():
+            statuses.append(TestClient(app).get(f"/registry/{site}").status_code)
+
+        threads = [threading.Thread(target=download) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert statuses == [200] * 8
+        assert client.get(f"/registry/{site}").json()["downloads"] == 9
+
+    def test_search_is_paginated(self, client, auth_headers):
+        for n in range(3):
+            client.post(
+                "/registry/publish",
+                json={"blueprint": _make_blueprint(name=f"Util {n}", domain=f"u{n}.example.com")},
+                headers=auth_headers,
+            )
+        page = client.get("/registry/search", params={"limit": 2}).json()
+        rest = client.get("/registry/search", params={"limit": 2, "offset": 2}).json()
+        assert page["count"] == 2 and rest["count"] == 1
+        assert {r["site"] for r in page["results"] + rest["results"]} == {
+            "u0_example_com",
+            "u1_example_com",
+            "u2_example_com",
+        }
+        assert client.get("/registry/search", params={"limit": 1000}).status_code == 422

@@ -5,6 +5,7 @@
   "tags": ["internal", "fixture", "browser"],
   "auth": {
     "type": "form",
+    "submit_targets": ["/login"],
     "steps": [
       {
         "action": "goto",
@@ -24,13 +25,15 @@
         "action": "click",
         "selector": "#login-btn",
         "wait_for_navigation": true
-      },
-      {
-        "action": "wait",
-        "selector": "#dashboard, #otp-input",
-        "timeout": 10000
       }
-    ]
+    ],
+    "success": {
+      "selector": "#dashboard",
+      "timeout": 10000
+    },
+    "failure": {
+      "selector": "#login-error"
+    }
   },
   "mfa": {
     "detection": {
@@ -40,7 +43,14 @@
     "type": "otp_input",
     "handler": "user_prompt",
     "input_selector": "#otp-input",
-    "submit_selector": "#otp-submit"
+    "submit_selector": "#otp-submit",
+    "submit_targets": ["/mfa"],
+    "success": {
+      "selector": "#dashboard"
+    },
+    "failure": {
+      "selector": "#mfa-error"
+    }
   },
   "extract": {
     "current_bill": {
@@ -139,6 +149,7 @@
       "selector": "#logout-btn"
     }
   ],
+  "logout_targets": ["/logout"],
   "rate_limit": {
     "max_requests_per_hour": 60,
     "min_interval_seconds": 5

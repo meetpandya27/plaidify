@@ -110,6 +110,8 @@ public fun PlaidifyLinkCredentials(
             onValueChange = { password = it },
             label = { Text("Password") },
             visualTransformation = PasswordVisualTransformation(),
+            // The password keyboard: no suggestions, no learning what was typed.
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
             modifier = Modifier
                 .fillMaxWidth()
                 .semantics { contentDescription = "Password" },
@@ -126,38 +128,52 @@ public fun PlaidifyLinkCredentials(
     }
 }
 
+/**
+ * The MFA step. `push` needs no input; `security_question` takes free text;
+ * anything else is a numeric one-time code.
+ */
 @Composable
 public fun PlaidifyLinkMfa(
     prompt: String,
+    mfaType: String? = null,
     onSubmit: (String) -> Unit,
 ) {
     var code by remember { mutableStateOf("") }
+    val awaitsApproval = mfaType == "push"
+    val isQuestion = mfaType == "security_question"
     Column(
         modifier = Modifier.fillMaxWidth().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
-            text = "Verify your identity",
+            text = if (awaitsApproval) "Approve the sign-in" else "Verify your identity",
             modifier = Modifier.semantics { heading() },
         )
         Text(prompt)
-        OutlinedTextField(
-            value = code,
-            onValueChange = { code = it },
-            label = { Text("Verification code") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-            modifier = Modifier
-                .fillMaxWidth()
-                .semantics { contentDescription = "Verification code" },
-        )
+        if (!awaitsApproval) {
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it },
+                label = { Text(if (isQuestion) "Answer" else "Verification code") },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (isQuestion) KeyboardType.Text else KeyboardType.NumberPassword,
+                    autoCorrectEnabled = false,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = if (isQuestion) "Answer" else "Verification code" },
+            )
+        }
         Button(
-            onClick = { onSubmit(code) },
-            enabled = code.isNotEmpty(),
+            onClick = { onSubmit(if (awaitsApproval) "" else code) },
+            enabled = awaitsApproval || code.isNotEmpty(),
             modifier = Modifier
                 .fillMaxWidth()
-                .semantics { contentDescription = "Submit verification code" },
+                .semantics {
+                    contentDescription = if (awaitsApproval) "Confirm the approval" else "Submit verification code"
+                },
         ) {
-            Text("Submit")
+            Text(if (awaitsApproval) "I approved it" else "Submit")
         }
     }
 }

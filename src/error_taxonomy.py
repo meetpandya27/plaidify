@@ -176,6 +176,10 @@ def classify_exception(exc: BaseException) -> LinkErrorCode:
                 pass
 
     name = type(exc).__name__.lower()
+    if "mfa" in name and "timeout" in name:
+        return LinkErrorCode.MFA_TIMEOUT
+    if "authentication" in name:
+        return LinkErrorCode.INVALID_CREDENTIALS
     if "timeout" in name:
         return LinkErrorCode.NETWORK_ERROR
     if "connection" in name or "network" in name:

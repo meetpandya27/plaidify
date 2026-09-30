@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { EventDelivery, postBridgeEvent } from "./events";
+import {
+  EventDelivery,
+  ParentChannel,
+  eventBody,
+  postBridgeEvent,
+  resolveParentTargets,
+} from "./events";
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
@@ -70,6 +76,23 @@ describe("EventDelivery", () => {
       client: "react",
     });
     expect(delivery.pending).toBe(0);
+    // Survives the page being torn down mid-request.
+    expect(init.keepalive).toBe(true);
+  });
+
+  it("keeps the envelope event name even when the payload has an `event` key", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    const delivery = new EventDelivery({
+      linkToken: "tok",
+      serverUrl: "https://api.plaidify.test",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    delivery.enqueue("TELEMETRY", { event: "step_view", name: "step_view", step: "select" });
+    await flush();
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ event: "TELEMETRY", name: "step_view", step: "select" });
   });
 
   it("retries with exponential backoff and preserves queue order", async () => {
@@ -191,44 +214,203 @@ describe("EventDelivery", () => {
   });
 });
 
-describe("postBridgeEvent", () => {
-  it("posts to the parent frame when embedded", () => {
-    const targetWindow = {
-      postMessage: vi.fn(),
-    } as unknown as Window;
-
-    postBridgeEvent(
-      "OPEN",
-      { link_session_id: "ls_1" },
-      {
-        parentOrigin: "https://merchant.example",
-        inIframe: true,
-        targetWindow,
+describe("EventDelivery.flushOnTeardown", () => {
+  it("beacons queued events plus the final ones and empties the queue", async () => {
+    const scheduler = makeScheduler();
+    const beacons: Array<{ url: string; body: unknown }> = [];
+    const fetchMock = vi.fn().mockRejectedValue(new Error("offline"));
+    const delivery = new EventDelivery({
+      linkToken: "tok",
+      serverUrl: "https://api.plaidify.test",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      setTimer: scheduler.setTimer,
+      clearTimer: scheduler.clearTimer,
+      sendOnTeardown: (url, body) => {
+        beacons.push({ url, body: JSON.parse(body) });
+        return true;
       },
+    });
+
+    delivery.enqueue("ERROR", { error_code: "network_error" });
+    await flush();
+    // The first attempt failed; ERROR now waits for its retry timer.
+    expect(delivery.busy).toBe(false);
+    expect(delivery.pending).toBe(1);
+
+    delivery.flushOnTeardown([{ event: "EXIT", payload: { reason: "page_closed" } }]);
+
+    expect(beacons).toEqual([
+      {
+        url: "https://api.plaidify.test/link/sessions/tok/event",
+        body: { event: "ERROR", error_code: "network_error" },
+      },
+      {
+        url: "https://api.plaidify.test/link/sessions/tok/event",
+        body: { event: "EXIT", reason: "page_closed" },
+      },
+    ]);
+    expect(delivery.pending).toBe(0);
+  });
+
+  it("leaves the post already on the wire to its keepalive request", async () => {
+    const beacons: string[] = [];
+    let release: (value: Response) => void = () => undefined;
+    const fetchMock = vi.fn().mockReturnValue(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      }),
     );
-
-    expect(targetWindow.postMessage).toHaveBeenCalledWith(
-      {
-        source: "plaidify-link",
-        event: "OPEN",
-        link_session_id: "ls_1",
+    const delivery = new EventDelivery({
+      linkToken: "tok",
+      serverUrl: "https://api.plaidify.test",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      sendOnTeardown: (_url, body) => {
+        beacons.push(JSON.parse(body).event);
+        return true;
       },
+    });
+
+    delivery.enqueue("OPEN", {});
+    delivery.enqueue("INSTITUTION_SELECTED", { site: "hydro_one" });
+    expect(delivery.busy).toBe(true);
+
+    delivery.flushOnTeardown([{ event: "EXIT" }]);
+    expect(beacons).toEqual(["INSTITUTION_SELECTED", "EXIT"]);
+    release(new Response(null, { status: 204 }));
+  });
+});
+
+describe("eventBody", () => {
+  it("writes the envelope after the payload", () => {
+    expect(JSON.parse(eventBody("EXIT", { event: "spoof", reason: "user_exit" }))).toEqual({
+      event: "EXIT",
+      reason: "user_exit",
+    });
+  });
+});
+
+describe("resolveParentTargets", () => {
+  it("uses the candidate when the session allows it", () => {
+    expect(
+      resolveParentTargets({
+        candidateOrigin: "https://merchant.example",
+        ownOrigin: "https://api.plaidify.test",
+        allowedOrigins: ["https://merchant.example", "https://other.example"],
+      }),
+    ).toEqual(["https://merchant.example"]);
+  });
+
+  it("ignores a candidate the session does not allow", () => {
+    expect(
+      resolveParentTargets({
+        candidateOrigin: "https://attacker.example",
+        ownOrigin: "https://api.plaidify.test",
+        allowedOrigins: ["https://merchant.example/"],
+      }),
+    ).toEqual(["https://merchant.example", "https://api.plaidify.test"]);
+  });
+
+  it("admits only the page's own origin when the list is empty", () => {
+    expect(
+      resolveParentTargets({
+        candidateOrigin: "https://attacker.example",
+        ownOrigin: "https://api.plaidify.test",
+        allowedOrigins: [],
+      }),
+    ).toEqual(["https://api.plaidify.test"]);
+  });
+
+  it("falls back to the candidate for servers without allowed_origins, never '*'", () => {
+    expect(
+      resolveParentTargets({
+        candidateOrigin: "https://merchant.example",
+        ownOrigin: "https://api.plaidify.test",
+        allowedOrigins: undefined,
+      }),
+    ).toEqual(["https://merchant.example"]);
+    expect(
+      resolveParentTargets({
+        candidateOrigin: "*",
+        ownOrigin: "https://api.plaidify.test",
+        allowedOrigins: undefined,
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("ParentChannel", () => {
+  it("holds messages until the session names the allowed origins", () => {
+    const targetWindow = { postMessage: vi.fn() };
+    const channel = new ParentChannel({
+      targetWindow,
+      ownOrigin: "https://api.plaidify.test",
+      candidateOrigin: "https://attacker.example",
+    });
+
+    channel.post({ source: "plaidify-link", event: "OPEN" });
+    expect(targetWindow.postMessage).not.toHaveBeenCalled();
+
+    channel.resolve(["https://merchant.example"]);
+    channel.post({ source: "plaidify-link", event: "CONNECTED", public_token: "public-1" });
+
+    const targets = targetWindow.postMessage.mock.calls.map((call) => call[1]);
+    expect(new Set(targets)).toEqual(
+      new Set(["https://merchant.example", "https://api.plaidify.test"]),
+    );
+    expect(targets).not.toContain("*");
+    expect(targets).not.toContain("https://attacker.example");
+    expect(targetWindow.postMessage).toHaveBeenCalledWith(
+      { source: "plaidify-link", event: "OPEN" },
       "https://merchant.example",
     );
+  });
+
+  it("is a no-op without a parent window", () => {
+    const channel = new ParentChannel({
+      targetWindow: null,
+      ownOrigin: "https://api.plaidify.test",
+      candidateOrigin: null,
+    });
+    expect(() => {
+      channel.post({ event: "OPEN" });
+      channel.resolve([]);
+    }).not.toThrow();
+  });
+});
+
+describe("postBridgeEvent", () => {
+  it("hands the message to the parent channel", () => {
+    const parent = { post: vi.fn() };
+
+    postBridgeEvent("OPEN", { link_session_id: "ls_1" }, { parent });
+
+    expect(parent.post).toHaveBeenCalledWith({
+      source: "plaidify-link",
+      event: "OPEN",
+      link_session_id: "ls_1",
+    });
+  });
+
+  it("does not let a payload rename the event or its source", () => {
+    const parent = { post: vi.fn() };
+
+    postBridgeEvent(
+      "TELEMETRY",
+      { event: "step_view", source: "evil", name: "step_view" },
+      { parent },
+    );
+
+    expect(parent.post).toHaveBeenCalledWith({
+      source: "plaidify-link",
+      event: "TELEMETRY",
+      name: "step_view",
+    });
   });
 
   it("serializes to a React Native bridge when present", () => {
     const reactNativeBridge = { postMessage: vi.fn() };
 
-    postBridgeEvent(
-      "EXIT",
-      { reason: "user-closed" },
-      {
-        parentOrigin: "*",
-        inIframe: false,
-        reactNativeBridge,
-      },
-    );
+    postBridgeEvent("EXIT", { reason: "user-closed" }, { reactNativeBridge });
 
     expect(reactNativeBridge.postMessage).toHaveBeenCalledTimes(1);
     expect(JSON.parse(reactNativeBridge.postMessage.mock.calls[0][0])).toEqual({
@@ -238,18 +420,22 @@ describe("postBridgeEvent", () => {
     });
   });
 
+  it("serializes to the Android bridge when present", () => {
+    const androidBridge = { postMessage: vi.fn() };
+
+    postBridgeEvent("CONNECTED", { public_token: "public-1" }, { androidBridge });
+
+    expect(JSON.parse(androidBridge.postMessage.mock.calls[0][0])).toEqual({
+      source: "plaidify-link",
+      event: "CONNECTED",
+      public_token: "public-1",
+    });
+  });
+
   it("delivers the raw object to a WKWebView bridge", () => {
     const webkitBridge = { postMessage: vi.fn() };
 
-    postBridgeEvent(
-      "CONNECTED",
-      { public_token: "public-1" },
-      {
-        parentOrigin: "*",
-        inIframe: false,
-        webkitBridge,
-      },
-    );
+    postBridgeEvent("CONNECTED", { public_token: "public-1" }, { webkitBridge });
 
     expect(webkitBridge.postMessage).toHaveBeenCalledTimes(1);
     expect(webkitBridge.postMessage.mock.calls[0][0]).toEqual({
@@ -259,16 +445,7 @@ describe("postBridgeEvent", () => {
     });
   });
 
-  it("is a no-op when neither transport is available", () => {
-    expect(() =>
-      postBridgeEvent(
-        "OPEN",
-        {},
-        {
-          parentOrigin: "https://merchant.example",
-          inIframe: false,
-        },
-      ),
-    ).not.toThrow();
+  it("is a no-op when no transport is available", () => {
+    expect(() => postBridgeEvent("OPEN", {}, {})).not.toThrow();
   });
 });

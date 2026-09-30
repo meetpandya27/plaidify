@@ -6,26 +6,29 @@ and password hashing utilities.
 """
 
 import base64
+import functools
 import hashlib
 import json
+import secrets
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Optional
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
+from limits import parse as parse_rate_limit
 from passlib.context import CryptContext
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
+from src.auth_utils import decode_access_token
 from src.config import get_settings
 from src.crypto import _get_redis, decrypt_with_session_key, destroy_session_key
-from src.database import Agent, ApiKey, User, get_db
-from src.exceptions import InvalidTokenError
+from src.database import Agent, ApiKey, User, as_utc, get_db, utcnow
 from src.logging_config import get_logger
-from src.models import ConnectRequest
+from src.models import MAX_PASSWORD_BYTES, ConnectRequest, scope_field
 
 settings = get_settings()
 logger = get_logger("dependencies")
@@ -94,52 +97,90 @@ class AuthContext:
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password using bcrypt."""
+    """Hash a password using bcrypt. Refuses passwords bcrypt would truncate."""
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise ValueError(f"Passwords longer than {MAX_PASSWORD_BYTES} bytes cannot be hashed with bcrypt.")
     return pwd_context.hash(password)
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plain password against a bcrypt hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+@functools.lru_cache(maxsize=1)
+def _dummy_password_hash() -> str:
+    return pwd_context.hash(secrets.token_urlsafe(24))
 
 
-def _normalize_scope_name(scope: str) -> str:
-    value = str(scope).strip()
-    if ":" in value:
-        value = value.split(":", 1)[1]
-    return value.strip()
+def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
+    """Verify a password against a bcrypt hash.
+
+    Costs one bcrypt verification whether or not there is a hash to check, so
+    an unknown user, an account without a password and a wrong password take
+    the same time. A password longer than bcrypt's 72 bytes never matches
+    (bcrypt would compare only its first 72 bytes).
+    """
+    if not hashed_password or len(plain_password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        try:
+            pwd_context.verify(plain_password, _dummy_password_hash())
+        except (ValueError, TypeError):
+            pass
+        return False
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except (ValueError, TypeError):
+        return False
 
 
-def _load_scope_set(scopes_json: Optional[str]) -> Optional[set[str]]:
-    if not scopes_json:
+def hash_api_key(raw_key: str) -> str:
+    """Digest under which an API key is stored and looked up.
+
+    Plain SHA-256 is deliberate: keys are 256-bit random values
+    (``secrets.token_urlsafe(32)``), so unlike a password there is no
+    dictionary to try, and a slow or peppered hash would cost every request
+    without making a stolen digest any easier to reverse. (Static analysers
+    flag SHA-256 over a secret as a weak *password* hash; for a key with this
+    much entropy it is the standard construction.)
+    """
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def generate_api_key(prefix: str) -> tuple[str, str]:
+    """A new raw API key (``<prefix><43 url-safe chars>``) and the digest to store."""
+    raw_key = f"{prefix}{secrets.token_urlsafe(32)}"
+    return raw_key, hash_api_key(raw_key)
+
+
+# ── Scope and site restrictions ──────────────────────────────────────────────
+
+
+def load_scope_set(scopes_json: Optional[str]) -> Optional[set[str]]:
+    """The fields a stored scope list allows: ``None`` = unrestricted, empty = nothing.
+
+    Only a NULL column means "every scope". Anything else that is not a JSON
+    list of valid scopes (a bare string, garbage, a mistyped entry) allows
+    nothing: a restriction that cannot be read must never read as none.
+    """
+    if scopes_json is None:
         return None
-
     try:
         values = json.loads(scopes_json)
+        if not isinstance(values, list):
+            raise ValueError("not a list")
+        return {scope_field(value) for value in values}
     except (TypeError, ValueError):
+        logger.warning("Unreadable stored scope list; allowing no scopes")
+        return set()
+
+
+def load_site_set(sites_json: Optional[str]) -> Optional[set[str]]:
+    """The sites a stored site list allows: ``None`` = unrestricted, empty = nothing (fails closed)."""
+    if sites_json is None:
         return None
-
-    if not isinstance(values, list):
-        return None
-
-    normalized = {_normalize_scope_name(value) for value in values if _normalize_scope_name(value)}
-    return normalized or set()
-
-
-def _load_site_set(sites_json: Optional[str]) -> Optional[set[str]]:
-    if not sites_json:
-        return None
-
     try:
         values = json.loads(sites_json)
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError("not a list of strings")
     except (TypeError, ValueError):
-        return None
-
-    if not isinstance(values, list):
-        return None
-
-    normalized = {str(value).strip().lower() for value in values if str(value).strip()}
-    return normalized or set()
+        logger.warning("Unreadable stored site list; allowing no sites")
+        return set()
+    return {value.strip().lower() for value in values if value.strip()}
 
 
 def _combine_scope_sets(
@@ -166,18 +207,21 @@ def get_principal_allowed_scopes(request: Request) -> Optional[set[str]]:
     return None if auth_context is None else auth_context.allowed_scopes
 
 
-def ensure_site_allowed_for_request(request: Request, site: str) -> Optional[AuthContext]:
+def site_allowed_for_request(request: Request, site: Optional[str]) -> bool:
+    """Whether the caller's API key or agent may reach ``site`` (always true for a login)."""
     auth_context = get_auth_context(request)
     if auth_context is None or auth_context.allowed_sites is None:
-        return auth_context
+        return True
+    return bool(site) and site.strip().lower() in auth_context.allowed_sites
 
-    if site.strip().lower() not in auth_context.allowed_sites:
+
+def ensure_site_allowed_for_request(request: Request, site: str) -> Optional[AuthContext]:
+    if not site_allowed_for_request(request, site):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This API key or agent is not allowed to access the requested site.",
         )
-
-    return auth_context
+    return get_auth_context(request)
 
 
 def constrain_requested_scopes(
@@ -191,9 +235,10 @@ def constrain_requested_scopes(
     if requested_scopes is None:
         return sorted(auth_context.allowed_scopes)
 
-    requested_set = {
-        normalized for normalized in (_normalize_scope_name(scope) for scope in requested_scopes) if normalized
-    }
+    try:
+        requested_set = {scope_field(scope) for scope in requested_scopes}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
     if requested_set - auth_context.allowed_scopes:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -203,33 +248,49 @@ def constrain_requested_scopes(
     return sorted(requested_set)
 
 
+def reject_agent_caller(request: Request, action: str) -> None:
+    """Refuse an action only the account owner may take (approving consent, say) to an agent key."""
+    auth_context = get_auth_context(request)
+    if auth_context is not None and auth_context.agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"An agent's API key cannot {action}; the account owner must.",
+        )
+
+
 # ── User Dependencies ─────────────────────────────────────────────────────────
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
-    """FastAPI dependency: extract and validate the current user from a JWT."""
-    try:
-        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
-        user_id = payload.get("sub")
-        if user_id is None:
-            raise InvalidTokenError()
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired.",
-        )
-    except jwt.InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials.",
-        )
+def _unauthorized(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
-    user = db.query(User).filter(User.id == int(user_id)).first()
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+    """FastAPI dependency: extract and validate the current user from an access token.
+
+    The token must be an access token (not, say, a hosted-link launch token),
+    its owner must be active, and it must carry the owner's current token
+    version: a password reset, "sign out everywhere" or deactivation ends it.
+    """
+    try:
+        payload = decode_access_token(token)
+        user_id = int(payload["sub"])
+    except jwt.ExpiredSignatureError:
+        raise _unauthorized("Token has expired.")
+    except (jwt.InvalidTokenError, KeyError, TypeError, ValueError):
+        raise _unauthorized("Invalid authentication credentials.")
+
+    user = db.get(User, user_id)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found.",
-        )
+        raise _unauthorized("User not found.")
+    if not user.is_active:
+        raise _unauthorized("Account is disabled.")
+    if payload["tv"] != (user.token_version or 0):
+        raise _unauthorized("This session has ended. Sign in again.")
     return user
 
 
@@ -243,71 +304,89 @@ def get_admin_user(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def has_credentials(request: Request) -> bool:
+    """Whether the request carries an API key or an Authorization header at all."""
+    return bool(request.headers.get("x-api-key") or request.headers.get("authorization"))
+
+
+def _enforce_agent_rate_limit(agent: Agent) -> None:
+    """Apply the agent's own ``rate_limit`` ("N/period"), counted per agent across all its requests."""
+    if not agent.rate_limit or not limiter.enabled:
+        return
+    try:
+        item = parse_rate_limit(agent.rate_limit)
+    except ValueError:
+        logger.warning(
+            "Agent has an unreadable rate_limit; applying the default limit",
+            extra={"extra_data": {"agent_id": agent.id}},
+        )
+        item = parse_rate_limit(settings.rate_limit_default)
+    try:
+        allowed = limiter.limiter.hit(item, "agent", agent.id)
+        reset_at = limiter.limiter.get_window_stats(item, "agent", agent.id).reset_time if not allowed else None
+    except Exception as exc:  # like the route limits: an unreachable backend fails open
+        logger.warning(f"Agent rate limit check failed: {exc}")
+        return
+    if not allowed:
+        retry_after = max(1, int(reset_at - time.time())) if reset_at else 60
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Agent rate limit exceeded ({agent.rate_limit}).",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def authenticate_api_key(request: Request, db: Session, raw_key: str) -> User:
+    """Resolve an ``X-API-Key`` to its owner and record the key's restrictions on the request."""
+    db_key = db.query(ApiKey).filter_by(key_hash=hash_api_key(raw_key), is_active=True).first()
+    if not db_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key.")
+    now = utcnow()
+    if db_key.expires_at and now > as_utc(db_key.expires_at):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key has expired.")
+    agent = db.query(Agent).filter_by(api_key_id=db_key.id).first()
+    if agent and not agent.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Agent is inactive.")
+
+    user = db.get(User, db_key.user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key owner not found.")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is disabled.")
+    if agent:
+        _enforce_agent_rate_limit(agent)
+
+    db_key.last_used_at = now
+    if agent:
+        agent.last_active_at = now
+    db.commit()
+    _store_auth_context(
+        request,
+        AuthContext(
+            user=user,
+            auth_method="api_key",
+            api_key_id=db_key.id,
+            agent_id=agent.id if agent else None,
+            allowed_scopes=_combine_scope_sets(
+                load_scope_set(db_key.scopes),
+                load_scope_set(agent.allowed_scopes) if agent else None,
+            ),
+            allowed_sites=load_site_set(agent.allowed_sites) if agent else None,
+        ),
+    )
+    return user
+
+
 def get_current_user_or_api_key(request: Request, db: Session = Depends(get_db)) -> User:
-    """FastAPI dependency: authenticate via JWT Bearer token OR X-API-Key header."""
-    # Check for API key first
+    """FastAPI dependency: authenticate via an X-API-Key header OR a Bearer access token."""
     api_key = request.headers.get("x-api-key")
     if api_key:
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        db_key = db.query(ApiKey).filter_by(key_hash=key_hash, is_active=True).first()
-        if not db_key:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key.")
-        if db_key.expires_at:
-            exp = (
-                db_key.expires_at.replace(tzinfo=timezone.utc)
-                if db_key.expires_at.tzinfo is None
-                else db_key.expires_at
-            )
-            if datetime.now(timezone.utc) > exp:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="API key has expired.",
-                )
-        # Update last used
-        db_key.last_used_at = datetime.now(timezone.utc)
-        agent = db.query(Agent).filter_by(api_key_id=db_key.id).first()
-        if agent and not agent.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Agent is inactive.",
-            )
+        return authenticate_api_key(request, db, api_key)
 
-        user = db.query(User).filter(User.id == db_key.user_id).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="API key owner not found.",
-            )
-
-        if agent:
-            agent.last_active_at = datetime.now(timezone.utc)
-
-        db.commit()
-        _store_auth_context(
-            request,
-            AuthContext(
-                user=user,
-                auth_method="api_key",
-                api_key_id=db_key.id,
-                agent_id=agent.id if agent else None,
-                allowed_scopes=_combine_scope_sets(
-                    _load_scope_set(db_key.scopes),
-                    _load_scope_set(agent.allowed_scopes) if agent else None,
-                ),
-                allowed_sites=_load_site_set(agent.allowed_sites) if agent else None,
-            ),
-        )
-        return user
-
-    # Fall back to JWT
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication.",
-        )
-    token = auth_header[7:]
-    user = get_current_user(token=token, db=db)
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise _unauthorized("Missing authentication.")
+    user = get_current_user(token=token.strip(), db=db)
     _store_auth_context(request, AuthContext(user=user, auth_method="jwt"))
     return user
 

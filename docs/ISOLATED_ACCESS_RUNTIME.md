@@ -1,6 +1,6 @@
 # Plaidify Isolated Access Runtime
 
-This document defines the execution model Plaidify should move toward for safer authenticated website access, better multi-tenant isolation, and future AI-agent support.
+This document defines the execution model Plaidify should move toward for safer authenticated website access, better multi-tenant isolation, and future AI-agent support. It is a design: [Current Baseline](#current-baseline) says what exists today.
 
 ## Why This Exists
 
@@ -27,13 +27,25 @@ Every user access flow should run with a clear boundary:
 
 ## Current Baseline
 
-Today Plaidify already has useful foundations:
+What exists today (September 2026):
 
-- Each session gets its own Playwright `BrowserContext`.
-- Link sessions and event delivery are keyed separately in Redis-backed stores.
+- Every site access is an `AccessJob` with an id, status, deadline, heartbeat
+  and audit linkage, and takes a lock per site credential, so two jobs never
+  drive the same account at once.
+- With `ACCESS_JOB_EXECUTION_MODE=redis-worker` the API queues jobs in a Redis
+  stream and a separate executor service (`python -m src.access_job_worker`)
+  runs them; the production compose stack and the Azure template work this
+  way. Otherwise jobs run inside the API process.
+- Each run gets its own Playwright `BrowserContext` and its own download
+  directory, both removed when the run ends; results are stored encrypted per
+  user.
 - Production requires Redis rather than silently falling back to process-local state.
 
-That is strong session isolation, but it still shares the wider service process, filesystem, and worker runtime.
+What does not exist yet: the executor is one long-lived process that runs up
+to `ACCESS_JOB_WORKER_CONCURRENCY` jobs side by side and holds
+`ENCRYPTION_KEY` and the database credentials. Chromium's sandbox is the only
+boundary between a page and those secrets — Level 0 below, in a separate
+service. There is no per-job process or container.
 
 ## Recommended Isolation Model
 
@@ -197,6 +209,10 @@ Good Kubernetes fits:
 
 ## Suggested Rollout Phases
 
+Status: phase 1 is done, phase 2 in part (executor split, per-run download
+directories; no per-job process), phase 3 in part (the production compose
+stack runs the executor as its own service), phase 4 not started.
+
 ### Phase 1: Formalize Access Jobs
 
 - Introduce an `AccessJob` model and status lifecycle
@@ -221,9 +237,7 @@ Good Kubernetes fits:
 
 ## Decision Summary
 
-In the grand scheme, your idea is good and worth pursuing.
-
-The best version of it is:
+The model this document recommends is:
 
 - **Not** one brand new environment per HTTP request.
 - **Yes** one isolated executor per access job or session.

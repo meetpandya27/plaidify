@@ -62,6 +62,16 @@ PAGE_STYLE = """
 BRAND = "GreenGrid Energy"
 
 
+def _error_html(message: str, element_id: str) -> str:
+    """The error line, carrying its id only when there is an error to show.
+
+    Connectors detect a rejected login or code by that id being visible.
+    """
+    if not message:
+        return "<p class='error'></p>"
+    return f"<p class='error' id='{element_id}' role='alert'>{message}</p>"
+
+
 def _login_html(error: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1' /><title>{BRAND} Sign In</title>{PAGE_STYLE}</head>
@@ -70,7 +80,7 @@ def _login_html(error: str = "") -> str:
   <div class='wrap'>
     <div class='card' style='max-width: 420px; margin: 80px auto;'>
       <h1>Sign in</h1>
-      <p class='error'>{error}</p>
+      {_error_html(error, "login-error")}
       <form action='/login' method='post'>
         <label for='username'>Username</label>
         <input type='text' name='username' id='username' autocomplete='off' />
@@ -93,7 +103,7 @@ def _mfa_html(error: str = "") -> str:
   <div class='wrap'>
     <div class='card' style='max-width: 420px; margin: 80px auto;'>
       <h1>Verify your identity</h1>
-      <p class='error'>{error}</p>
+      {_error_html(error, "mfa-error")}
       <form action='/mfa' method='post'>
         <label for='otp-input'>Verification Code</label>
         <input type='text' name='code' id='otp-input' autocomplete='off' />

@@ -95,12 +95,35 @@ describe("flowReducer", () => {
 
     const success = flowReducer(connecting, {
       type: "SUCCEED",
-      payload: { accessToken: "tok_abc", summary: "Account linked." },
+      payload: { summary: "Account linked." },
     });
     expect(success.step).toBe("success");
-    expect(success.success?.accessToken).toBe("tok_abc");
+    expect(success.success).toEqual({ summary: "Account linked." });
 
     const reset = flowReducer(success, { type: "RESET" });
     expect(reset).toEqual(initialFlowState);
+  });
+
+  it("retries the same provider from the error step", () => {
+    const errored = flowReducer(
+      flowReducer(
+        flowReducer(initialFlowState, { type: "SELECT_INSTITUTION", institution: hydro }),
+        { type: "SUBMIT_CREDENTIALS" },
+      ),
+      { type: "FAIL", payload: { message: "bad password", code: "invalid_credentials" } },
+    );
+
+    const retried = flowReducer(errored, { type: "RETRY" });
+    expect(retried.step).toBe("credentials");
+    expect(retried.institution).toEqual(hydro);
+    expect(retried.error).toBeNull();
+  });
+
+  it("sends a retry with no provider back to the picker", () => {
+    const errored = flowReducer(initialFlowState, {
+      type: "FAIL",
+      payload: { message: "link expired" },
+    });
+    expect(flowReducer(errored, { type: "RETRY" })).toEqual(initialFlowState);
   });
 });

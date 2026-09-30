@@ -1,6 +1,8 @@
 // src/react.ts
 import { useState, useCallback, useEffect, useRef } from "react";
-function sanitizePlaidifyLinkPayload(data) {
+
+// src/link-events.ts
+function sanitizeLinkPayload(data) {
   if (!data || typeof data !== "object") {
     return null;
   }
@@ -12,6 +14,7 @@ function sanitizePlaidifyLinkPayload(data) {
     source: "plaidify-link",
     event: payload.event,
     error: payload.error,
+    error_code: payload.error_code,
     job_id: payload.job_id,
     mfa_type: payload.mfa_type,
     organization_id: payload.organization_id,
@@ -19,18 +22,61 @@ function sanitizePlaidifyLinkPayload(data) {
     public_token: payload.public_token,
     reason: payload.reason,
     session_id: payload.session_id,
-    site: payload.site
+    site: payload.site,
+    name: payload.name,
+    step: payload.step,
+    field: payload.field,
+    elapsed_ms: payload.elapsed_ms
   };
+}
+
+// src/link-url.ts
+function trimTrailingSlashes(url) {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return url.slice(0, end);
+}
+function buildHostedLinkUrl(serverUrl, linkToken, options = {}, base) {
+  const url = new URL(`${trimTrailingSlashes(serverUrl)}/link`, base);
+  url.searchParams.set("token", linkToken);
+  if (options.origin) {
+    url.searchParams.set("origin", options.origin);
+  }
+  const theme = options.theme;
+  if (theme?.accentColor) {
+    url.searchParams.set("accent", theme.accentColor);
+  }
+  if (theme?.bgColor) {
+    url.searchParams.set("bg", theme.bgColor);
+  }
+  if (theme?.borderRadius) {
+    url.searchParams.set("radius", theme.borderRadius);
+  }
+  if (theme?.logo) {
+    url.searchParams.set("logo", theme.logo);
+  }
+  return url.toString();
+}
+
+// src/react.ts
+function serverOrigin(serverUrl) {
+  try {
+    const base = typeof window !== "undefined" ? window.location.href : void 0;
+    return new URL(trimTrailingSlashes(serverUrl), base).origin;
+  } catch {
+    return null;
+  }
 }
 function usePlaidifyLink(config) {
   const [status, setStatus] = useState("idle");
   const iframeRef = useRef(null);
   const overlayRef = useRef(null);
   const resizeHandlerRef = useRef(null);
-  const serverOriginRef = useRef(new URL(config.serverUrl.replace(/\/+$/, ""), window.location.href).origin);
+  const activeRef = useRef(false);
   const configRef = useRef(config);
   configRef.current = config;
-  serverOriginRef.current = new URL(config.serverUrl.replace(/\/+$/, ""), window.location.href).origin;
   const applyResponsiveLayout = useCallback(() => {
     if (!overlayRef.current || !iframeRef.current) {
       return;
@@ -65,30 +111,45 @@ function usePlaidifyLink(config) {
       window.removeEventListener("resize", resizeHandlerRef.current);
       resizeHandlerRef.current = null;
     }
-    if (overlayRef.current) {
-      document.body.removeChild(overlayRef.current);
-      overlayRef.current = null;
-    }
+    overlayRef.current?.remove();
+    overlayRef.current = null;
     iframeRef.current = null;
   }, []);
+  const finish = useCallback(
+    (outcome) => {
+      if (!activeRef.current) {
+        return;
+      }
+      activeRef.current = false;
+      cleanup();
+      if ("success" in outcome) {
+        setStatus("success");
+        configRef.current.onSuccess?.(outcome.success.public_token || "", outcome.success);
+      } else {
+        setStatus("idle");
+        configRef.current.onExit?.(outcome.exit);
+      }
+    },
+    [cleanup]
+  );
   const close = useCallback(() => {
-    cleanup();
-    setStatus("idle");
-    configRef.current.onExit?.({ reason: "user_closed" });
-  }, [cleanup]);
+    finish({ exit: { reason: "user_closed" } });
+  }, [finish]);
   useEffect(() => {
     function handleMessage(event) {
-      const data = sanitizePlaidifyLinkPayload(event.data);
-      if (!data || data.source !== "plaidify-link") return;
-      if (event.origin !== serverOriginRef.current) return;
+      if (!activeRef.current) return;
+      const frame = iframeRef.current;
+      if (!frame || event.source !== frame.contentWindow) return;
+      if (event.origin !== serverOrigin(configRef.current.serverUrl)) return;
+      const data = sanitizeLinkPayload(event.data);
+      if (!data) return;
       configRef.current.onEvent?.(data.event || "UNKNOWN", data);
       switch (data.event) {
         case "CONNECTED":
-          setStatus("success");
-          cleanup();
-          configRef.current.onSuccess?.(data.public_token || "", data);
+          finish({ success: data });
           break;
         case "MFA_REQUIRED":
+          setStatus("open");
           configRef.current.onMFA?.({
             mfa_type: data.mfa_type,
             session_id: data.session_id
@@ -96,34 +157,51 @@ function usePlaidifyLink(config) {
           break;
         case "EXIT":
         case "CLOSE":
-          close();
+        case "DONE":
+          finish({
+            exit: {
+              reason: data.reason || String(data.event).toLowerCase(),
+              error: data.error,
+              error_code: data.error_code
+            }
+          });
           break;
         case "ERROR":
           setStatus("error");
-          cleanup();
-          configRef.current.onExit?.({ reason: "error", error: data.error || "Link error" });
+          break;
+        case "TELEMETRY":
+          break;
+        default:
+          setStatus("open");
           break;
       }
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [cleanup, close]);
+  }, [finish]);
   const open = useCallback(() => {
+    if (activeRef.current) {
+      return;
+    }
     const cfg = configRef.current;
+    const url = buildHostedLinkUrl(
+      cfg.serverUrl,
+      cfg.token,
+      { origin: window.location.origin, theme: cfg.theme },
+      window.location.href
+    );
+    activeRef.current = true;
     setStatus("loading");
-    let url = `${cfg.serverUrl}/link?token=${encodeURIComponent(cfg.token)}`;
-    url += `&origin=${encodeURIComponent(window.location.origin)}`;
-    if (cfg.theme?.accentColor) url += `&accent=${encodeURIComponent(cfg.theme.accentColor)}`;
-    if (cfg.theme?.bgColor) url += `&bg=${encodeURIComponent(cfg.theme.bgColor)}`;
-    if (cfg.theme?.borderRadius) url += `&radius=${encodeURIComponent(cfg.theme.borderRadius)}`;
-    if (cfg.theme?.logo) url += `&logo=${encodeURIComponent(cfg.theme.logo)}`;
     const overlay = document.createElement("div");
     overlay.style.cssText = "position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:20px;";
     const iframe = document.createElement("iframe");
     iframe.src = url;
+    iframe.title = "Plaidify Link";
     iframe.style.cssText = `width:min(100%,680px);max-width:680px;height:min(820px,92vh);max-height:92vh;border:none;border-radius:${cfg.theme?.borderRadius || "30px"};background:#fff;box-shadow:0 30px 90px rgba(15,23,42,0.28);`;
     iframe.allow = "clipboard-write";
-    iframe.onload = () => setStatus("open");
+    iframe.onload = () => {
+      if (activeRef.current) setStatus((current) => current === "loading" ? "open" : current);
+    };
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) close();
     });
@@ -134,8 +212,14 @@ function usePlaidifyLink(config) {
     resizeHandlerRef.current = applyResponsiveLayout;
     window.addEventListener("resize", resizeHandlerRef.current);
     applyResponsiveLayout();
-  }, [close]);
-  useEffect(() => cleanup, [cleanup]);
+  }, [applyResponsiveLayout, close]);
+  useEffect(
+    () => () => {
+      activeRef.current = false;
+      cleanup();
+    },
+    [cleanup]
+  );
   return {
     open,
     ready: !!config.token && !!config.serverUrl,

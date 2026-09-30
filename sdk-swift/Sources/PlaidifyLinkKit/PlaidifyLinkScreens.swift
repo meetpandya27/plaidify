@@ -89,10 +89,14 @@ public struct PlaidifyLinkCredentialsView: View {
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 .keyboardType(.emailAddress)
+                .textContentType(.username)
                 #endif
                 .accessibilityLabel("Username")
             SecureField("Password", text: $password)
                 .textFieldStyle(.roundedBorder)
+                #if os(iOS)
+                .textContentType(.password)
+                #endif
                 .accessibilityLabel("Password")
             Button {
                 onSubmit(username, password)
@@ -112,38 +116,49 @@ public struct PlaidifyLinkCredentialsView: View {
 @available(iOS 15.0, macOS 13.0, *)
 public struct PlaidifyLinkMFAView: View {
     public let prompt: String
+    /// `push` needs no input; `security_question` takes free text; anything
+    /// else is a numeric one-time code.
+    public let mfaType: String?
     public let onSubmit: (String) -> Void
     @State private var code: String = ""
 
-    public init(prompt: String, onSubmit: @escaping (String) -> Void) {
+    public init(prompt: String, mfaType: String? = nil, onSubmit: @escaping (String) -> Void) {
         self.prompt = prompt
+        self.mfaType = mfaType
         self.onSubmit = onSubmit
     }
 
+    private var awaitsApproval: Bool { mfaType == "push" }
+    private var isQuestion: Bool { mfaType == "security_question" }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Verify your identity")
+            Text(awaitsApproval ? "Approve the sign-in" : "Verify your identity")
                 .font(.title2.bold())
                 .accessibilityAddTraits(.isHeader)
             Text(prompt)
                 .font(.callout)
                 .foregroundColor(.secondary)
-            TextField("Verification code", text: $code)
-                .textFieldStyle(.roundedBorder)
-                #if os(iOS)
-                .keyboardType(.numberPad)
-                #endif
-                .accessibilityLabel("Verification code")
+            if !awaitsApproval {
+                TextField(isQuestion ? "Answer" : "Verification code", text: $code)
+                    .textFieldStyle(.roundedBorder)
+                    #if os(iOS)
+                    .keyboardType(isQuestion ? .default : .numberPad)
+                    .textContentType(isQuestion ? nil : .oneTimeCode)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .accessibilityLabel(isQuestion ? "Answer" : "Verification code")
+            }
             Button {
-                onSubmit(code)
+                onSubmit(awaitsApproval ? "" : code)
             } label: {
-                Text("Submit")
+                Text(awaitsApproval ? "I approved it" : "Submit")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(code.isEmpty)
-            .accessibilityLabel("Submit verification code")
+            .disabled(!awaitsApproval && code.isEmpty)
+            .accessibilityLabel(awaitsApproval ? "Confirm the approval" : "Submit verification code")
         }
         .padding()
     }

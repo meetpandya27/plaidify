@@ -52,12 +52,18 @@ class PlaidifyLinkConnectFlowTest {
         flow.apply(PlaidifyLinkConnectFlow.Action.CredentialsSubmitted)
         flow.apply(
             PlaidifyLinkConnectFlow.Action.ConnectResponded(
-                PlaidifyConnectResponse(status = "mfa_required", sessionId = "sess-9", mfaType = "otp"),
+                PlaidifyConnectResponse(
+                    status = "mfa_required",
+                    sessionId = "sess-9",
+                    mfaType = "otp",
+                    metadata = PlaidifyConnectMetadata(message = "Enter the code we texted you"),
+                ),
             )
         )
         assertEquals(PlaidifyLinkStep.Mfa, flow.state.step)
         assertEquals("sess-9", flow.state.sessionId)
         assertEquals("otp", flow.state.mfaType)
+        assertEquals("Enter the code we texted you", flow.state.mfaPrompt)
     }
 
     @Test
@@ -93,7 +99,7 @@ class PlaidifyLinkConnectFlowTest {
         flow.apply(PlaidifyLinkConnectFlow.Action.CredentialsSubmitted)
         flow.apply(
             PlaidifyLinkConnectFlow.Action.ConnectResponded(
-                PlaidifyConnectResponse(status = "error", errorMessage = "bad credentials"),
+                PlaidifyConnectResponse(status = "error", error = "bad credentials"),
             )
         )
         assertEquals(PlaidifyLinkStep.Error, flow.state.step)
@@ -116,5 +122,37 @@ class PlaidifyLinkConnectFlowTest {
             PlaidifyOrganization(organizationId = "1", name = "X", site = "x", authStyle = null)
         )
         assertTrue(strategy is PlaidifyLinkInstitutionStrategy.WebViewFallback)
+    }
+
+    @Test
+    fun connectedFromConnectIsSuccess() {
+        // /connect answers "connected"; only the session status says "completed".
+        val flow = PlaidifyLinkConnectFlow(nativeRegistry())
+        flow.apply(PlaidifyLinkConnectFlow.Action.SelectInstitution(makeOrg()))
+        flow.apply(PlaidifyLinkConnectFlow.Action.CredentialsSubmitted)
+        flow.apply(PlaidifyLinkConnectFlow.Action.ConnectResponded(PlaidifyConnectResponse(status = "connected")))
+        assertEquals(PlaidifyLinkStep.Success, flow.state.step)
+    }
+
+    @Test
+    fun stillWorkingStatusesKeepConnecting() {
+        val flow = PlaidifyLinkConnectFlow(nativeRegistry())
+        flow.apply(PlaidifyLinkConnectFlow.Action.SelectInstitution(makeOrg()))
+        flow.apply(PlaidifyLinkConnectFlow.Action.CredentialsSubmitted)
+        for (status in listOf("pending", "mfa_submitted")) {
+            flow.apply(PlaidifyLinkConnectFlow.Action.ConnectResponded(PlaidifyConnectResponse(status = status)))
+            assertEquals(PlaidifyLinkStep.Connecting, flow.state.step)
+        }
+    }
+
+    @Test
+    fun defaultRegistrySendsEveryInstitutionToTheWebView() {
+        // Native screens are experimental and opt-in per site.
+        val events = mutableListOf<PlaidifyLinkFlowEvent>()
+        val flow = PlaidifyLinkConnectFlow(PlaidifyLinkInstitutionRegistry()) { events += it }
+        val org = makeOrg(site = "hydro_one", authStyle = "username_password")
+        flow.apply(PlaidifyLinkConnectFlow.Action.SelectInstitution(org))
+        assertNotEquals(PlaidifyLinkStep.Credentials, flow.state.step)
+        assertTrue(events.contains(PlaidifyLinkFlowEvent.FallbackToWebView(org, "site_not_in_native_registry")))
     }
 }

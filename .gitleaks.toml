@@ -1,0 +1,15 @@
+# Secrets Scan (gitleaks): the default rules, minus values that are public or test-only.
+# Allow a value here only when it can never be a real secret.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public Azure role ids and test-only fixtures"
+regexes = [
+  # Azure built-in role definition ids: public, the same in every tenant
+  '''4633458b-17de-408a-b874-0445c86b69e6''',  # Key Vault Secrets User
+  '''b86a8fe4-44ce-4948-aee5-eccb2c155cd7''',  # Key Vault Secrets Officer
+  # The test suite's throwaway encryption key (CI sets it too) and a sample webhook secret
+  '''s790nQg9kGoAVQGqXreKUbG8Q0OA-A4HASTbyd-ruuQ=''',
+  '''plain-secret-123''',
+]

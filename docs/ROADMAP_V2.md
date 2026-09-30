@@ -1,7 +1,7 @@
 # Plaidify v2 Roadmap — LLM Extraction, Security Hardening & Agent Integration
 
 > **Created:** March 15, 2026
-> **Status:** Active
+> **Status:** Historical. Written in March 2026; most of the items below have since shipped (see [CHANGELOG.md](../CHANGELOG.md)), but the checkboxes were never updated, and the "Plaidify Today" column describes March 2026, not the current code. Per-job executor isolation (section 4, Kubernetes) is still open.
 > **Objective:** Transform Plaidify from a manual-blueprint automation tool into an intelligent, secure, agent-ready data extraction platform.
 
 ---

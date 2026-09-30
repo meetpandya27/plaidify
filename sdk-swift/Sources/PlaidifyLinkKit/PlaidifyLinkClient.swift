@@ -6,6 +6,7 @@ public enum PlaidifyLinkClientError: Error, Equatable {
     case transport(String)
     case http(status: Int, errorCode: String?, message: String)
     case decoding(String)
+    case encryption(String)
 }
 
 /// Status payload returned by `GET /link/sessions/{token}/status`.
@@ -15,6 +16,8 @@ public struct PlaidifyLinkSessionStatus: Codable, Equatable {
     public let mfaType: String?
     public let sessionID: String?
     public let publicToken: String?
+    public let jobID: String?
+    public let message: String?
     public let errorMessage: String?
 
     public enum CodingKeys: String, CodingKey {
@@ -23,7 +26,29 @@ public struct PlaidifyLinkSessionStatus: Codable, Equatable {
         case mfaType = "mfa_type"
         case sessionID = "session_id"
         case publicToken = "public_token"
+        case jobID = "job_id"
+        case message
         case errorMessage = "error_message"
+    }
+
+    public init(
+        status: String,
+        site: String? = nil,
+        mfaType: String? = nil,
+        sessionID: String? = nil,
+        publicToken: String? = nil,
+        jobID: String? = nil,
+        message: String? = nil,
+        errorMessage: String? = nil
+    ) {
+        self.status = status
+        self.site = site
+        self.mfaType = mfaType
+        self.sessionID = sessionID
+        self.publicToken = publicToken
+        self.jobID = jobID
+        self.message = message
+        self.errorMessage = errorMessage
     }
 }
 
@@ -54,8 +79,24 @@ public struct PlaidifyOrganization: Codable, Equatable, Identifiable {
     }
 }
 
+/// `GET /organizations/search` — the matches are under `results`.
 public struct PlaidifyOrganizationSearchResponse: Codable, Equatable {
-    public let organizations: [PlaidifyOrganization]
+    public let results: [PlaidifyOrganization]
+    public let count: Int?
+
+    public init(results: [PlaidifyOrganization], count: Int? = nil) {
+        self.results = results
+        self.count = count
+    }
+}
+
+/// `GET /encryption/public_key/{link_token}`.
+public struct PlaidifyEncryptionKey: Codable, Equatable {
+    public let publicKey: String
+
+    public enum CodingKeys: String, CodingKey {
+        case publicKey = "public_key"
+    }
 }
 
 /// Encrypted credential pair posted to `/connect`.
@@ -69,7 +110,20 @@ public struct PlaidifyEncryptedCredentials: Equatable {
     }
 }
 
+/// Extra detail on a connect / MFA reply; `message` is the prompt to show.
+public struct PlaidifyConnectMetadata: Codable, Equatable {
+    public let message: String?
+
+    public init(message: String? = nil) {
+        self.message = message
+    }
+}
+
 /// Response payload from `/connect` and `/mfa/submit`.
+///
+/// `status` is `connected`, `mfa_required`, `pending` (still running —
+/// poll the session), `mfa_submitted` (code accepted; poll the session) or
+/// `error` (with `error`).
 public struct PlaidifyConnectResponse: Codable, Equatable {
     public let status: String
     public let sessionID: String?
@@ -77,7 +131,8 @@ public struct PlaidifyConnectResponse: Codable, Equatable {
     public let publicToken: String?
     public let jobID: String?
     public let message: String?
-    public let errorMessage: String?
+    public let error: String?
+    public let metadata: PlaidifyConnectMetadata?
 
     public enum CodingKeys: String, CodingKey {
         case status
@@ -86,7 +141,28 @@ public struct PlaidifyConnectResponse: Codable, Equatable {
         case publicToken = "public_token"
         case jobID = "job_id"
         case message
-        case errorMessage = "error_message"
+        case error
+        case metadata
+    }
+
+    public init(
+        status: String,
+        sessionID: String? = nil,
+        mfaType: String? = nil,
+        publicToken: String? = nil,
+        jobID: String? = nil,
+        message: String? = nil,
+        error: String? = nil,
+        metadata: PlaidifyConnectMetadata? = nil
+    ) {
+        self.status = status
+        self.sessionID = sessionID
+        self.mfaType = mfaType
+        self.publicToken = publicToken
+        self.jobID = jobID
+        self.message = message
+        self.error = error
+        self.metadata = metadata
     }
 }
 
@@ -100,7 +176,8 @@ extension URLSession: PlaidifyLinkHTTPClient {}
 /// Builds canonical URLs for Plaidify Link REST endpoints.
 ///
 /// Extracted from the client so it can be unit-tested without
-/// performing network I/O.
+/// performing network I/O. Secrets (codes, credentials) never go in these
+/// URLs; they travel in request bodies.
 public enum PlaidifyLinkURLBuilder {
     public static func base(_ serverURL: URL) -> String {
         let absolute = serverURL.absoluteString
@@ -139,13 +216,8 @@ public enum PlaidifyLinkURLBuilder {
         URL(string: base(serverURL) + "/connect")
     }
 
-    public static func mfaSubmit(serverURL: URL, sessionID: String, code: String) -> URL? {
-        var components = URLComponents(string: base(serverURL) + "/mfa/submit")
-        components?.queryItems = [
-            URLQueryItem(name: "session_id", value: sessionID),
-            URLQueryItem(name: "code", value: code),
-        ]
-        return components?.url
+    public static func mfaSubmit(serverURL: URL) -> URL? {
+        URL(string: base(serverURL) + "/mfa/submit")
     }
 }
 
@@ -194,7 +266,7 @@ public final class PlaidifyLinkClient {
         return try await send(URLRequest(url: url))
     }
 
-    public func getEncryptionPublicKey() async throws -> [String: String] {
+    public func getEncryptionPublicKey() async throws -> PlaidifyEncryptionKey {
         guard let url = PlaidifyLinkURLBuilder.encryptionPublicKey(
             serverURL: serverURL,
             linkToken: linkToken
@@ -225,15 +297,13 @@ public final class PlaidifyLinkClient {
     }
 
     public func submitMFA(sessionID: String, code: String) async throws -> PlaidifyConnectResponse {
-        guard let url = PlaidifyLinkURLBuilder.mfaSubmit(
-            serverURL: serverURL,
-            sessionID: sessionID,
-            code: code
-        ) else {
+        guard let url = PlaidifyLinkURLBuilder.mfaSubmit(serverURL: serverURL) else {
             throw PlaidifyLinkClientError.invalidURL
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(["session_id": sessionID, "code": code])
         return try await send(request)
     }
 
@@ -257,10 +327,6 @@ public final class PlaidifyLinkClient {
                 message: info?.detail ?? info?.error ?? "HTTP \(status)"
             )
         }
-        if T.self == EmptyResponse.self {
-            // Should never be requested via this typed path, but keep for clarity.
-            return EmptyResponse() as! T
-        }
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
@@ -269,6 +335,7 @@ public final class PlaidifyLinkClient {
     }
 }
 
+/// `{"detail": str | [{"msg": str}]}` (FastAPI) or `{"error", "error_code"}`.
 private struct PlaidifyLinkErrorBody: Decodable {
     let detail: String?
     let error: String?
@@ -279,8 +346,25 @@ private struct PlaidifyLinkErrorBody: Decodable {
         case error
         case errorCode = "error_code"
     }
+
+    private struct ValidationIssue: Decodable {
+        let msg: String?
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let text = try? container.decode(String.self, forKey: .detail) {
+            detail = text
+        } else if let issues = try? container.decode([ValidationIssue].self, forKey: .detail) {
+            let messages = issues.compactMap(\.msg)
+            detail = messages.isEmpty ? nil : messages.joined(separator: "; ")
+        } else {
+            detail = nil
+        }
+        error = try? container.decode(String.self, forKey: .error)
+        errorCode = try? container.decode(String.self, forKey: .errorCode)
+    }
 }
 
-/// Marker type so the generic `send` path can be used for the rare
-/// no-body endpoint without making the function non-generic.
+/// Marker type for endpoints whose reply body carries nothing of interest.
 public struct EmptyResponse: Decodable {}

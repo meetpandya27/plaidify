@@ -6,6 +6,11 @@
  * colours.
  */
 
+/* `?bg=` from the embedding SDK (branding.ts); transparent otherwise. */
+body {
+  background: var(--plaidify-link-page-bg, transparent);
+}
+
 .plaidify-link {
   max-width: var(--plaidify-max-width-content);
   margin: 0 auto;
@@ -15,6 +20,20 @@
   border-radius: var(--plaidify-radius-lg);
   box-shadow: var(--plaidify-shadow-md);
   font-family: var(--plaidify-font-family-sans);
+}
+
+/* Embedder logo from `?logo=` (branding.ts). */
+.link-brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--plaidify-space-4);
+}
+.link-brand__logo {
+  display: block;
+  max-height: 40px;
+  max-width: 180px;
+  width: auto;
+  height: auto;
 }
 
 .sr-only {
@@ -36,6 +55,12 @@
 }
 .link-step.active {
   display: flex;
+}
+/* The credential and MFA forms lay out like the step that holds them. */
+.link-step form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--plaidify-space-4);
 }
 
 #institution-list {
@@ -183,24 +208,6 @@
   outline: none;
   border-color: var(--organization-primary, var(--plaidify-color-border-focus));
   box-shadow: var(--plaidify-shadow-focus);
-}
-
-.reference-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--plaidify-space-3) var(--plaidify-space-4);
-  background: var(--plaidify-color-bg-surface-alt);
-  border-radius: var(--plaidify-radius-md);
-  font-family: var(--plaidify-font-family-mono);
-  font-size: var(--plaidify-font-size-sm);
-}
-.reference-label {
-  color: var(--plaidify-color-fg-muted);
-}
-.reference-value {
-  color: var(--plaidify-color-fg-default);
-  user-select: all;
 }
 
 /* ── Error step remediation layout ─────────────────────────────────── */

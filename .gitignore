@@ -23,20 +23,38 @@ htmlcov/
 !.env.example
 !.env.production.example
 
-# Azure deployment local overrides
-.azure/*.local.json
+# Azure deployment local state and overrides (azd/az write environment files
+# with subscription ids under .azure/; only the tracked plan stays)
+.azure/*
+!.azure/deployment-plan.md
 infra/*.local.bicepparam
 infra/*.override.bicepparam
+bootstrap.json
+app-deploy.json
 
-# Docker secrets
-.secrets/
+# Docker secrets and TLS material (the directory's contents, so the README
+# describing them can be tracked)
+.secrets/*
 !.secrets/README.md
+nginx/certs/
+
+# Database backups and dumps (scripts/backup_db.sh writes outside the
+# checkout by default; these catch a BACKUP_DIR pointed here)
+backups/
+*.dump
+*.dump.gpg
+*.dump.age
 
 # Node modules
 node_modules/
 
 # Swift build artifacts
 sdk-swift/.build/
+
+# Android / Gradle build artifacts
+sdk-android/.gradle/
+sdk-android/**/build/
+sdk-android/local.properties
 
 # Database files (local dev)
 *.db

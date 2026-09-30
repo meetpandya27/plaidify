@@ -11,6 +11,7 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
 
+  # Same ruff as requirements-dev.txt, CI and pyproject's required-version.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.6
     hooks:

@@ -16,10 +16,22 @@ Usage:
     kms = get_kms_provider()
     wrapped = await kms.wrap_key(dek_bytes)
     dek = await kms.unwrap_key(wrapped)
+
+Blocking and caching:
+    The ``*_sync`` methods call the cloud SDKs directly and block; they are
+    for synchronous code. The ``async`` methods of the external providers run
+    those calls in a worker thread (``asyncio.to_thread``) so they never stall
+    the event loop. The local provider is CPU-only AES-GCM and runs inline.
+
+    Cached per process: the provider instance (``get_kms_provider``) and each
+    provider's SDK client (boto3 client, hvac client, and for Azure one
+    ``CryptographyClient`` per key version). Plaintext DEKs are never cached:
+    every unwrap is a KMS round trip.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
@@ -165,7 +177,7 @@ class AWSKMSProvider(KMSProvider):
     """
 
     def __init__(self, key_id: Optional[str] = None, region: Optional[str] = None) -> None:
-        # Settings take precedence so a single KMS_KEY_ID covers AWS / Azure / Vault.
+        # KMS_KEY_ID (via settings) first, then the older KMS_AWS_KEY_ID name.
         from src.config import get_settings
 
         settings = get_settings()
@@ -189,10 +201,10 @@ class AWSKMSProvider(KMSProvider):
         return self._client
 
     async def wrap_key(self, plaintext_key: bytes) -> str:
-        return self.wrap_key_sync(plaintext_key)
+        return await asyncio.to_thread(self.wrap_key_sync, plaintext_key)
 
     async def unwrap_key(self, wrapped_key: str) -> bytes:
-        return self.unwrap_key_sync(wrapped_key)
+        return await asyncio.to_thread(self.unwrap_key_sync, wrapped_key)
 
     def wrap_key_sync(self, plaintext_key: bytes) -> str:
         client = self._get_client()
@@ -200,6 +212,8 @@ class AWSKMSProvider(KMSProvider):
         return base64.urlsafe_b64encode(response["CiphertextBlob"]).decode("ascii")
 
     def unwrap_key_sync(self, wrapped_key: str) -> bytes:
+        # The ciphertext blob names the key version, so DEKs wrapped before an
+        # automatic rotation still decrypt.
         client = self._get_client()
         response = client.decrypt(
             CiphertextBlob=base64.urlsafe_b64decode(wrapped_key),
@@ -207,9 +221,8 @@ class AWSKMSProvider(KMSProvider):
         )
         return response["Plaintext"]
 
-    async def generate_data_key(self) -> tuple[bytes, str]:
-        client = self._get_client()
-        response = client.generate_data_key(
+    def _generate_data_key_sync(self) -> tuple[bytes, str]:
+        response = self._get_client().generate_data_key(
             KeyId=self._key_id,
             KeySpec="AES_256",
         )
@@ -217,15 +230,17 @@ class AWSKMSProvider(KMSProvider):
         wrapped = base64.urlsafe_b64encode(response["CiphertextBlob"]).decode("ascii")
         return plaintext, wrapped
 
+    async def generate_data_key(self) -> tuple[bytes, str]:
+        return await asyncio.to_thread(self._generate_data_key_sync)
+
     async def rotate_master_key(self) -> str:
-        client = self._get_client()
-        client.enable_key_rotation(KeyId=self._key_id)
+        await asyncio.to_thread(lambda: self._get_client().enable_key_rotation(KeyId=self._key_id))
         return f"AWS KMS automatic rotation enabled for key {self._key_id}"
 
     async def health_check(self) -> dict:
         try:
-            client = self._get_client()
-            response = client.describe_key(KeyId=self._key_id)
+            client = await asyncio.to_thread(self._get_client)
+            response = await asyncio.to_thread(client.describe_key, KeyId=self._key_id)
             state = response["KeyMetadata"]["KeyState"]
             return {
                 "provider": "aws-kms",
@@ -240,6 +255,25 @@ class AWSKMSProvider(KMSProvider):
 # ── Azure Key Vault Provider ─────────────────────────────────────────────────
 
 
+_AZURE_WRAP_PREFIX = "azkv1:"  # azkv1:<key version>:<base64url(wrapped DEK)>
+
+
+def _azure_key_version(key) -> Optional[str]:
+    """Version of a KeyVaultKey (``properties.version``, else the last segment of its id)."""
+    version = getattr(getattr(key, "properties", None), "version", None)
+    if version:
+        return version
+    return _azure_version_from_kid(getattr(key, "id", None))
+
+
+def _azure_version_from_kid(kid: Optional[str]) -> Optional[str]:
+    """``https://<vault>/keys/<name>/<version>`` -> ``<version>``."""
+    if not kid:
+        return None
+    parts = kid.rstrip("/").split("/")
+    return parts[-1] if len(parts) >= 2 and parts[-2] != "keys" else None
+
+
 class AzureKeyVaultProvider(KMSProvider):
     """Azure Key Vault provider for HSM-backed key management.
 
@@ -248,6 +282,12 @@ class AzureKeyVaultProvider(KMSProvider):
         - ``KMS_AZURE_VAULT_URL`` environment variable (e.g. https://myvault.vault.azure.net/).
         - ``KMS_AZURE_KEY_NAME`` environment variable.
         - Azure credentials (DefaultAzureCredential).
+
+    New DEKs are wrapped with the key version that was current when this
+    process first used the key. The version is stored in the wrapped value
+    (``azkv1:<version>:...``) because RSA-wrapped keys only unwrap under the
+    version that wrapped them; after a key rotation, older DEKs are unwrapped
+    with a client for their own version (one cached client per version).
     """
 
     def __init__(
@@ -257,53 +297,76 @@ class AzureKeyVaultProvider(KMSProvider):
     ) -> None:
         self._vault_url = vault_url or os.environ.get("KMS_AZURE_VAULT_URL", "")
         self._key_name = key_name or os.environ.get("KMS_AZURE_KEY_NAME", "plaidify-master")
+        self._credential = None
+        self._key_client = None
         self._client = None
+        self._client_version: Optional[str] = None
+        self._version_clients: dict = {}
         if not self._vault_url:
             raise ValueError(
                 "Azure Key Vault requires KMS_AZURE_VAULT_URL environment variable "
                 "(e.g. https://myvault.vault.azure.net/). See docs/DEPLOYMENT.md for setup."
             )
 
-    def _get_client(self):
-        if self._client is None:
+    def _get_key_client(self):
+        if self._key_client is None:
             try:
                 from azure.identity import DefaultAzureCredential
                 from azure.keyvault.keys import KeyClient
-                from azure.keyvault.keys.crypto import CryptographyClient, KeyWrapAlgorithm
-
-                credential = DefaultAzureCredential()
-                key_client = KeyClient(vault_url=self._vault_url, credential=credential)
-                key = key_client.get_key(self._key_name)
-                self._client = CryptographyClient(key, credential=credential)
-                self._wrap_algo = KeyWrapAlgorithm.rsa_oaep_256
             except ImportError:
                 raise RuntimeError(
                     "azure-keyvault-keys and azure-identity are required. "
                     "Install with: pip install azure-keyvault-keys azure-identity"
                 )
+            self._credential = DefaultAzureCredential()
+            self._key_client = KeyClient(vault_url=self._vault_url, credential=self._credential)
+        return self._key_client
+
+    def _crypto_client(self, key):
+        from azure.keyvault.keys.crypto import CryptographyClient
+
+        return CryptographyClient(key, credential=self._credential)
+
+    def _get_client(self):
+        """Client for the key version that wraps new DEKs."""
+        if self._client is None:
+            key = self._get_key_client().get_key(self._key_name)
+            self._client = self._crypto_client(key)
+            self._client_version = _azure_key_version(key)
+            if self._client_version:
+                self._version_clients[self._client_version] = self._client
         return self._client
 
+    def _client_for_version(self, version: str):
+        if version not in self._version_clients:
+            key = self._get_key_client().get_key(self._key_name, version)
+            self._version_clients[version] = self._crypto_client(key)
+        return self._version_clients[version]
+
     async def wrap_key(self, plaintext_key: bytes) -> str:
-        return self.wrap_key_sync(plaintext_key)
+        return await asyncio.to_thread(self.wrap_key_sync, plaintext_key)
 
     async def unwrap_key(self, wrapped_key: str) -> bytes:
-        return self.unwrap_key_sync(wrapped_key)
+        return await asyncio.to_thread(self.unwrap_key_sync, wrapped_key)
 
     def wrap_key_sync(self, plaintext_key: bytes) -> str:
         client = self._get_client()
         from azure.keyvault.keys.crypto import KeyWrapAlgorithm
 
         result = client.wrap_key(KeyWrapAlgorithm.rsa_oaep_256, plaintext_key)
-        return base64.urlsafe_b64encode(result.encrypted_key).decode("ascii")
+        blob = base64.urlsafe_b64encode(result.encrypted_key).decode("ascii")
+        version = _azure_version_from_kid(getattr(result, "key_id", None)) or self._client_version
+        return f"{_AZURE_WRAP_PREFIX}{version}:{blob}" if version else blob
 
     def unwrap_key_sync(self, wrapped_key: str) -> bytes:
-        client = self._get_client()
         from azure.keyvault.keys.crypto import KeyWrapAlgorithm
 
-        result = client.unwrap_key(
-            KeyWrapAlgorithm.rsa_oaep_256,
-            base64.urlsafe_b64decode(wrapped_key),
-        )
+        if wrapped_key.startswith(_AZURE_WRAP_PREFIX):
+            version, blob = wrapped_key[len(_AZURE_WRAP_PREFIX) :].split(":", 1)
+            client = self._client_for_version(version)
+        else:  # no recorded version: only the version current at first use can unwrap it
+            client, blob = self._get_client(), wrapped_key
+        result = client.unwrap_key(KeyWrapAlgorithm.rsa_oaep_256, base64.urlsafe_b64decode(blob))
         return result.key
 
     async def generate_data_key(self) -> tuple[bytes, str]:
@@ -314,12 +377,13 @@ class AzureKeyVaultProvider(KMSProvider):
     async def rotate_master_key(self) -> str:
         return (
             f"Azure Key Vault: create a new version of key '{self._key_name}' "
-            f"in vault {self._vault_url}. Old versions remain accessible for unwrapping."
+            f"in vault {self._vault_url}. Old versions remain accessible for unwrapping; "
+            "keep them enabled while any DEK wrapped by them is stored."
         )
 
     async def health_check(self) -> dict:
         try:
-            self._get_client()
+            await asyncio.to_thread(self._get_client)
             return {
                 "provider": "azure-keyvault",
                 "status": "healthy",
@@ -369,10 +433,10 @@ class HashiCorpVaultProvider(KMSProvider):
         return self._client
 
     async def wrap_key(self, plaintext_key: bytes) -> str:
-        return self.wrap_key_sync(plaintext_key)
+        return await asyncio.to_thread(self.wrap_key_sync, plaintext_key)
 
     async def unwrap_key(self, wrapped_key: str) -> bytes:
-        return self.unwrap_key_sync(wrapped_key)
+        return await asyncio.to_thread(self.unwrap_key_sync, wrapped_key)
 
     def wrap_key_sync(self, plaintext_key: bytes) -> str:
         client = self._get_client()
@@ -390,9 +454,8 @@ class HashiCorpVaultProvider(KMSProvider):
         )
         return base64.b64decode(result["data"]["plaintext"])
 
-    async def generate_data_key(self) -> tuple[bytes, str]:
-        client = self._get_client()
-        result = client.secrets.transit.generate_data_key(
+    def _generate_data_key_sync(self) -> tuple[bytes, str]:
+        result = self._get_client().secrets.transit.generate_data_key(
             name=self._key_name,
             key_type="plaintext",
         )
@@ -400,15 +463,17 @@ class HashiCorpVaultProvider(KMSProvider):
         ciphertext = result["data"]["ciphertext"]
         return plaintext, ciphertext
 
+    async def generate_data_key(self) -> tuple[bytes, str]:
+        return await asyncio.to_thread(self._generate_data_key_sync)
+
     async def rotate_master_key(self) -> str:
-        client = self._get_client()
-        client.secrets.transit.rotate_encryption_key(name=self._key_name)
+        await asyncio.to_thread(lambda: self._get_client().secrets.transit.rotate_encryption_key(name=self._key_name))
         return f"Vault Transit key '{self._key_name}' rotated. Old versions retained for decryption."
 
     async def health_check(self) -> dict:
         try:
             client = self._get_client()
-            if client.is_authenticated():
+            if await asyncio.to_thread(client.is_authenticated):
                 return {
                     "provider": "hashicorp-vault",
                     "status": "healthy",

@@ -7,6 +7,7 @@
 
   "auth": {
     "type": "form",
+    "submit_targets": ["https://www.myaccount.hydroone.com/pkmslogin.form"],
     "steps": [
       {
         "action": "goto",
@@ -39,10 +40,17 @@
         "timeout": 45000
       },
       {
-        "action": "execute_js",
-        "script": "new Promise(r => setTimeout(r, 5000))"
+        "action": "wait",
+        "timeout": 5000
       }
-    ]
+    ],
+    "success": {
+      "selector": "span.sm-banner-acc-number, .h1-db-bg, #bannerNoImage",
+      "timeout": 45000
+    },
+    "failure": {
+      "selector": "#invalidPassword, #accountLockedMessage, #accountFrozen"
+    }
   },
 
   "mfa": {
@@ -53,7 +61,8 @@
     "type": "otp_input",
     "handler": "user_prompt",
     "input_selector": "#otp-input, #verificationCode, input[name='otp']",
-    "submit_selector": "button[type='submit'], .btn-primary, #btnVerify"
+    "submit_selector": "button[type='submit'], .btn-primary, #btnVerify",
+    "submit_targets": ["/*"]
   },
 
   "extract": {
@@ -104,9 +113,10 @@
       ]
     }
   ],
+  "logout_targets": ["/pkmslogout*"],
 
   "rate_limit": {
-    "max_requests_per_minute": 3,
+    "max_requests_per_hour": 180,
     "min_interval_seconds": 30
   },
 

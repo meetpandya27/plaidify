@@ -7,7 +7,7 @@ import react from "@vitejs/plugin-react";
 // /link/sessions/{token}/status API.
 export default defineConfig({
   plugins: [react()],
-  // FastAPI mounts the built bundle at /ui-next/ when HOSTED_LINK_FRONTEND=react.
+  // FastAPI serves the built bundle at /ui-next/ (src/app.py); GET /link returns its index.html.
   base: "/ui-next/",
   build: {
     outDir: "dist",

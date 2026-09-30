@@ -1,0 +1,7 @@
+# Security problems don't belong in public issues: the contact link sends
+# reporters to the private channel described in SECURITY.md.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/meetpandya27/plaidify/security/policy
+    about: Please don't open a public issue. Follow SECURITY.md to report it privately.

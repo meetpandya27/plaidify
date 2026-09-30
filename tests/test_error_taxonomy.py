@@ -77,3 +77,24 @@ def test_serialize_taxonomy_is_deterministic() -> None:
     first = serialize_taxonomy()
     second = serialize_taxonomy()
     assert first == second
+
+
+def test_mfa_and_credential_failures_map_to_their_codes() -> None:
+    """JOB-18: a rejected code is invalid_credentials, an unanswered challenge mfa_timeout."""
+    from src.core.mfa_manager import MFARejectedError, MFATimeoutError
+    from src.exceptions import ConcurrentAccessError
+
+    assert classify_exception(MFATimeoutError("demo")) == LinkErrorCode.MFA_TIMEOUT
+    assert classify_exception(MFARejectedError("demo")) == LinkErrorCode.INVALID_CREDENTIALS
+    assert classify_exception(ConcurrentAccessError("demo")) == LinkErrorCode.RATE_LIMITED
+
+    class MfaTimeoutFromALibrary(Exception):
+        pass
+
+    class AuthenticationFailed(Exception):
+        pass
+
+    # Untyped errors: an MFA timeout is not a network error, a failed sign-in is not internal.
+    assert classify_exception(MfaTimeoutFromALibrary()) == LinkErrorCode.MFA_TIMEOUT
+    assert classify_exception(AuthenticationFailed()) == LinkErrorCode.INVALID_CREDENTIALS
+    assert classify_exception(TimeoutError()) == LinkErrorCode.NETWORK_ERROR

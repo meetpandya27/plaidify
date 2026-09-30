@@ -130,7 +130,7 @@ class TestConnectWithEncryption:
     """Tests for POST /connect with encrypted credentials."""
 
     @patch("src.routers.connection.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
-    def test_connect_with_encrypted_credentials(self, mock_connect, client):
+    def test_connect_with_encrypted_credentials(self, mock_connect, client, auth_headers):
         from src.crypto import _clear_all_keys
 
         _clear_all_keys()
@@ -153,6 +153,7 @@ class TestConnectWithEncryption:
                 "encrypted_password": enc_pass,
                 "link_token": link_token,
             },
+            headers=auth_headers,
         )
         assert response.status_code == 200
         data = response.json()
@@ -164,7 +165,7 @@ class TestConnectWithEncryption:
         assert call_kwargs.kwargs["password"] == "test_password123"
 
     @patch("src.routers.connection.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
-    def test_connect_encrypted_then_key_destroyed(self, mock_connect, client):
+    def test_connect_encrypted_then_key_destroyed(self, mock_connect, client, auth_headers):
         """After use, the ephemeral key should be destroyed."""
         from src.crypto import _clear_all_keys, get_public_key
 
@@ -186,13 +187,14 @@ class TestConnectWithEncryption:
                 "encrypted_password": enc_pass,
                 "link_token": link_token,
             },
+            headers=auth_headers,
         )
 
         # Key should be destroyed after use
         assert get_public_key(link_token) is None
 
     @patch("src.routers.connection.connect_to_site", new_callable=AsyncMock, return_value=_mock_connect_response)
-    def test_connect_plaintext_still_works(self, mock_connect, client):
+    def test_connect_plaintext_still_works(self, mock_connect, client, auth_headers):
         """Plaintext credentials should still work for backward compatibility."""
         response = client.post(
             "/connect",
@@ -201,17 +203,19 @@ class TestConnectWithEncryption:
                 "username": "test_user",
                 "password": "test_password123",
             },
+            headers=auth_headers,
         )
         assert response.status_code == 200
         mock_connect.assert_called_once()
 
-    def test_connect_missing_credentials(self, client):
+    def test_connect_missing_credentials(self, client, auth_headers):
         """Should return 422 if neither plaintext nor encrypted creds provided."""
         response = client.post(
             "/connect",
             json={
                 "site": "internal_bank",
             },
+            headers=auth_headers,
         )
         assert response.status_code == 422
 
@@ -245,7 +249,7 @@ class TestCreateLinkReturnsPublicKey:
 
         response = client.post(
             "/submit_credentials",
-            params={
+            json={
                 "link_token": link_token,
                 "encrypted_username": enc_user,
                 "encrypted_password": enc_pass,

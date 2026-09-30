@@ -5,13 +5,15 @@
   "tags": ["sandbox", "demo", "finance", "banking"],
   "auth": {
     "type": "form",
+    "submit_targets": ["/auth"],
     "steps": [
       { "action": "goto", "url": "http://127.0.0.1:8798/login" },
       { "action": "fill", "selector": "#email", "value": "{{username}}" },
       { "action": "fill", "selector": "#passcode", "value": "{{password}}" },
-      { "action": "click", "selector": "#signin", "wait_for_navigation": true },
-      { "action": "wait", "selector": "#accounts-page, #security-answer", "timeout": 10000 }
-    ]
+      { "action": "click", "selector": "#signin", "wait_for_navigation": true }
+    ],
+    "success": { "selector": "#accounts-page", "timeout": 10000 },
+    "failure": { "selector": "#login-error" }
   },
   "mfa": {
     "detection": { "selector": "#security-answer", "timeout": 3000 },
@@ -19,7 +21,10 @@
     "handler": "user_prompt",
     "question_selector": "#mfa-question",
     "input_selector": "#security-answer",
-    "submit_selector": "#verify-btn"
+    "submit_selector": "#verify-btn",
+    "submit_targets": ["/verify"],
+    "success": { "selector": "#accounts-page" },
+    "failure": { "selector": "#mfa-error" }
   },
   "extract": {
     "account_holder": { "selector": "#account-holder", "type": "text" },
@@ -83,6 +88,7 @@
   "cleanup": [
     { "action": "click", "selector": "#signout" }
   ],
+  "logout_targets": ["/signout"],
   "rate_limit": { "max_requests_per_hour": 600, "min_interval_seconds": 1 },
   "health_check": { "url": "http://127.0.0.1:8798/health", "expected_status": 200 }
 }

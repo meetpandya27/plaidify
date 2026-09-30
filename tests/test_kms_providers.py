@@ -9,6 +9,7 @@ wrap/unwrap round-trip semantics — without real credentials or network access.
 import asyncio
 import base64
 import sys
+import threading
 import types
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -229,3 +230,117 @@ def test_vault_requires_token(monkeypatch):
     monkeypatch.delenv("KMS_VAULT_TOKEN", raising=False)
     with pytest.raises(ValueError):
         HashiCorpVaultProvider()
+
+
+# ── Async calls must not block the event loop (SEC-21) ────────────────────────
+
+
+def _loop_thread_and_sdk_threads(provider, make_sdk_call_record):
+    """Run wrap/unwrap through the async API; return (loop thread, SDK threads)."""
+    seen: list = []
+    make_sdk_call_record(seen)
+
+    async def run():
+        wrapped = await provider.wrap_key(b"\x09" * 32)
+        assert await provider.unwrap_key(wrapped) == b"\x09" * 32
+        return threading.current_thread()
+
+    loop_thread = asyncio.run(run())
+    return loop_thread, seen
+
+
+def test_aws_async_calls_run_off_the_event_loop(fake_boto3):
+    provider = AWSKMSProvider(key_id="arn:aws:kms:us-east-1:0:key/abc")
+    client = provider._get_client()
+
+    def record(seen):
+        real_encrypt, real_decrypt = client.encrypt, client.decrypt
+        client.encrypt = lambda **kw: (seen.append(threading.current_thread()), real_encrypt(**kw))[1]
+        client.decrypt = lambda **kw: (seen.append(threading.current_thread()), real_decrypt(**kw))[1]
+
+    loop_thread, seen = _loop_thread_and_sdk_threads(provider, record)
+    assert len(seen) == 2
+    assert all(thread is not loop_thread for thread in seen)
+
+
+def test_vault_async_calls_run_off_the_event_loop(fake_hvac):
+    provider = HashiCorpVaultProvider(vault_addr="http://v:8200", token="t", key_name="plaidify-master")
+    transit = provider._get_client().secrets.transit
+
+    def record(seen):
+        real_encrypt, real_decrypt = transit.encrypt_data, transit.decrypt_data
+        transit.encrypt_data = lambda **kw: (seen.append(threading.current_thread()), real_encrypt(**kw))[1]
+        transit.decrypt_data = lambda **kw: (seen.append(threading.current_thread()), real_decrypt(**kw))[1]
+
+    loop_thread, seen = _loop_thread_and_sdk_threads(provider, record)
+    assert len(seen) == 2
+    assert all(thread is not loop_thread for thread in seen)
+
+
+def test_azure_async_calls_run_off_the_event_loop(fake_azure):
+    provider = AzureKeyVaultProvider(vault_url="https://v.vault.azure.net/", key_name="plaidify-master")
+    client = provider._get_client()
+
+    def record(seen):
+        real_wrap, real_unwrap = client.wrap_key, client.unwrap_key
+        client.wrap_key = lambda *a: (seen.append(threading.current_thread()), real_wrap(*a))[1]
+        client.unwrap_key = lambda *a: (seen.append(threading.current_thread()), real_unwrap(*a))[1]
+
+    loop_thread, seen = _loop_thread_and_sdk_threads(provider, record)
+    assert len(seen) == 2
+    assert all(thread is not loop_thread for thread in seen)
+
+
+# ── Azure: DEKs stay unwrappable across key versions ─────────────────────────
+
+
+def _versioned_azure_modules(state):
+    """Fake Azure SDK whose key has versions, each with its own key material."""
+    modules = _fake_azure_modules()
+
+    class _KeyClient:
+        def __init__(self, vault_url=None, credential=None):
+            pass
+
+        def get_key(self, name, version=None):
+            version = version or state["current"]
+            return SimpleNamespace(
+                name=name,
+                id=f"https://v.vault.azure.net/keys/{name}/{version}",
+                properties=SimpleNamespace(version=version),
+            )
+
+    class _CryptographyClient:
+        def __init__(self, key, credential=None):
+            self.version = key.properties.version
+            self.kid = key.id
+
+        def wrap_key(self, algo, key):
+            return SimpleNamespace(encrypted_key=self.version.encode() + b"|" + key, key_id=self.kid)
+
+        def unwrap_key(self, algo, blob):
+            version, _, key = blob.partition(b"|")
+            if version.decode() != self.version:
+                raise ValueError("ciphertext was wrapped by another key version")
+            return SimpleNamespace(key=key)
+
+    modules["azure.keyvault.keys"].KeyClient = _KeyClient
+    modules["azure.keyvault.keys.crypto"].CryptographyClient = _CryptographyClient
+    return modules
+
+
+def test_azure_dek_wrapped_before_a_key_rotation_still_unwraps():
+    state = {"current": "v1"}
+    with patch.dict(sys.modules, _versioned_azure_modules(state)):
+        before = AzureKeyVaultProvider(vault_url="https://v.vault.azure.net/", key_name="k")
+        wrapped_v1 = before.wrap_key_sync(b"\x01" * 32)
+        assert wrapped_v1.startswith("azkv1:v1:")
+
+        state["current"] = "v2"  # key rotated in Key Vault; the app restarts
+        after = AzureKeyVaultProvider(vault_url="https://v.vault.azure.net/", key_name="k")
+        wrapped_v2 = after.wrap_key_sync(b"\x02" * 32)
+        assert wrapped_v2.startswith("azkv1:v2:")
+        assert after.unwrap_key_sync(wrapped_v1) == b"\x01" * 32
+        assert after.unwrap_key_sync(wrapped_v2) == b"\x02" * 32
+        # A process started before the rotation can read DEKs written after it.
+        assert before.unwrap_key_sync(wrapped_v2) == b"\x02" * 32

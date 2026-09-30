@@ -13,6 +13,7 @@ drift already covered by j0k1l2m3n4o5_add_cascade_deletes_and_indexes.
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "n4o5p6q7r8s9"
@@ -56,17 +57,11 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("expires_at", sa.DateTime(), nullable=False),
-        sa.Column(
-            "revoked", sa.Boolean(), nullable=True, server_default=sa.false()
-        ),
+        sa.Column("revoked", sa.Boolean(), nullable=True, server_default=sa.false()),
         sa.Column("created_at", sa.DateTime(), nullable=True),
     )
-    op.create_index(
-        "ix_refresh_tokens_token", "refresh_tokens", ["token"], unique=True
-    )
-    op.create_index(
-        "ix_refresh_tokens_user_id", "refresh_tokens", ["user_id"], unique=False
-    )
+    op.create_index("ix_refresh_tokens_token", "refresh_tokens", ["token"], unique=True)
+    op.create_index("ix_refresh_tokens_user_id", "refresh_tokens", ["user_id"], unique=False)
 
     # --- users: lockout + DEK + updated_at ---
     with op.batch_alter_table("users") as batch_op:
@@ -109,7 +104,5 @@ def downgrade() -> None:
     op.drop_index("ix_refresh_tokens_token", table_name="refresh_tokens")
     op.drop_table("refresh_tokens")
 
-    op.drop_index(
-        "ix_password_reset_tokens_user_id", table_name="password_reset_tokens"
-    )
+    op.drop_index("ix_password_reset_tokens_user_id", table_name="password_reset_tokens")
     op.drop_table("password_reset_tokens")

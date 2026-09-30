@@ -1,3 +1,40 @@
+# Production stack: nginx (TLS) → Plaidify API, a separate access-job
+# executor, one-shot migrations, PostgreSQL and Redis.
+# Setup and operation: docs/DEPLOYMENT.md ("Production Compose Stack").
+#
+# Only nginx publishes ports. The API, the executor, Postgres and Redis are
+# reachable from this compose network alone, which is why the API may trust
+# X-Forwarded-* headers from the private address ranges (FORWARDED_ALLOW_IPS):
+# nginx is the only client on the network that sets them.
+
+x-plaidify-database: &plaidify-database
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: ${POSTGRES_USER:-plaidify}
+  POSTGRES_DB: ${POSTGRES_DB:-plaidify}
+  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+  POSTGRES_SSLMODE: disable
+
+x-plaidify-redis: &plaidify-redis
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD_FILE: /run/secrets/redis_password
+  REDIS_SCHEME: redis
+
+x-plaidify-runtime: &plaidify-runtime
+  PYTHONUNBUFFERED: "1"
+  LOG_FORMAT: json
+  ENV: production
+  DEBUG: "false"
+  ACCESS_JOB_EXECUTION_MODE: redis-worker
+  # Connection budget against Postgres' default max_connections=100:
+  # GUNICORN_WORKERS × (pool + overflow) for the API, plus the executor.
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+  # Chromium keeps its sandbox; the seccomp profile below makes that possible
+  # for the unprivileged app user.
+  BROWSER_CHROMIUM_SANDBOX: "true"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -30,7 +67,7 @@ services:
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" ping | grep PONG"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep PONG"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -45,17 +82,14 @@ services:
     env_file:
       - ${PLAIDIFY_ENV_FILE:-.env.production}
     environment:
+      <<: *plaidify-database
       PYTHONUNBUFFERED: "1"
       LOG_FORMAT: json
       ENV: production
       DEBUG: "false"
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-plaidify}
-      POSTGRES_DB: ${POSTGRES_DB:-plaidify}
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      POSTGRES_SSLMODE: disable
     command: ["alembic", "upgrade", "head"]
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,30 +101,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    init: true
     restart: unless-stopped
     env_file:
       - ${PLAIDIFY_ENV_FILE:-.env.production}
     environment:
-      PYTHONUNBUFFERED: "1"
-      LOG_FORMAT: json
-      ENV: production
-      DEBUG: "false"
+      <<: [*plaidify-runtime, *plaidify-database, *plaidify-redis]
       ENFORCE_HTTPS: "true"
-      ACCESS_JOB_EXECUTION_MODE: redis-worker
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-plaidify}
-      POSTGRES_DB: ${POSTGRES_DB:-plaidify}
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      POSTGRES_SSLMODE: disable
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
-      REDIS_PASSWORD_FILE: /run/secrets/redis_password
-      REDIS_SCHEME: redis
+      # nginx reaches the API over this network; its X-Forwarded-For /
+      # X-Forwarded-Proto are trusted from the private ranges (see header).
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1,::1}
     expose:
       - "8000"
-    command: ["gunicorn", "src.main:app", "-c", "gunicorn.conf.py"]
+    # Image default command: gunicorn src.main:app -c gunicorn.conf.py
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,12 +123,17 @@ services:
     secrets:
       - postgres_password
       - redis_password
+    security_opt:
+      - seccomp=./deploy/seccomp/chromium.json
+      - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      # Plain HTTP GET of /health from inside the container; 200 only, a
+      # redirect fails it.
+      test: ["CMD", "plaidify-healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 30s
     stop_grace_period: 45s
 
   access-executor:
@@ -114,27 +141,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    init: true
     restart: unless-stopped
     env_file:
       - ${PLAIDIFY_ENV_FILE:-.env.production}
     environment:
-      PYTHONUNBUFFERED: "1"
-      LOG_FORMAT: json
-      ENV: production
-      DEBUG: "false"
-      ACCESS_JOB_EXECUTION_MODE: redis-worker
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-plaidify}
-      POSTGRES_DB: ${POSTGRES_DB:-plaidify}
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      POSTGRES_SSLMODE: disable
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
-      REDIS_PASSWORD_FILE: /run/secrets/redis_password
-      REDIS_SCHEME: redis
+      <<: [*plaidify-runtime, *plaidify-database, *plaidify-redis]
+      ACCESS_WORKER_METRICS_PORT: "9101"
     command: ["python", "-m", "src.access_job_worker"]
+    expose:
+      - "9101"
     depends_on:
       postgres:
         condition: service_healthy
@@ -145,10 +160,54 @@ services:
     secrets:
       - postgres_password
       - redis_password
+    security_opt:
+      - seccomp=./deploy/seccomp/chromium.json
+      - no-new-privileges:true
+    healthcheck:
+      # The executor serves no API; its own endpoint answers 503 when the
+      # worker's event loop has stopped running.
+      test: ["CMD", "plaidify-healthcheck", "http://127.0.0.1:9101/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     stop_grace_period: 45s
 
+  # Scheduled, encrypted pg_dump archives (scripts/backup_db.sh) in the
+  # `backups` volume, verified after every run. Opt in with the profile:
+  #   docker compose -f docker-compose.production.yml --profile backup up -d
+  # Needs .secrets/backup_age_recipients (age public keys, one per line); keep
+  # the private key off this host, and copy the volume's archives off-host
+  # (docs/DISASTER_RECOVERY.md).
+  backup:
+    profiles: ["backup"]
+    build:
+      context: .
+      dockerfile: deploy/backup/Dockerfile
+    image: ${PLAIDIFY_BACKUP_IMAGE:-plaidify-backup:local}
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-plaidify}
+      PGDATABASE: ${POSTGRES_DB:-plaidify}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      BACKUP_RETENTION: ${BACKUP_RETENTION:-168}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-3600}
+      BACKUP_AGE_RECIPIENTS_FILE: /run/secrets/backup_age_recipients
+    volumes:
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - postgres_password
+      - backup_age_recipients
+    # Let a dump in progress finish before the container stops.
+    stop_grace_period: 5m
+
   nginx:
-    image: nginx:1-alpine
+    image: nginx:1.30-alpine
     restart: unless-stopped
     depends_on:
       plaidify:
@@ -170,10 +229,13 @@ secrets:
     file: ./.secrets/postgres_password
   redis_password:
     file: ./.secrets/redis_password
+  backup_age_recipients:
+    file: ./.secrets/backup_age_recipients
 
 volumes:
   pgdata:
   redisdata:
+  backups:
 
 networks:
   default:

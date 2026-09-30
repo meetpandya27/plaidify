@@ -24,7 +24,8 @@ def _create_scoped_link(client, auth_headers, site="test_site", scopes=None):
 def _submit_creds(client, auth_headers, link_token):
     """Submit credentials and return response data."""
     resp = client.post(
-        f"/submit_credentials?link_token={link_token}&username=test_user&password=test_pass",
+        "/submit_credentials",
+        json={"link_token": link_token, "username": "test_user", "password": "test_pass"},
         headers=auth_headers,
     )
     assert resp.status_code == 200
@@ -82,8 +83,9 @@ class TestScopeEnforcement:
         cred_data = _submit_creds(client, auth_headers, link_data["link_token"])
         access_token = cred_data["access_token"]
 
-        resp = client.get(
-            f"/fetch_data?access_token={access_token}",
+        resp = client.post(
+            "/fetch_data",
+            json={"access_token": access_token},
             headers=auth_headers,
         )
         assert resp.status_code == 200
@@ -105,8 +107,9 @@ class TestScopeEnforcement:
         cred_data = _submit_creds(client, auth_headers, link_data["link_token"])
         access_token = cred_data["access_token"]
 
-        resp = client.get(
-            f"/fetch_data?access_token={access_token}",
+        resp = client.post(
+            "/fetch_data",
+            json={"access_token": access_token},
             headers=auth_headers,
         )
         assert resp.status_code == 200
@@ -128,8 +131,9 @@ class TestScopeEnforcement:
         cred_data = _submit_creds(client, auth_headers, link_data["link_token"])
         access_token = cred_data["access_token"]
 
-        resp = client.get(
-            f"/fetch_data?access_token={access_token}",
+        resp = client.post(
+            "/fetch_data",
+            json={"access_token": access_token},
             headers=auth_headers,
         )
         assert resp.status_code == 200
@@ -147,8 +151,9 @@ class TestScopeEnforcement:
         cred_data = _submit_creds(client, auth_headers, link_data["link_token"])
         access_token = cred_data["access_token"]
 
-        resp = client.get(
-            f"/fetch_data?access_token={access_token}",
+        resp = client.post(
+            "/fetch_data",
+            json={"access_token": access_token},
             headers=auth_headers,
         )
         assert resp.status_code == 200
@@ -170,7 +175,8 @@ class TestBackwardCompatibility:
         link_token = resp.json()["link_token"]
 
         resp = client.post(
-            f"/submit_credentials?link_token={link_token}&username=u&password=p",
+            "/submit_credentials",
+            json={"link_token": link_token, "username": "u", "password": "p"},
             headers=auth_headers,
         )
         assert resp.status_code == 200

@@ -1,13 +1,12 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
+from sqlalchemy import create_engine, pool
 
 from alembic import context
 
 # Import Plaidify models and config
-from src.database import Base
 from src.config import get_settings
+from src.database import Base
 
 settings = get_settings()
 
@@ -15,21 +14,20 @@ settings = get_settings()
 # access to the values within the .ini file in use.
 config = context.config
 
-# Override sqlalchemy.url from our settings (not from alembic.ini)
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# The database URL comes from our settings, not from alembic.ini. The engine
+# is built from the URL directly: the ini option goes through ConfigParser
+# interpolation, which chokes on the '%' of a percent-encoded password.
+# The option is still set (escaped) for anything that reads it back.
+database_url = settings.database_url
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Interpret the config file for Python logging. Programmatic callers (tests)
+# can opt out with config.attributes["configure_logger"] = False.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Register our models' metadata for autogenerate support
 target_metadata = Base.metadata
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
 
 
 def run_migrations_offline() -> None:
@@ -44,9 +42,8 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -56,26 +53,31 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _run_with_connection(connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode.
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
+    A caller may hand over its own connection through
+    ``config.attributes["connection"]`` (tests do this to migrate a throwaway
+    database); otherwise an engine is created for the configured URL.
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connection = config.attributes.get("connection")
+    if connection is not None:
+        _run_with_connection(connection)
+        return
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
+    connectable = create_engine(database_url, poolclass=pool.NullPool)
+    try:
+        with connectable.connect() as connection:
+            _run_with_connection(connection)
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():

@@ -5,6 +5,7 @@ import httpx
 import respx
 
 from plaidify.client import Plaidify, _raise_for_api_error
+from _support import mock_encryption_session
 from plaidify.models import (
     AccessJobInfo,
     AccessJobListResult,
@@ -19,6 +20,7 @@ from plaidify.exceptions import (
     ConnectionError,
     BlueprintNotFoundError,
     InvalidTokenError,
+    NotFoundError,
     RateLimitedError,
     ServerError,
     MFARequiredError,
@@ -42,9 +44,38 @@ class TestRaiseForApiError:
             _raise_for_api_error(r)
 
     def test_404_raises_not_found(self):
-        r = httpx.Response(404, json={"detail": "Blueprint not found: xyz"})
-        with pytest.raises(BlueprintNotFoundError):
+        r = httpx.Response(404, json={"detail": "API key not found."})
+        with pytest.raises(NotFoundError) as exc_info:
             _raise_for_api_error(r)
+        # Not every missing thing is a blueprint.
+        assert not isinstance(exc_info.value, BlueprintNotFoundError)
+        assert exc_info.value.message == "API key not found."
+
+    def test_404_uses_the_callers_not_found(self):
+        r = httpx.Response(404, json={"detail": "Blueprint not found: xyz"})
+        with pytest.raises(BlueprintNotFoundError) as exc_info:
+            _raise_for_api_error(r, not_found=lambda _d: BlueprintNotFoundError(site="xyz"))
+        assert exc_info.value.site == "xyz"
+        assert isinstance(exc_info.value, NotFoundError)
+
+    def test_validation_errors_read_as_text(self):
+        r = httpx.Response(422, json={"detail": [{"loc": ["body", "code"], "msg": "Field required"}]})
+        with pytest.raises(PlaidifyError) as exc_info:
+            _raise_for_api_error(r)
+        assert exc_info.value.message == "Field required"
+
+    def test_plaidify_error_body(self):
+        r = httpx.Response(400, json={"error": "Site is read-only", "error_code": "blocked"})
+        with pytest.raises(PlaidifyError) as exc_info:
+            _raise_for_api_error(r)
+        assert exc_info.value.message == "Site is read-only"
+        assert exc_info.value.detail["error_code"] == "blocked"
+
+    def test_non_numeric_retry_after(self):
+        r = httpx.Response(429, json={"detail": "slow down"}, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+        with pytest.raises(RateLimitedError) as exc_info:
+            _raise_for_api_error(r)
+        assert exc_info.value.retry_after == 60
 
     def test_429_raises_rate_limited(self):
         r = httpx.Response(429, json={"detail": "slow down"}, headers={"Retry-After": "30"})
@@ -76,11 +107,16 @@ class TestRaiseForApiError:
 class TestHealth:
     @respx.mock
     async def test_health_success(self):
-        respx.get(f"{BASE}/health").mock(return_value=httpx.Response(200, json={
-            "status": "healthy",
-            "version": "0.2.0",
-            "database": "connected",
-        }))
+        respx.get(f"{BASE}/health").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "healthy",
+                    "version": "0.2.0",
+                    "database": "connected",
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             h = await pfy.health()
         assert isinstance(h, HealthStatus)
@@ -102,13 +138,32 @@ class TestHealth:
 class TestBlueprints:
     @respx.mock
     async def test_list_blueprints(self):
-        respx.get(f"{BASE}/blueprints").mock(return_value=httpx.Response(200, json={
-            "blueprints": [
-                {"site": "gg", "name": "GG", "domain": "gg.com", "tags": ["util"], "has_mfa": True, "schema_version": "2"},
-                {"site": "tb", "name": "TB", "domain": "tb.com", "tags": [], "has_mfa": False, "schema_version": "2"},
-            ],
-            "count": 2,
-        }))
+        respx.get(f"{BASE}/blueprints").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "blueprints": [
+                        {
+                            "site": "gg",
+                            "name": "GG",
+                            "domain": "gg.com",
+                            "tags": ["util"],
+                            "has_mfa": True,
+                            "schema_version": "2",
+                        },
+                        {
+                            "site": "tb",
+                            "name": "TB",
+                            "domain": "tb.com",
+                            "tags": [],
+                            "has_mfa": False,
+                            "schema_version": "2",
+                        },
+                    ],
+                    "count": 2,
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             result = await pfy.list_blueprints()
         assert result.count == 2
@@ -117,14 +172,19 @@ class TestBlueprints:
 
     @respx.mock
     async def test_get_blueprint(self):
-        respx.get(f"{BASE}/blueprints/greengrid").mock(return_value=httpx.Response(200, json={
-            "name": "GreenGrid",
-            "domain": "greengrid.com",
-            "tags": ["energy"],
-            "has_mfa": True,
-            "extract_fields": ["bill", "usage"],
-            "schema_version": "2",
-        }))
+        respx.get(f"{BASE}/blueprints/greengrid").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "name": "GreenGrid",
+                    "domain": "greengrid.com",
+                    "tags": ["energy"],
+                    "has_mfa": True,
+                    "extract_fields": ["bill", "usage"],
+                    "schema_version": "2",
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             bp = await pfy.get_blueprint("greengrid")
         assert isinstance(bp, BlueprintInfo)
@@ -133,12 +193,14 @@ class TestBlueprints:
 
     @respx.mock
     async def test_get_blueprint_not_found(self):
+        """A missing blueprint is reported as one, with the site asked for."""
         respx.get(f"{BASE}/blueprints/nonexistent").mock(
             return_value=httpx.Response(404, json={"detail": "Blueprint not found: nonexistent"})
         )
         async with Plaidify(server_url=BASE) as pfy:
-            with pytest.raises(BlueprintNotFoundError):
+            with pytest.raises(BlueprintNotFoundError) as exc_info:
                 await pfy.get_blueprint("nonexistent")
+        assert exc_info.value.site == "nonexistent"
 
 
 # ── Connect ───────────────────────────────────────────────────────────────────
@@ -148,11 +210,17 @@ class TestBlueprints:
 class TestConnect:
     @respx.mock
     async def test_connect_success(self):
-        respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
-            "status": "connected",
-            "job_id": "ajob-123",
-            "data": {"balance": 100.50, "account": "A123"},
-        }))
+        mock_encryption_session(BASE)
+        respx.post(f"{BASE}/connect").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "connected",
+                    "job_id": "ajob-123",
+                    "data": {"balance": 100.50, "account": "A123"},
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             result = await pfy.connect("internal_bank", username="user", password="pass")
         assert isinstance(result, ConnectResult)
@@ -162,12 +230,18 @@ class TestConnect:
 
     @respx.mock
     async def test_connect_pending_returns_job_id(self):
-        respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
-            "status": "pending",
-            "job_id": "ajob-pending",
-            "session_id": "access-session-1",
-            "metadata": {"message": "Still running"},
-        }))
+        mock_encryption_session(BASE)
+        respx.post(f"{BASE}/connect").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "pending",
+                    "job_id": "ajob-pending",
+                    "session_id": "access-session-1",
+                    "metadata": {"message": "Still running"},
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             result = await pfy.connect("internal_bank", username="user", password="pass")
         assert result.pending is True
@@ -176,10 +250,16 @@ class TestConnect:
 
     @respx.mock
     async def test_connect_with_extract_fields(self):
-        route = respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
-            "status": "connected",
-            "data": {"balance": 50.0},
-        }))
+        mock_encryption_session(BASE)
+        route = respx.post(f"{BASE}/connect").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "connected",
+                    "data": {"balance": 50.0},
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             result = await pfy.connect(
                 "internal_bank",
@@ -191,17 +271,24 @@ class TestConnect:
         # Verify the request included extract_fields
         sent = route.calls[0].request
         import json
+
         body = json.loads(sent.content)
         assert body["extract_fields"] == ["balance"]
 
     @respx.mock
     async def test_connect_mfa_no_handler_raises(self):
-        respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
-            "status": "mfa_required",
-            "session_id": "sess-abc",
-            "mfa_type": "otp",
-            "metadata": {"message": "Enter OTP"},
-        }))
+        mock_encryption_session(BASE)
+        respx.post(f"{BASE}/connect").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "mfa_required",
+                    "session_id": "sess-abc",
+                    "mfa_type": "otp",
+                    "metadata": {"message": "Enter OTP"},
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             with pytest.raises(MFARequiredError) as exc_info:
                 await pfy.connect("bank", username="u", password="p")
@@ -210,34 +297,46 @@ class TestConnect:
 
     @respx.mock
     async def test_connect_mfa_with_handler(self):
+        mock_encryption_session(BASE)
         # First call returns MFA required for a detached access job
-        respx.post(f"{BASE}/connect").mock(return_value=httpx.Response(200, json={
-            "status": "mfa_required",
-            "job_id": "ajob-mfa",
-            "session_id": "sess-abc",
-            "mfa_type": "otp",
-            "metadata": {"message": "Enter OTP"},
-        }))
+        respx.post(f"{BASE}/connect").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "mfa_required",
+                    "job_id": "ajob-mfa",
+                    "session_id": "sess-abc",
+                    "mfa_type": "otp",
+                    "metadata": {"message": "Enter OTP"},
+                },
+            )
+        )
         # MFA submit
         respx.post(f"{BASE}/mfa/submit").mock(
-            return_value=httpx.Response(200, json={
-                "status": "mfa_submitted",
-                "message": "Code accepted.",
-            })
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "mfa_submitted",
+                    "message": "Code accepted.",
+                },
+            )
         )
         respx.get(f"{BASE}/access_jobs/ajob-mfa").mock(
-            return_value=httpx.Response(200, json={
-                "job_id": "ajob-mfa",
-                "site": "bank",
-                "job_type": "connect",
-                "status": "completed",
-                "session_id": "sess-abc",
-                "metadata": {"result_status": "connected"},
-                "result": {
-                    "status": "connected",
-                    "data": {"balance": 200.0},
+            return_value=httpx.Response(
+                200,
+                json={
+                    "job_id": "ajob-mfa",
+                    "site": "bank",
+                    "job_type": "connect",
+                    "status": "completed",
+                    "session_id": "sess-abc",
+                    "metadata": {"result_status": "connected"},
+                    "result": {
+                        "status": "connected",
+                        "data": {"balance": 200.0},
+                    },
                 },
-            })
+            )
         )
 
         async def handler(challenge):
@@ -251,18 +350,23 @@ class TestConnect:
 
     @respx.mock
     async def test_list_access_jobs(self):
-        respx.get(f"{BASE}/access_jobs").mock(return_value=httpx.Response(200, json={
-            "jobs": [
-                {
-                    "job_id": "ajob-1",
-                    "site": "bank",
-                    "job_type": "connect",
-                    "status": "completed",
-                    "result": {"status": "connected", "data": {"balance": 42}},
-                }
-            ],
-            "count": 1,
-        }))
+        respx.get(f"{BASE}/access_jobs").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "jobs": [
+                        {
+                            "job_id": "ajob-1",
+                            "site": "bank",
+                            "job_type": "connect",
+                            "status": "completed",
+                            "result": {"status": "connected", "data": {"balance": 42}},
+                        }
+                    ],
+                    "count": 1,
+                },
+            )
+        )
         async with Plaidify(server_url=BASE, api_key="jwt-test") as pfy:
             result = await pfy.list_access_jobs()
         assert isinstance(result, AccessJobListResult)
@@ -273,19 +377,25 @@ class TestConnect:
     async def test_wait_for_access_job(self):
         route = respx.get(f"{BASE}/access_jobs/ajob-2")
         route.side_effect = [
-            httpx.Response(200, json={
-                "job_id": "ajob-2",
-                "site": "bank",
-                "job_type": "connect",
-                "status": "running",
-            }),
-            httpx.Response(200, json={
-                "job_id": "ajob-2",
-                "site": "bank",
-                "job_type": "connect",
-                "status": "completed",
-                "result": {"status": "connected", "data": {"balance": 42}},
-            }),
+            httpx.Response(
+                200,
+                json={
+                    "job_id": "ajob-2",
+                    "site": "bank",
+                    "job_type": "connect",
+                    "status": "running",
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "job_id": "ajob-2",
+                    "site": "bank",
+                    "job_type": "connect",
+                    "status": "completed",
+                    "result": {"status": "connected", "data": {"balance": 42}},
+                },
+            ),
         ]
         async with Plaidify(server_url=BASE, api_key="jwt-test") as pfy:
             job = await pfy.wait_for_access_job("ajob-2", poll_interval=0.01, timeout=0.1)
@@ -295,6 +405,7 @@ class TestConnect:
 
     @respx.mock
     async def test_connect_server_unreachable(self):
+        respx.post(f"{BASE}/encryption/session").mock(side_effect=httpx.ConnectError("refused"))
         respx.post(f"{BASE}/connect").mock(side_effect=httpx.ConnectError("refused"))
         async with Plaidify(server_url=BASE) as pfy:
             with pytest.raises(ConnectionError):
@@ -308,22 +419,32 @@ class TestConnect:
 class TestMFA:
     @respx.mock
     async def test_submit_mfa(self):
-        respx.post(f"{BASE}/mfa/submit").mock(return_value=httpx.Response(200, json={
-            "status": "mfa_submitted",
-            "message": "Accepted",
-        }))
+        respx.post(f"{BASE}/mfa/submit").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "mfa_submitted",
+                    "message": "Accepted",
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             result = await pfy.submit_mfa("sess-1", "123456")
         assert result.status == "mfa_submitted"
 
     @respx.mock
     async def test_mfa_status(self):
-        respx.get(f"{BASE}/mfa/status/sess-1").mock(return_value=httpx.Response(200, json={
-            "session_id": "sess-1",
-            "site": "bank",
-            "mfa_type": "otp",
-            "metadata": None,
-        }))
+        respx.get(f"{BASE}/mfa/status/sess-1").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "session_id": "sess-1",
+                    "site": "bank",
+                    "mfa_type": "otp",
+                    "metadata": None,
+                },
+            )
+        )
         async with Plaidify(server_url=BASE) as pfy:
             challenge = await pfy.mfa_status("sess-1")
         assert isinstance(challenge, MFAChallenge)
@@ -337,9 +458,7 @@ class TestMFA:
 class TestLinkFlow:
     @respx.mock
     async def test_create_link(self):
-        respx.post(f"{BASE}/create_link").mock(
-            return_value=httpx.Response(200, json={"link_token": "lt-abc"})
-        )
+        respx.post(f"{BASE}/create_link").mock(return_value=httpx.Response(200, json={"link_token": "lt-abc"}))
         async with Plaidify(server_url=BASE, api_key="jwt-test") as pfy:
             link = await pfy.create_link("bank")
         assert isinstance(link, LinkResult)
@@ -348,20 +467,21 @@ class TestLinkFlow:
 
     @respx.mock
     async def test_submit_credentials(self):
-        respx.post(f"{BASE}/submit_credentials").mock(
-            return_value=httpx.Response(200, json={"access_token": "at-xyz"})
-        )
+        respx.post(f"{BASE}/submit_credentials").mock(return_value=httpx.Response(200, json={"access_token": "at-xyz"}))
         async with Plaidify(server_url=BASE, api_key="jwt-test") as pfy:
             link = await pfy.submit_credentials("lt-abc", "user", "pass")
         assert link.access_token == "at-xyz"
 
     @respx.mock
     async def test_fetch_data(self):
-        respx.get(f"{BASE}/fetch_data").mock(
-            return_value=httpx.Response(200, json={
-                "status": "connected",
-                "data": {"bill": "$50.00"},
-            })
+        respx.post(f"{BASE}/fetch_data").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "connected",
+                    "data": {"bill": "$50.00"},
+                },
+            )
         )
         async with Plaidify(server_url=BASE, api_key="jwt-test") as pfy:
             result = await pfy.fetch_data("at-xyz")
@@ -377,10 +497,13 @@ class TestAuth:
     @respx.mock
     async def test_register(self):
         respx.post(f"{BASE}/auth/register").mock(
-            return_value=httpx.Response(200, json={
-                "access_token": "jwt-new",
-                "token_type": "bearer",
-            })
+            return_value=httpx.Response(
+                200,
+                json={
+                    "access_token": "jwt-new",
+                    "token_type": "bearer",
+                },
+            )
         )
         async with Plaidify(server_url=BASE) as pfy:
             token = await pfy.register("alice", "alice@example.com", "secretpass")
@@ -389,10 +512,13 @@ class TestAuth:
     @respx.mock
     async def test_login(self):
         respx.post(f"{BASE}/auth/token").mock(
-            return_value=httpx.Response(200, json={
-                "access_token": "jwt-login",
-                "token_type": "bearer",
-            })
+            return_value=httpx.Response(
+                200,
+                json={
+                    "access_token": "jwt-login",
+                    "token_type": "bearer",
+                },
+            )
         )
         async with Plaidify(server_url=BASE) as pfy:
             token = await pfy.login("alice", "secretpass")
@@ -401,12 +527,15 @@ class TestAuth:
     @respx.mock
     async def test_me(self):
         respx.get(f"{BASE}/auth/me").mock(
-            return_value=httpx.Response(200, json={
-                "id": 1,
-                "username": "alice",
-                "email": "alice@example.com",
-                "is_active": True,
-            })
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": 1,
+                    "username": "alice",
+                    "email": "alice@example.com",
+                    "is_active": True,
+                },
+            )
         )
         async with Plaidify(server_url=BASE, api_key="jwt-test") as pfy:
             profile = await pfy.me()
@@ -462,6 +591,13 @@ class TestClientConfig:
         pfy = Plaidify(api_key="my-jwt")
         headers = pfy._config.base_headers()
         assert headers["Authorization"] == "Bearer my-jwt"
+        assert "X-API-Key" not in headers
+
+    def test_api_key_goes_in_x_api_key(self):
+        for key in ("pk_abc123", "pk_agent_abc123"):
+            headers = Plaidify(api_key=key)._config.base_headers()
+            assert headers["X-API-Key"] == key
+            assert "Authorization" not in headers
 
     def test_no_auth_header_without_key(self):
         pfy = Plaidify()

@@ -223,10 +223,11 @@ class TestSimplifyHTML:
         assert "<th" in result.html
         assert "<td" in result.html
 
-    def test_assigns_data_pid_attributes(self):
+    def test_element_ids_stay_out_of_the_html(self):
         result = simplify_html(SIMPLE_HTML)
-        assert 'data-pid="p' in result.html
-        # Every element in the map should have a pid
+        # A selector built on a prompt-only id would match nothing on the live page.
+        assert "data-pid" not in result.html
+        # Every element in the map still has an internal id
         for pid, info in result.element_map.items():
             assert pid.startswith("p")
             assert info.pid == pid
@@ -373,12 +374,12 @@ class TestAttributeFiltering:
         assert "onclick" not in result.html
         assert "onmouseover" not in result.html
 
-    def test_drops_data_attributes_except_pid(self):
-        html = '<div data-testid="foo" data-analytics="track">Content</div>'
+    def test_drops_data_attributes(self):
+        html = '<div data-testid="foo" data-analytics="track" data-pid="p9">Content</div>'
         result = simplify_html(html)
         assert "data-testid" not in result.html
         assert "data-analytics" not in result.html
-        assert "data-pid=" in result.html
+        assert "data-pid" not in result.html
 
 
 # ── Tests: Helpers ────────────────────────────────────────────────────────────
@@ -492,3 +493,71 @@ class TestEdgeCases:
         result = simplify_html(html)
         assert "Link" in result.html
         assert "href=" in result.html
+
+
+# ── What leaves the process (ENG-09) ─────────────────────────────────────────
+
+
+class TestSecretsStayOnThePage:
+    def test_hidden_inputs_are_dropped(self):
+        html = (
+            '<form action="/pay"><input type="hidden" name="__RequestVerificationToken" value="tok-123">'
+            '<input type="hidden" name="accountId" value="998877"><input type="text" name="amount" value="12"></form>'
+        )
+        result = simplify_html(html)
+        assert "tok-123" not in result.html
+        assert "998877" not in result.html
+        assert 'name="amount"' in result.html
+
+    def test_elements_with_the_hidden_attribute_are_dropped(self):
+        result = simplify_html("<div hidden><span>session=abc</span></div><p>Visible</p>")
+        assert "session=abc" not in result.html
+        assert "Visible" in result.html
+
+    def test_password_values_are_never_sent(self):
+        result = simplify_html('<input type="password" name="pw" value="hunter2"><input name="acct" value="ACC-1">')
+        assert "hunter2" not in result.html
+        assert 'value="ACC-1"' in result.html
+
+    def test_secret_url_parameters_are_redacted(self):
+        html = (
+            '<a href="/accounts?sessionid=s3cr3t&page=2">Next</a>'
+            '<a href="/home;jsessionid=ABCDEF">Home</a>'
+            '<form action="/search?csrf_token=xyz&q=1"></form>'
+        )
+        result = simplify_html(html)
+        for secret in ("s3cr3t", "ABCDEF", "xyz"):
+            assert secret not in result.html
+        assert "page=2" in result.html
+        assert "q=1" in result.html
+
+
+class TestBudgetIsEnforced:
+    def _long_table(self, rows=2000):
+        body = "".join(
+            f"<tr><td class='d'>2026-01-{i % 28 + 1:02d}</td><td class='a'>${i}.00</td></tr>" for i in range(rows)
+        )
+        return f"<html><body><h1>Statement</h1><div id='balance'>$1,234.56</div><table><tbody>{body}</tbody></table></body></html>"
+
+    def test_long_tables_are_trimmed_to_fit(self):
+        result = simplify_html(self._long_table(), token_budget=2_000)
+        assert result.over_budget
+        assert result.truncated
+        assert result.token_estimate <= 2_000
+        # The header and the first rows survive; the model still sees the shape.
+        assert "$1,234.56" in result.html
+        assert "$0.00" in result.html
+        assert "$1999.00" not in result.html
+
+    def test_hard_truncation_as_a_last_resort(self):
+        html = "<div>" + "<p>" + "word " * 50_000 + "</p></div>"
+        result = simplify_html(html, token_budget=1_000)
+        assert result.truncated
+        assert result.token_estimate <= 1_000
+        assert "page truncated" in result.html
+
+    def test_pages_within_budget_are_untouched(self):
+        result = simplify_html(self._long_table(rows=10), token_budget=100_000)
+        assert not result.over_budget
+        assert not result.truncated
+        assert "$9.00" in result.html

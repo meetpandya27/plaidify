@@ -9,10 +9,17 @@
  * exponential backoff; exhausted events surface to the parent through
  * the `postEvent` bridge so operators can detect drift.
  *
- * The defaults mirror the legacy implementation (max 6 attempts, base
- * 250 ms, cap 4 000 ms) so behaviour is preserved when #68 flips the
- * React bundle on via `HOSTED_LINK_FRONTEND=react`.
+ * The defaults (max 6 attempts, base 250 ms, cap 4 000 ms) are those of
+ * the page this bundle replaced, so host apps saw no change in delivery.
  */
+
+import { normalizeOrigin } from "./config";
+
+/**
+ * Sends one event while the page is being torn down. Returns false when
+ * the browser refused to queue it.
+ */
+export type TeardownSender = (url: string, body: string) => boolean;
 
 export interface EventDeliveryOptions {
   readonly linkToken: string;
@@ -24,6 +31,8 @@ export interface EventDeliveryOptions {
   readonly setTimer?: (cb: () => void, delayMs: number) => unknown;
   readonly clearTimer?: (handle: unknown) => void;
   readonly onDeliveryFailed?: (event: string, error: Error) => void;
+  /** Overrides the sendBeacon / keepalive transport used at teardown (tests). */
+  readonly sendOnTeardown?: TeardownSender;
 }
 
 interface QueuedEvent {
@@ -36,17 +45,62 @@ const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_BASE_DELAY_MS = 250;
 const DEFAULT_MAX_DELAY_MS = 4000;
 
+/**
+ * The wire body for one event. The envelope is written last so a payload
+ * field can never replace the event name (TELEMETRY payloads used to carry
+ * their own `event` key and were filed under it).
+ */
+export function eventBody(event: string, payload: Record<string, unknown>): string {
+  return JSON.stringify({ ...payload, event });
+}
+
+/**
+ * Default teardown transport: sendBeacon, falling back to a keepalive
+ * fetch. `text/plain` keeps the request CORS-simple (no preflight to be
+ * cancelled mid-unload); the server parses the body as JSON regardless.
+ */
+export function defaultTeardownSender(url: string, body: string): boolean {
+  const nav = typeof navigator !== "undefined" ? navigator : undefined;
+  if (nav && typeof nav.sendBeacon === "function") {
+    try {
+      if (nav.sendBeacon(url, new Blob([body], { type: "text/plain;charset=UTF-8" }))) {
+        return true;
+      }
+    } catch {
+      // Fall through to fetch.
+    }
+  }
+  if (typeof fetch === "function") {
+    try {
+      void fetch(url, {
+        method: "POST",
+        body,
+        keepalive: true,
+        headers: { "Content-Type": "text/plain;charset=UTF-8" },
+      }).catch(() => undefined);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 export class EventDelivery {
   private readonly queue: QueuedEvent[] = [];
   private inFlight = false;
   private retryTimer: unknown = null;
   private readonly options: Required<
-    Omit<EventDeliveryOptions, "fetchImpl" | "setTimer" | "clearTimer" | "onDeliveryFailed">
+    Omit<
+      EventDeliveryOptions,
+      "fetchImpl" | "setTimer" | "clearTimer" | "onDeliveryFailed" | "sendOnTeardown"
+    >
   > & {
     readonly fetchImpl: typeof fetch;
     readonly setTimer: (cb: () => void, delayMs: number) => unknown;
     readonly clearTimer: (handle: unknown) => void;
     readonly onDeliveryFailed?: (event: string, error: Error) => void;
+    readonly sendOnTeardown: TeardownSender;
   };
 
   constructor(options: EventDeliveryOptions) {
@@ -74,6 +128,7 @@ export class EventDelivery {
           }
         }),
       onDeliveryFailed: options.onDeliveryFailed,
+      sendOnTeardown: options.sendOnTeardown ?? defaultTeardownSender,
     };
   }
 
@@ -91,6 +146,12 @@ export class EventDelivery {
   /** True while a fetch call is outstanding. */
   get busy(): boolean {
     return this.inFlight;
+  }
+
+  private get eventUrl(): string {
+    return `${this.options.serverUrl}/link/sessions/${encodeURIComponent(
+      this.options.linkToken,
+    )}/event`;
   }
 
   private scheduleRetry(delayMs: number): void {
@@ -112,14 +173,14 @@ export class EventDelivery {
       return;
     }
     this.inFlight = true;
-    const url = `${this.options.serverUrl}/link/sessions/${encodeURIComponent(
-      this.options.linkToken,
-    )}/event`;
     try {
-      const response = await this.options.fetchImpl(url, {
+      const response = await this.options.fetchImpl(this.eventUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ event: next.event, ...next.payload }),
+        body: eventBody(next.event, next.payload),
+        // A post that is already on the wire when the page is torn down
+        // still reaches the server.
+        keepalive: true,
       });
       if (!response.ok) {
         throw new Error(`event delivery failed with status ${response.status}`);
@@ -153,6 +214,30 @@ export class EventDelivery {
     }
   }
 
+  /**
+   * The page is going away: hand every event that has not started its
+   * trip — plus `finalEvents`, typically EXIT — to the beacon transport,
+   * which outlives the document. The post already in flight is left alone;
+   * it was sent with keepalive.
+   */
+  flushOnTeardown(
+    finalEvents: readonly { event: string; payload?: Record<string, unknown> }[] = [],
+  ): void {
+    if (this.retryTimer !== null) {
+      this.options.clearTimer(this.retryTimer);
+      this.retryTimer = null;
+    }
+    const waiting = this.inFlight ? this.queue.slice(1) : this.queue.slice();
+    this.queue.length = 0;
+    for (const item of [...waiting, ...finalEvents]) {
+      try {
+        this.options.sendOnTeardown(this.eventUrl, eventBody(item.event, item.payload ?? {}));
+      } catch {
+        // Nothing else can be done while the page unloads.
+      }
+    }
+  }
+
   /** Abandon any pending work and clear timers. */
   dispose(): void {
     if (this.retryTimer !== null) {
@@ -164,23 +249,121 @@ export class EventDelivery {
 }
 
 /**
+ * The embedding window, reached only through origins the session allows.
+ *
+ * `?origin=` and the referrer are attacker-controllable, so they only pick
+ * among origins the server lists in the session's `allowed_origins` (plus
+ * the page's own origin, which `frame-ancestors 'self'` always admits).
+ * Messages wait in a small buffer until the session status says which
+ * origins those are, and "*" is never a target.
+ */
+export interface ParentChannelOptions {
+  readonly targetWindow: Pick<Window, "postMessage"> | null;
+  readonly ownOrigin: string;
+  readonly candidateOrigin: string | null;
+  readonly maxBuffered?: number;
+}
+
+const DEFAULT_MAX_BUFFERED = 50;
+
+export class ParentChannel {
+  private targets: readonly string[] | null = null;
+  private readonly buffer: Record<string, unknown>[] = [];
+
+  constructor(private readonly options: ParentChannelOptions) {}
+
+  /** Origins messages go to; null until the session status arrived. */
+  get resolvedTargets(): readonly string[] | null {
+    return this.targets;
+  }
+
+  post(message: Record<string, unknown>): void {
+    if (!this.options.targetWindow) {
+      return;
+    }
+    if (this.targets === null) {
+      if (this.buffer.length < (this.options.maxBuffered ?? DEFAULT_MAX_BUFFERED)) {
+        this.buffer.push(message);
+      }
+      return;
+    }
+    this.deliver(message);
+  }
+
+  /**
+   * Fix the target origins from the session status. `allowedOrigins` is
+   * undefined when the server predates the field; an empty list means only
+   * the page's own origin may embed it.
+   */
+  resolve(allowedOrigins: readonly string[] | null | undefined): void {
+    this.targets = resolveParentTargets({
+      candidateOrigin: this.options.candidateOrigin,
+      ownOrigin: this.options.ownOrigin,
+      allowedOrigins,
+    });
+    const pending = this.buffer.splice(0, this.buffer.length);
+    for (const message of pending) {
+      this.deliver(message);
+    }
+  }
+
+  private deliver(message: Record<string, unknown>): void {
+    const target = this.options.targetWindow;
+    if (!target) {
+      return;
+    }
+    for (const origin of this.targets ?? []) {
+      try {
+        // The browser drops the message unless the parent really is
+        // `origin`, so offering it to each allowed origin reaches only
+        // the one actually embedding us.
+        target.postMessage(message, origin);
+      } catch {
+        // Ignore bridge delivery failures; server-side delivery is the
+        // source of truth for lifecycle events.
+      }
+    }
+  }
+}
+
+export function resolveParentTargets(input: {
+  readonly candidateOrigin: string | null;
+  readonly ownOrigin: string;
+  readonly allowedOrigins: readonly string[] | null | undefined;
+}): string[] {
+  const candidate = normalizeOrigin(input.candidateOrigin);
+  if (input.allowedOrigins === undefined || input.allowedOrigins === null) {
+    return candidate ? [candidate] : [];
+  }
+  const allowed: string[] = [];
+  for (const entry of [...input.allowedOrigins, input.ownOrigin]) {
+    const origin = normalizeOrigin(entry);
+    if (origin && !allowed.includes(origin)) {
+      allowed.push(origin);
+    }
+  }
+  if (candidate && allowed.includes(candidate)) {
+    return [candidate];
+  }
+  return allowed;
+}
+
+/**
  * Fire-and-forget bridge notification to the parent frame and/or the
  * native webview shell. Matches the message shape the legacy page uses
- * so the Plaidify SDKs (JS, Swift) keep working unchanged:
+ * so the Plaidify SDKs (JS, Swift, Android) keep working unchanged:
  *   - React Native WebView receives the JSON-serialised string.
  *   - WKWebView (webkit.messageHandlers.plaidifyLink) receives the
  *     object directly, which is what the iOS SDK expects.
+ *   - Android (window.plaidifyLink) receives the JSON-serialised string.
  */
 export interface ParentBridgeOptions {
-  readonly parentOrigin: string;
-  readonly inIframe: boolean;
-  readonly targetWindow?: Window | null;
+  readonly parent?: Pick<ParentChannel, "post"> | null;
   readonly reactNativeBridge?: { postMessage: (payload: string) => void } | null;
   readonly webkitBridge?:
     | { postMessage: (payload: Record<string, unknown>) => void }
     | null;
-  /** Legacy alias retained for tests that pre-date the split bridges. */
-  readonly nativeBridge?: { postMessage: (payload: string) => void } | null;
+  readonly androidBridge?: { postMessage: (payload: string) => void } | null;
 }
 
 export function postBridgeEvent(
@@ -188,21 +371,23 @@ export function postBridgeEvent(
   payload: Record<string, unknown>,
   options: ParentBridgeOptions,
 ): void {
-  const message = { source: "plaidify-link", event, ...payload };
+  // Envelope last: a payload key must not rename the event or its source.
+  const message = { ...payload, source: "plaidify-link", event };
 
-  if (options.inIframe && options.targetWindow) {
+  if (options.parent) {
     try {
-      options.targetWindow.postMessage(message, options.parentOrigin);
+      options.parent.post(message);
     } catch {
       // Ignore bridge delivery failures; server-side delivery is the
       // source of truth for lifecycle events.
     }
   }
 
-  const rn = options.reactNativeBridge ?? options.nativeBridge ?? null;
-  if (rn) {
+  const serialized = JSON.stringify(message);
+  for (const bridge of [options.reactNativeBridge, options.androidBridge]) {
+    if (!bridge) continue;
     try {
-      rn.postMessage(JSON.stringify(message));
+      bridge.postMessage(serialized);
     } catch {
       // Same rationale as above.
     }

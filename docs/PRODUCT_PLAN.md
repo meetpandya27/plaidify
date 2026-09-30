@@ -1,6 +1,6 @@
 # Product Plan
 
-Plaidify is being developed as a production service for authenticated web access.
+Plaidify is being developed as a production service for authenticated web access. It has not been released yet; [CHANGELOG.md](../CHANGELOG.md) records what exists.
 
 ## Near-Term Priorities
 
@@ -27,14 +27,14 @@ Plaidify is being developed as a production service for authenticated web access
 
 ### Product Surface
 
-- Keep SDKs aligned with the production API contract
+- Keep SDKs aligned with the production API contract, and publish them
 - Keep public docs focused on deployment and integration
-- Remove legacy showcase assets from the shipped repo surface
+- Keep the bundled sandbox (demo sites behind `DEMO_MODE`) for evaluation and tests only
 - Preserve only neutral internal fixtures for automated validation
 
 ## Deliberate Non-Goals
 
-- Shipping public showcase portals or temporary launchers
+- Hosting public showcase portals: the bundled demo sites (`src/demo/`, `scripts/demo.py`) run locally, for evaluation and tests
 - Shipping application examples as part of the core product repo
 - Treating internal fixture connectors as customer-facing integrations
 

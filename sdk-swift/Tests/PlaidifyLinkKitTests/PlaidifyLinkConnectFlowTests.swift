@@ -38,9 +38,7 @@ final class PlaidifyLinkConnectFlowTests: XCTestCase {
 
         flow.apply(.connectResponded(PlaidifyConnectResponse(
             status: "completed",
-            sessionID: nil, mfaType: nil,
-            publicToken: "public-1", jobID: "job-1",
-            message: nil, errorMessage: nil
+            publicToken: "public-1", jobID: "job-1"
         )))
         XCTAssertEqual(flow.state.step, .success)
         XCTAssertEqual(flow.state.publicToken, "public-1")
@@ -58,12 +56,12 @@ final class PlaidifyLinkConnectFlowTests: XCTestCase {
         flow.apply(.connectResponded(PlaidifyConnectResponse(
             status: "mfa_required",
             sessionID: "sess-9", mfaType: "otp",
-            publicToken: nil, jobID: nil,
-            message: nil, errorMessage: nil
+            metadata: PlaidifyConnectMetadata(message: "Enter the code we texted you")
         )))
         XCTAssertEqual(flow.state.step, .mfa)
         XCTAssertEqual(flow.state.sessionID, "sess-9")
         XCTAssertEqual(flow.state.mfaType, "otp")
+        XCTAssertEqual(flow.state.mfaPrompt, "Enter the code we texted you")
     }
 
     func testFallbackEmittedForUnsupportedAuthStyle() {
@@ -108,9 +106,7 @@ final class PlaidifyLinkConnectFlowTests: XCTestCase {
         flow.apply(.credentialsSubmitted)
         flow.apply(.connectResponded(PlaidifyConnectResponse(
             status: "error",
-            sessionID: nil, mfaType: nil,
-            publicToken: nil, jobID: nil,
-            message: nil, errorMessage: "bad credentials"
+            error: "bad credentials"
         )))
         XCTAssertEqual(flow.state.step, .error)
         XCTAssertEqual(flow.state.lastErrorMessage, "bad credentials")
@@ -138,5 +134,43 @@ final class PlaidifyLinkConnectFlowTests: XCTestCase {
         if case .webViewFallback = strategy { } else {
             XCTFail("expected webViewFallback")
         }
+    }
+
+    func testConnectedFromConnectIsSuccess() {
+        // /connect answers "connected"; only the session status says "completed".
+        let registry = PlaidifyLinkInstitutionRegistry(
+            supportedSites: ["rbc"],
+            supportedAuthStyles: ["username_password"]
+        )
+        let flow = PlaidifyLinkConnectFlow(registry: registry)
+        flow.apply(.selectInstitution(makeOrg()))
+        flow.apply(.credentialsSubmitted)
+        flow.apply(.connectResponded(PlaidifyConnectResponse(status: "connected", jobID: "job-2")))
+        XCTAssertEqual(flow.state.step, .success)
+    }
+
+    func testStillWorkingStatusesKeepConnecting() {
+        let registry = PlaidifyLinkInstitutionRegistry(
+            supportedSites: ["rbc"],
+            supportedAuthStyles: ["username_password"]
+        )
+        let flow = PlaidifyLinkConnectFlow(registry: registry)
+        flow.apply(.selectInstitution(makeOrg()))
+        flow.apply(.credentialsSubmitted)
+        for status in ["pending", "mfa_submitted"] {
+            flow.apply(.connectResponded(PlaidifyConnectResponse(status: status)))
+            XCTAssertEqual(flow.state.step, .connecting)
+        }
+    }
+
+    func testDefaultRegistrySendsEveryInstitutionToTheWebView() {
+        // Native screens are experimental and opt-in per site: nothing is
+        // native until a site is listed, whatever its auth style.
+        var events: [PlaidifyLinkFlowEvent] = []
+        let flow = PlaidifyLinkConnectFlow(registry: PlaidifyLinkInstitutionRegistry()) { events.append($0) }
+        let org = makeOrg(site: "hydro_one", authStyle: "username_password")
+        flow.apply(.selectInstitution(org))
+        XCTAssertNotEqual(flow.state.step, .credentials)
+        XCTAssertTrue(events.contains(.fallbackToWebView(org, reason: "site_not_in_native_registry")))
     }
 }

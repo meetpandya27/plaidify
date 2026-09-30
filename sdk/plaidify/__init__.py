@@ -36,7 +36,10 @@ __all__ = [
     "ConnectionError",
     "AuthenticationError",
     "MFARequiredError",
+    "NotFoundError",
     "BlueprintNotFoundError",
+    "InvalidTokenError",
+    "RateLimitedError",
     "ServerError",
 ]
 
@@ -67,6 +70,9 @@ from plaidify.exceptions import (
     ConnectionError,
     AuthenticationError,
     MFARequiredError,
+    NotFoundError,
     BlueprintNotFoundError,
+    InvalidTokenError,
+    RateLimitedError,
     ServerError,
 )

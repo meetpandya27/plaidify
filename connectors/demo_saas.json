@@ -5,13 +5,15 @@
   "tags": ["sandbox", "demo", "saas", "productivity"],
   "auth": {
     "type": "form",
+    "submit_targets": ["/signin"],
     "steps": [
       { "action": "goto", "url": "http://127.0.0.1:8797/login" },
       { "action": "fill", "selector": "#user", "value": "{{username}}" },
       { "action": "fill", "selector": "#pass", "value": "{{password}}" },
-      { "action": "click", "selector": "#submit-login", "wait_for_navigation": true },
-      { "action": "wait", "selector": "#workspace", "timeout": 10000 }
-    ]
+      { "action": "click", "selector": "#submit-login", "wait_for_navigation": true }
+    ],
+    "success": { "selector": "#workspace", "timeout": 10000 },
+    "failure": { "selector": "#login-error" }
   },
   "extract": {
     "display_name": { "selector": "#display-name", "type": "text" },
@@ -58,6 +60,7 @@
   "cleanup": [
     { "action": "click", "selector": "#logout" }
   ],
+  "logout_targets": ["/logout"],
   "rate_limit": { "max_requests_per_hour": 600, "min_interval_seconds": 1 },
   "health_check": { "url": "http://127.0.0.1:8797/health", "expected_status": 200 }
 }

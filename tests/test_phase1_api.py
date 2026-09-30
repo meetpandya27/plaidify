@@ -65,22 +65,35 @@ class TestMFAEndpoints:
         response = client.get("/mfa/status/nonexistent_session")
         assert response.status_code == 404
 
-    def test_mfa_submit_nonexistent(self, client):
-        """POST /mfa/submit should handle nonexistent session gracefully."""
+    def test_mfa_submit_query_form_is_gone(self, client):
+        """A code in the query string would land in access logs: only the JSON body is read."""
         response = client.post(
             "/mfa/submit",
             params={"session_id": "nonexistent", "code": "123456"},
         )
+        assert response.status_code == 422
+
+    def test_mfa_submit_json_body(self, client):
+        """POST /mfa/submit takes the code in a JSON body, out of the URL."""
+        response = client.post("/mfa/submit", json={"session_id": "nonexistent", "code": "123456"})
         assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "error"
+        assert response.json()["status"] == "error"
+
+    def test_mfa_submit_requires_session_and_code(self, client):
+        assert client.post("/mfa/submit").status_code == 422
+        assert client.post("/mfa/submit", json={"session_id": "nonexistent"}).status_code == 422
+        assert client.post("/mfa/submit", params={"session_id": "nonexistent"}).status_code == 422
+
+    def test_mfa_submit_rejects_oversized_code(self, client):
+        response = client.post("/mfa/submit", json={"session_id": "nonexistent", "code": "9" * 33})
+        assert response.status_code == 422
 
 
 # ── Connect Endpoint with Enhanced Response ──────────────────────────────────
 
 
 class TestConnectEndpoint:
-    def test_connect_with_extract_fields(self, client):
+    def test_connect_with_extract_fields(self, client, auth_headers):
         """POST /connect should accept extract_fields parameter."""
         response = client.post(
             "/connect",
@@ -90,6 +103,7 @@ class TestConnectEndpoint:
                 "password": "pass",
                 "extract_fields": ["profile_status"],
             },
+            headers=auth_headers,
         )
         assert response.status_code == 200
         data = response.json()

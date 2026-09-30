@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   ENCRYPTION_KEY: "s790nQg9kGoAVQGqXreKUbG8Q0OA-A4HASTbyd-ruuQ="
@@ -12,35 +20,87 @@ env:
   DATABASE_URL: "sqlite:///test_plaidify.db"
   LOG_LEVEL: "WARNING"
   LOG_FORMAT: "text"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
   lint:
-    name: Lint
+    name: Lint (ruff, whole repository)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.11"
-      - name: Install ruff
-        run: pip install ruff
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install ruff (the version and hashes pinned in requirements-dev.lock)
+        run: |
+          awk '/^ruff==/{p=1; print; next} p && /^[^ #]/{p=0} p' requirements-dev.lock > "$RUNNER_TEMP/ruff.lock"
+          python -m pip install --require-hashes -r "$RUNNER_TEMP/ruff.lock"
       - name: Run ruff check
-        run: ruff check src/ tests/
+        run: ruff check --output-format=github .
       - name: Run ruff format check
-        run: ruff format --check src/ tests/
+        run: ruff format --check .
+
+  dependencies:
+    name: Dependency locks and audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - name: Install tools
+        run: python -m pip install "pip-audit==2.10.1" "packaging>=24"
+      - name: Check the locks match requirements*.txt
+        run: python scripts/check_requirements_locks.py
+      - name: Audit every locked Python dependency
+        # The locks pin the whole tree with hashes, so pip-audit checks exactly
+        # what the image and CI install, without resolving anything itself.
+        run: pip-audit --strict --require-hashes --disable-pip -r requirements.lock -r requirements-dev.lock -r requirements-kms.lock
+      - name: Audit the shipped npm dependencies
+        # Runtime trees only: the hosted-link bundle and the published SDK.
+        # Build and test tooling is reported by the weekly dependency audit.
+        run: |
+          (cd frontend-next && npm audit --omit=dev --audit-level=high)
+          (cd sdk-js && npm audit --omit=dev --audit-level=high)
 
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      # A real Redis for the worker, event-stream, session-store and lease
+      # tests (they skip without PLAIDIFY_TEST_REDIS_URL).
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      PLAIDIFY_TEST_REDIS_URL: "redis://127.0.0.1:6379/15"
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: "20"
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: frontend-next/package-lock.json
       - name: Build hosted-link React bundle
@@ -48,34 +108,36 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
-          restore-keys: ${{ runner.os }}-pip-
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+          cache: "pip"
+          cache-dependency-path: requirements-dev.lock
+      - name: Install dependencies (hash-locked)
+        run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: Run tests with coverage
-        run: PYTHONPATH=$PWD pytest tests/ -v --cov=src --cov-report=term-missing --cov-fail-under=73
+        run: PYTHONPATH=$PWD python -m pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=73
+      - name: Run Python SDK tests
+        run: PYTHONPATH=$PWD/sdk python -m pytest sdk/tests -q -p no:cacheprovider
       - name: Upload coverage
         if: matrix.python-version == '3.11'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
-          path: .coverage
+          path: coverage.xml
+          if-no-files-found: error
 
   playwright:
     name: Hosted Link E2E (Playwright)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: "20"
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: frontend-next/package-lock.json
       - name: Build hosted-link React bundle
@@ -83,116 +145,338 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
-          restore-keys: ${{ runner.os }}-pip-
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+          cache: "pip"
+          cache-dependency-path: requirements-dev.lock
+      - name: Install dependencies (hash-locked)
+        run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
+        run: python -m playwright install --with-deps --only-shell chromium
+      - name: Allow Chromium's sandbox on this runner
+        # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor;
+        # Chromium's sandbox (BROWSER_CHROMIUM_SANDBOX, on by default) needs them.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Run hosted Link browser tests
         run: PYTHONPATH=$PWD pytest tests/test_hosted_link_e2e.py -q -m playwright
+      - name: Run engine browser tests
+        run: SKIP_BROWSER_TESTS=0 PYTHONPATH=$PWD pytest tests/test_engine_integration.py -q
+      - name: Run the sandbox demo against every bundled site
+        run: python scripts/demo.py --all
 
-  security:
-    name: Security Audit
+  migrations:
+    name: Migrations (PostgreSQL 16)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: plaidify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d plaidify"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:5432/plaidify"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Install pip-audit
-        run: pip install --upgrade pip pip-audit
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run pip-audit
-        # Scan only project requirements (not the runner's pre-installed pip / system tools).
-        run: pip-audit --strict -r requirements.txt
+          cache: "pip"
+          cache-dependency-path: requirements-dev.lock
+      - name: Install dependencies (hash-locked)
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+      - name: Upgrade an empty database to head
+        run: alembic upgrade head
+      - name: Models and migrations agree
+        run: alembic check
+      - name: Downgrade to base
+        run: alembic downgrade base
+      - name: Upgrade to head again
+        run: alembic upgrade head
+      - name: Least-privilege application role
+        env:
+          PLAIDIFY_TEST_POSTGRES_ADMIN_URL: ${{ env.DATABASE_URL }}
+          DATABASE_URL: "sqlite:///test_plaidify.db"
+        run: PYTHONPATH=$PWD python -m pytest tests/test_provision_app_db_role.py -q -p no:cacheprovider
+
+  frontend-next:
+    name: Hosted Link frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend-next
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend-next/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  sdk-js:
+    name: JavaScript SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: sdk-js
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: sdk-js/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  sdk-swift:
+    name: Swift SDK
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: swift test
+        working-directory: sdk-swift
+        run: swift test
+
+  sdk-android:
+    name: Android SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - name: Core module tests
+        working-directory: sdk-android
+        run: ./gradlew :core:test --no-daemon
+
+  deploy-config:
+    name: Deployment configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compose files
+        run: |
+          mkdir -p .secrets
+          for name in postgres_password redis_password grafana_admin_password alertmanager_webhook_url backup_age_recipients metrics_token; do
+            echo placeholder > ".secrets/${name}"
+          done
+          printf 'ENCRYPTION_KEY=x\nJWT_SECRET_KEY=y\n' > .env
+          cp .env .env.production
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.production.yml --profile backup config --quiet
+          docker compose -f docker-compose.demo.yml config --quiet
+          docker compose -f docker-compose.monitoring.yml config --quiet
+      - name: Prometheus config, alert rules and their tests
+        run: |
+          docker run --rm -v "$PWD/monitoring:/etc/prometheus:ro" -v "$PWD/.secrets/metrics_token:/run/secrets/metrics_token:ro" \
+            --entrypoint promtool prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
+          docker run --rm -v "$PWD/monitoring:/monitoring:ro" --entrypoint promtool prom/prometheus:v3.15.0 \
+            test rules /monitoring/tests/alert_rules_test.yml
+      - name: Alertmanager config
+        run: |
+          docker run --rm -v "$PWD/monitoring:/etc/alertmanager:ro" -v "$PWD/.secrets/alertmanager_webhook_url:/run/secrets/alertmanager_webhook_url:ro" \
+            --entrypoint amtool prom/alertmanager:v0.34.1 check-config /etc/alertmanager/alertmanager.yml
+      - name: Grafana dashboard is valid JSON
+        run: python3 -m json.tool monitoring/grafana/dashboards/plaidify-overview.json > /dev/null
+      - name: Bicep builds and infra/main.json is current
+        run: |
+          # Pinned: each Bicep release changes the generated JSON, and infra/main.json
+          # is built with this one.
+          az bicep install --version v0.36.177
+          az bicep version
+          az bicep build --file infra/main.bicep --stdout > "$RUNNER_TEMP/main.json"
+          # The generator metadata carries a template hash; compare the rest.
+          if ! diff <(jq -S 'del(.metadata)' "$RUNNER_TEMP/main.json") <(jq -S 'del(.metadata)' infra/main.json) > "$RUNNER_TEMP/main.diff"; then
+            head -40 "$RUNNER_TEMP/main.diff"
+            echo "::error::infra/main.json is stale. Run: az bicep install --version v0.36.177 && az bicep build --file infra/main.bicep --outfile infra/main.json"
+            exit 1
+          fi
+          az bicep build-params --file infra/main.bicepparam --stdout > /dev/null
+
+  container:
+    name: Container image smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: plaidify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d plaidify"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build --pull -t plaidify:ci .
+      - name: Build the demo target
+        run: docker build -t plaidify-demo:ci --target demo .
+      - name: Image facts
+        run: |
+          size_mb=$(( $(docker image inspect plaidify:ci --format '{{.Size}}') / 1024 / 1024 ))
+          user="$(docker run --rm --entrypoint id plaidify:ci -u)"
+          echo "Image size: ${size_mb} MB; runs as uid ${user}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$user" = "0" ]; then echo "::error::The image runs as root."; exit 1; fi
+          if [ "$size_mb" -gt 1200 ]; then echo "::warning::Image is ${size_mb} MB (target: under 1200 MB)."; fi
+      - name: Secret files are readable with the documented permissions
+        # Compose bind-mounts .secrets/* as they are, and the image's user is
+        # not root: a 644 file in a 700 directory (.secrets/README.md) must
+        # reach the entrypoint, which builds DATABASE_URL from it.
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/secrets"
+          printf 'placeholder' > "$RUNNER_TEMP/secrets/postgres_password"
+          chmod 644 "$RUNNER_TEMP/secrets/postgres_password"
+          docker run --rm -v "$RUNNER_TEMP/secrets/postgres_password:/run/secrets/postgres_password:ro" \
+            -e POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password -e POSTGRES_HOST=127.0.0.1 \
+            plaidify:ci sh -c 'test -n "$DATABASE_URL"'
+      - name: Write the production environment
+        run: |
+          cat > "$RUNNER_TEMP/prod.env" <<EOF
+          ENV=production
+          ENCRYPTION_KEY=${ENCRYPTION_KEY}
+          JWT_SECRET_KEY=${JWT_SECRET_KEY}
+          DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/plaidify
+          REDIS_URL=redis://127.0.0.1:6379/0
+          CORS_ORIGINS=https://app.example.com
+          ACCESS_JOB_EXECUTION_MODE=redis-worker
+          LOG_FORMAT=json
+          EOF
+      - name: Run migrations in the image
+        run: docker run --rm --network host --env-file "$RUNNER_TEMP/prod.env" plaidify:ci alembic upgrade head
+      - name: Start the API and the access executor (ENV=production)
+        run: |
+          docker run -d --name api --network host --env-file "$RUNNER_TEMP/prod.env" \
+            --health-interval 5s --health-start-period 60s plaidify:ci
+          docker run -d --name executor --network host --env-file "$RUNNER_TEMP/prod.env" \
+            -e ACCESS_WORKER_METRICS_PORT=9101 plaidify:ci python -m src.access_job_worker
+      - name: The API answers /health with 200 over plain HTTP, without a redirect
+        run: |
+          for attempt in $(seq 1 60); do
+            code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 http://127.0.0.1:8000/health || true)"
+            if [ "$code" = "200" ]; then echo "API healthy after ${attempt} attempt(s)"; exit 0; fi
+            echo "attempt ${attempt}: HTTP ${code}"
+            sleep 2
+          done
+          docker logs api
+          exit 1
+      - name: Docker reports the API container healthy
+        run: |
+          for attempt in $(seq 1 30); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' api)"
+            if [ "$status" = "healthy" ]; then exit 0; fi
+            sleep 2
+          done
+          docker inspect --format '{{json .State.Health}}' api
+          exit 1
+      - name: The executor's own /health answers 200
+        run: |
+          for attempt in $(seq 1 60); do
+            code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 http://127.0.0.1:9101/health || true)"
+            if [ "$code" = "200" ]; then echo "executor healthy"; exit 0; fi
+            sleep 2
+          done
+          docker logs executor
+          exit 1
+      - name: Container logs
+        if: always()
+        run: |
+          docker logs api 2>&1 | tail -n 100 || true
+          docker logs executor 2>&1 | tail -n 100 || true
 
   codeql:
-    name: CodeQL Analysis
+    name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
+      actions: read
+      contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript, actions]
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          languages: python
-      - uses: github/codeql-action/analyze@v3
+          persist-credentials: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:${{ matrix.language }}
 
   secrets-scan:
     name: Secrets Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  docker:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Docker image
-        run: docker build -t plaidify:test .
-      - name: Check image size
-        run: |
-          SIZE=$(docker image inspect plaidify:test --format='{{.Size}}')
-          SIZE_MB=$((SIZE / 1024 / 1024))
-          echo "Image size: ${SIZE_MB}MB"
-          if [ $SIZE_MB -gt 500 ]; then
-            echo "::warning::Docker image is ${SIZE_MB}MB (target: <500MB)"
-          fi
-
-  deploy:
-    name: Deploy (staging)
-    runs-on: ubuntu-latest
-    needs: [lint, test, playwright, security, codeql, secrets-scan, docker]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-
-      - name: Deploy to staging server
-        if: vars.DEPLOY_HOST != ''
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ vars.DEPLOY_HOST }}
-          username: ${{ vars.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            cd ${{ vars.DEPLOY_PATH || '/opt/plaidify' }}
-            docker pull ghcr.io/${{ github.repository }}:${{ github.sha }}
-            docker compose down plaidify
-            export PLAIDIFY_IMAGE=ghcr.io/${{ github.repository }}:${{ github.sha }}
-            docker compose up -d plaidify
-            sleep 5
-            curl -sf http://localhost:8000/health || (echo "Health check failed!" && exit 1)

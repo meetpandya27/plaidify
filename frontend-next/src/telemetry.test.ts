@@ -26,17 +26,27 @@ describe("telemetry", () => {
     expect(events).toHaveLength(1);
     expect(events[0].event).toBe("TELEMETRY");
     expect(events[0].payload).toMatchObject({
-      event: "step_view",
+      name: "step_view",
       step: "picker",
       elapsed_ms: 250,
     });
+  });
+
+  it("never puts an `event` key in the payload, which would replace the TELEMETRY envelope", () => {
+    const { events, telemetry } = makeHarness();
+    telemetry.stepView("picker");
+    telemetry.mfaSubmitted();
+    telemetry.exitReason("user_exit");
+    for (const { payload } of events) {
+      expect(payload).not.toHaveProperty("event");
+    }
   });
 
   it("emits step_complete with the step id", () => {
     const { events, telemetry } = makeHarness();
     telemetry.stepComplete("credentials");
     expect(events[0].payload).toMatchObject({
-      event: "step_complete",
+      name: "step_complete",
       step: "credentials",
     });
   });
@@ -45,7 +55,7 @@ describe("telemetry", () => {
     const { events, telemetry } = makeHarness();
     telemetry.fieldError("credentials", "username");
     const payload = events[0].payload as Record<string, unknown>;
-    expect(payload.event).toBe("field_error");
+    expect(payload.name).toBe("field_error");
     expect(payload.step).toBe("credentials");
     expect(payload.field).toBe("username");
     // No value/PII field should ever be present.
@@ -57,7 +67,7 @@ describe("telemetry", () => {
     const { events, telemetry } = makeHarness();
     telemetry.institutionSelected("org_rbc");
     const payload = events[0].payload as Record<string, unknown>;
-    expect(payload.event).toBe("institution_selected");
+    expect(payload.name).toBe("institution_selected");
     expect(payload.organization_id).toBe("org_rbc");
     expect(payload).not.toHaveProperty("organization_name");
   });
@@ -66,7 +76,7 @@ describe("telemetry", () => {
     const { events, telemetry } = makeHarness();
     telemetry.mfaShown("otp");
     const payload = events[0].payload as Record<string, unknown>;
-    expect(payload.event).toBe("mfa_shown");
+    expect(payload.name).toBe("mfa_shown");
     expect(payload.mfa_type).toBe("otp");
     expect(payload).not.toHaveProperty("code");
     expect(payload).not.toHaveProperty("value");
@@ -76,15 +86,15 @@ describe("telemetry", () => {
     const { events, telemetry } = makeHarness();
     telemetry.mfaSubmitted();
     const payload = events[0].payload as Record<string, unknown>;
-    expect(payload.event).toBe("mfa_submitted");
-    expect(Object.keys(payload).sort()).toEqual(["elapsed_ms", "event"].sort());
+    expect(payload.name).toBe("mfa_submitted");
+    expect(Object.keys(payload).sort()).toEqual(["elapsed_ms", "name"].sort());
   });
 
   it("emits exit_reason with reason + optional error_code", () => {
     const { events, telemetry } = makeHarness();
     telemetry.exitReason("unmount", "rate_limited");
     const payload = events[0].payload as Record<string, unknown>;
-    expect(payload.event).toBe("exit_reason");
+    expect(payload.name).toBe("exit_reason");
     expect(payload.reason).toBe("unmount");
     expect(payload.error_code).toBe("rate_limited");
   });

@@ -5,12 +5,12 @@ Audit log endpoints: query and verify.
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from src.audit import verify_audit_chain
 from src.database import AuditLog, User, get_db
-from src.dependencies import get_current_user
+from src.dependencies import get_admin_user, get_current_user
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -62,10 +62,14 @@ async def get_audit_logs(
 
 
 @router.get("/verify")
-async def verify_audit_logs(
-    user: User = Depends(get_current_user),
+def verify_audit_logs(
+    max_errors: int = Query(100, ge=1, le=1000),
+    admin: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    """Verify the integrity of the audit log hash chain."""
-    result = verify_audit_chain(db)
-    return result
+    """Verify the integrity of the audit log hash chain (administrators only).
+
+    Streams the whole retained chain, so it is a plain ``def``: FastAPI runs
+    it in the threadpool instead of on the event loop.
+    """
+    return verify_audit_chain(db, max_errors=max_errors)

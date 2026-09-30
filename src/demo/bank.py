@@ -29,6 +29,14 @@ SECURITY_QUESTION = "What was the name of your first pet?"
 SECURITY_ANSWER = "plaidify"
 BRAND = "Acme Bank"
 
+
+def _error_html(message: str, element_id: str) -> str:
+    """The error line, carrying its id only when there is an error to show."""
+    if not message:
+        return "<p class='err'></p>"
+    return f"<p class='err' id='{element_id}' role='alert'>{message}</p>"
+
+
 STYLE = """
 <style>
   :root { --navy:#0a2540; --acc:#635bff; --muted:#697386; --line:#e3e8ee; }
@@ -64,7 +72,7 @@ def _login_html(error: str = "") -> str:
 <body><div class='nav'><strong>{BRAND}</strong><span class='pill'>Sandbox</span></div>
 <div class='container'><div class='panel auth'>
   <h1>Online Banking</h1>
-  <p class='err'>{error}</p>
+  {_error_html(error, "login-error")}
   <form action='/auth' method='post'>
     <label for='email'>Email address</label>
     <input type='email' id='email' name='email' autocomplete='off'>
@@ -83,7 +91,7 @@ def _verify_html(error: str = "") -> str:
 <div class='container'><div class='panel auth'>
   <h1>Security verification</h1>
   <p id='mfa-question' style='color:var(--muted)'>{SECURITY_QUESTION}</p>
-  <p class='err'>{error}</p>
+  {_error_html(error, "mfa-error")}
   <form action='/verify' method='post'>
     <label for='security-answer'>Your answer</label>
     <input type='text' id='security-answer' name='answer' autocomplete='off'>
