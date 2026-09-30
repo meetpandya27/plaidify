@@ -466,7 +466,7 @@ async def get_blueprint_info(site: str):
     from src.core.blueprint import blueprint_is_discoverable, load_blueprint
 
     # Validate site name to prevent path traversal
-    if not _re.match(r"^[a-zA-Z0-9_-]+$", site):
+    if not _re.fullmatch(r"[a-zA-Z0-9_-]+", site):
         raise HTTPException(status_code=400, detail="Invalid site name.")
 
     connectors_dir = Path(settings.connectors_dir).resolve()

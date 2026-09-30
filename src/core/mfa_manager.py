@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 from src.core.async_redis import get_async_redis
+from src.crypto import token_fingerprint
 from src.error_taxonomy import LinkErrorCode
 from src.exceptions import AuthenticationError, PlaidifyError
 from src.logging_config import get_logger
@@ -186,7 +187,7 @@ class MFASession:
             if remaining <= 0:
                 logger.warning(
                     "MFA session timed out",
-                    extra={"extra_data": {"session_id": self.session_id, "site": self.site}},
+                    extra={"extra_data": {"session": token_fingerprint(self.session_id), "site": self.site}},
                 )
                 return None
 
@@ -315,7 +316,7 @@ class MFAManager:
         except Exception as exc:
             logger.warning(
                 "MFA code poll failed; will retry",
-                extra={"extra_data": {"session_id": session_id, "error": type(exc).__name__}},
+                extra={"extra_data": {"session": token_fingerprint(session_id), "error": type(exc).__name__}},
             )
             return None
 
@@ -339,7 +340,7 @@ class MFAManager:
         except Exception as exc:
             logger.warning(
                 "Could not record MFA code consumption",
-                extra={"extra_data": {"session_id": session.session_id, "error": type(exc).__name__}},
+                extra={"extra_data": {"session": token_fingerprint(session.session_id), "error": type(exc).__name__}},
             )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
@@ -395,7 +396,7 @@ class MFAManager:
                 "MFA session resumed",
                 extra={
                     "extra_data": {
-                        "session_id": session_id,
+                        "session": token_fingerprint(session_id),
                         "site": site,
                         "mfa_type": mfa_type,
                         "has_code": bool(existing.code),
@@ -423,7 +424,7 @@ class MFAManager:
             "MFA session created",
             extra={
                 "extra_data": {
-                    "session_id": session_id,
+                    "session": token_fingerprint(session_id),
                     "site": site,
                     "mfa_type": mfa_type,
                 }
@@ -452,7 +453,7 @@ class MFAManager:
         if session is None and payload is None:
             logger.warning(
                 "MFA session not found",
-                extra={"extra_data": {"session_id": session_id}},
+                extra={"extra_data": {"session": token_fingerprint(session_id)}},
             )
             return False
 
@@ -461,7 +462,7 @@ class MFAManager:
         if time.time() - created_at > ttl:
             logger.warning(
                 "MFA session expired",
-                extra={"extra_data": {"session_id": session_id}},
+                extra={"extra_data": {"session": token_fingerprint(session_id)}},
             )
             await self.remove_session(session_id)
             return False
@@ -478,7 +479,7 @@ class MFAManager:
             session.submit_code(code)
         logger.info(
             "MFA code submitted",
-            extra={"extra_data": {"session_id": session_id}},
+            extra={"extra_data": {"session": token_fingerprint(session_id)}},
         )
         return True
 
@@ -520,7 +521,7 @@ class MFAManager:
         except Exception as exc:
             logger.warning(
                 "MFA session lookup failed",
-                extra={"extra_data": {"session_id": session_id, "error": type(exc).__name__}},
+                extra={"extra_data": {"session": token_fingerprint(session_id), "error": type(exc).__name__}},
             )
             return None
         if not payload:
@@ -544,7 +545,7 @@ class MFAManager:
         except Exception as exc:
             logger.warning(
                 "MFA session removal failed; it will expire on its own",
-                extra={"extra_data": {"session_id": session_id, "error": type(exc).__name__}},
+                extra={"extra_data": {"session": token_fingerprint(session_id), "error": type(exc).__name__}},
             )
 
     @property

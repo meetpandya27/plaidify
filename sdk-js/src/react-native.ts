@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 
 import { isTerminalLinkEvent, sanitizeLinkPayload } from "./link-events";
-import { buildHostedLinkUrl } from "./link-url";
+import { buildHostedLinkUrl, trimTrailingSlashes } from "./link-url";
 import type {
   HostedLinkUrlOptions,
   PlaidifyLinkEventPayload,
@@ -69,7 +69,7 @@ export function buildPlaidifyHostedLinkUrl(
 }
 
 function plaidifyOrigin(serverUrl: string): string {
-  return new URL(serverUrl.replace(/\/+$/, "")).origin;
+  return new URL(trimTrailingSlashes(serverUrl)).origin;
 }
 
 export function createPlaidifyReactNativeWebViewProps(

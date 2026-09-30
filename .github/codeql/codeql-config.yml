@@ -8,6 +8,15 @@ name: plaidify-codeql
 queries:
   - uses: security-extended
 
+# Log injection is neutralized where records are formatted, not at each call:
+# JSONFormatter (the production format) escapes via json.dumps and
+# TextFormatter escapes CR and LF (src/logging_config.py, tested in
+# tests/test_logging_config.py), so py/log-injection's per-call findings
+# describe flows that can't forge a record.
+query-filters:
+  - exclude:
+      id: py/log-injection
+
 paths-ignore:
   - tests
   - sdk/tests

@@ -19,7 +19,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { sanitizeLinkPayload } from "./link-events";
-import { buildHostedLinkUrl } from "./link-url";
+import { buildHostedLinkUrl, trimTrailingSlashes } from "./link-url";
 import type {
   PlaidifyLinkConfig,
   PlaidifyLinkEventPayload,
@@ -45,7 +45,7 @@ export interface UsePlaidifyLinkReturn {
 function serverOrigin(serverUrl: string): string | null {
   try {
     const base = typeof window !== "undefined" ? window.location.href : undefined;
-    return new URL(serverUrl.replace(/\/+$/, ""), base).origin;
+    return new URL(trimTrailingSlashes(serverUrl), base).origin;
   } catch {
     return null;
   }

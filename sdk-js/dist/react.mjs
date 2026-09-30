@@ -31,8 +31,15 @@ function sanitizeLinkPayload(data) {
 }
 
 // src/link-url.ts
+function trimTrailingSlashes(url) {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return url.slice(0, end);
+}
 function buildHostedLinkUrl(serverUrl, linkToken, options = {}, base) {
-  const url = new URL(`${serverUrl.replace(/\/+$/, "")}/link`, base);
+  const url = new URL(`${trimTrailingSlashes(serverUrl)}/link`, base);
   url.searchParams.set("token", linkToken);
   if (options.origin) {
     url.searchParams.set("origin", options.origin);
@@ -57,7 +64,7 @@ function buildHostedLinkUrl(serverUrl, linkToken, options = {}, base) {
 function serverOrigin(serverUrl) {
   try {
     const base = typeof window !== "undefined" ? window.location.href : void 0;
-    return new URL(serverUrl.replace(/\/+$/, ""), base).origin;
+    return new URL(trimTrailingSlashes(serverUrl), base).origin;
   } catch {
     return null;
   }

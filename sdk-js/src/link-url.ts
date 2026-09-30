@@ -6,6 +6,18 @@
 
 import type { HostedLinkUrlOptions } from "./types";
 
+/**
+ * `url` without its trailing slashes. A loop rather than `/\/+$/`, which
+ * backtracks quadratically on a long run of slashes.
+ */
+export function trimTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47 /* "/" */) {
+    end -= 1;
+  }
+  return url.slice(0, end);
+}
+
 export function buildHostedLinkUrl(
   serverUrl: string,
   linkToken: string,
@@ -13,7 +25,7 @@ export function buildHostedLinkUrl(
   /** Resolves a relative `serverUrl` (e.g. `window.location.href`). */
   base?: string,
 ): string {
-  const url = new URL(`${serverUrl.replace(/\/+$/, "")}/link`, base);
+  const url = new URL(`${trimTrailingSlashes(serverUrl)}/link`, base);
   url.searchParams.set("token", linkToken);
 
   if (options.origin) {

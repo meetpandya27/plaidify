@@ -34,8 +34,15 @@ var ServerError = class extends PlaidifyError {
 };
 
 // src/link-url.ts
+function trimTrailingSlashes(url) {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return url.slice(0, end);
+}
 function buildHostedLinkUrl(serverUrl, linkToken, options = {}, base) {
-  const url = new URL(`${serverUrl.replace(/\/+$/, "")}/link`, base);
+  const url = new URL(`${trimTrailingSlashes(serverUrl)}/link`, base);
   url.searchParams.set("token", linkToken);
   if (options.origin) {
     url.searchParams.set("origin", options.origin);
@@ -109,7 +116,7 @@ function parseScopes(raw) {
 }
 var Plaidify = class {
   constructor(config) {
-    this.baseUrl = config.serverUrl.replace(/\/+$/, "");
+    this.baseUrl = trimTrailingSlashes(config.serverUrl);
     this.timeout = config.timeout ?? 3e4;
     this.token = config.token;
     this.apiKey = config.apiKey;

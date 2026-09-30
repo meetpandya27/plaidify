@@ -53,7 +53,7 @@ import {
   RateLimitError,
   ServerError,
 } from "./errors";
-import { buildHostedLinkUrl } from "./link-url";
+import { buildHostedLinkUrl, trimTrailingSlashes } from "./link-url";
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
 
@@ -140,7 +140,7 @@ export class Plaidify {
   private apiKey?: string;
 
   constructor(config: PlaidifyConfig) {
-    this.baseUrl = config.serverUrl.replace(/\/+$/, "");
+    this.baseUrl = trimTrailingSlashes(config.serverUrl);
     this.timeout = config.timeout ?? 30_000;
     this.token = config.token;
     this.apiKey = config.apiKey;

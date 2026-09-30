@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Plaidify } from "../src/client";
+import { trimTrailingSlashes } from "../src/link-url";
 import {
   PlaidifyError,
   AuthenticationError,
@@ -759,6 +760,14 @@ describe("URL construction", () => {
     globalThis.fetch = mockFetch({ status: "healthy" });
     await slashClient.health();
     expect(sent().url).toBe(`${BASE}/health`);
+  });
+
+  it("trims a long run of slashes in linear time", () => {
+    const url = `${BASE}${"/".repeat(100_000)}`;
+    const started = performance.now();
+    expect(trimTrailingSlashes(url)).toBe(BASE);
+    expect(trimTrailingSlashes(`${"/".repeat(100_000)}x`)).toBe(`${"/".repeat(100_000)}x`);
+    expect(performance.now() - started).toBeLessThan(250);
   });
 });
 

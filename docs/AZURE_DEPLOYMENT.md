@@ -204,7 +204,7 @@ If you need environment-specific overrides while developing the infrastructure l
 - `infra/main.local.bicepparam`
 - `infra/main.override.bicepparam`
 
-Those patterns are intentionally excluded by `.gitignore`. After editing `infra/main.bicep`, regenerate the compiled template: `az bicep build --file infra/main.bicep --outfile infra/main.json`.
+Those patterns are intentionally excluded by `.gitignore`. After editing `infra/main.bicep`, regenerate the compiled template with the Bicep version CI pins (each release changes the generated JSON): `az bicep install --version v0.36.177 && az bicep build --file infra/main.bicep --outfile infra/main.json`.
 
 ## Secret Handling
 

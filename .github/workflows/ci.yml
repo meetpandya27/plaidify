@@ -323,11 +323,15 @@ jobs:
         run: python3 -m json.tool monitoring/grafana/dashboards/plaidify-overview.json > /dev/null
       - name: Bicep builds and infra/main.json is current
         run: |
-          az bicep install
+          # Pinned: each Bicep release changes the generated JSON, and infra/main.json
+          # is built with this one.
+          az bicep install --version v0.36.177
+          az bicep version
           az bicep build --file infra/main.bicep --stdout > "$RUNNER_TEMP/main.json"
-          # The generator metadata differs between Bicep versions; compare the rest.
-          if ! diff <(jq -S 'del(.metadata)' "$RUNNER_TEMP/main.json") <(jq -S 'del(.metadata)' infra/main.json) > /dev/null; then
-            echo "::error::infra/main.json is stale. Run: az bicep build --file infra/main.bicep --outfile infra/main.json"
+          # The generator metadata carries a template hash; compare the rest.
+          if ! diff <(jq -S 'del(.metadata)' "$RUNNER_TEMP/main.json") <(jq -S 'del(.metadata)' infra/main.json) > "$RUNNER_TEMP/main.diff"; then
+            head -40 "$RUNNER_TEMP/main.diff"
+            echo "::error::infra/main.json is stale. Run: az bicep install --version v0.36.177 && az bicep build --file infra/main.bicep --outfile infra/main.json"
             exit 1
           fi
           az bicep build-params --file infra/main.bicepparam --stdout > /dev/null

@@ -82,7 +82,8 @@ from src.tracing import span
 logger = get_logger("engine")
 settings = get_settings()
 
-_SITE_NAME = re.compile(r"^[a-zA-Z0-9_-]+$")
+# fullmatch, not match: "$" also accepts a trailing newline.
+_SITE_NAME = re.compile(r"[a-zA-Z0-9_-]+")
 # Waiting for the signed-in page (or an error) when the blueprint names no timeout.
 _LOGIN_OUTCOME_TIMEOUT_MS = 10_000
 # How long a failure-only outcome check looks before assuming success.
@@ -291,7 +292,7 @@ async def submit_mfa_code(session_id: str, code: str) -> dict:
 
 
 def _validate_site_name(site: str) -> None:
-    if not _SITE_NAME.match(site or ""):
+    if not _SITE_NAME.fullmatch(site or ""):
         raise BlueprintValidationError(
             site=site,
             detail="Invalid site name. Only alphanumeric characters, underscores, and hyphens are allowed.",

@@ -123,7 +123,11 @@ class TextFormatter(logging.Formatter):
         color = self.COLORS.get(record.levelname, "")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         prefix = f"{color}{record.levelname:8s}{self.RESET}"
-        message = f"{timestamp} {prefix} [{record.name}] {record.getMessage()}"
+        # One record, one line: a CR or LF inside a logged value (a site
+        # name, a header) must not start what looks like another record.
+        # JSONFormatter gets the same from json.dumps.
+        text = record.getMessage().replace("\r", "\\r").replace("\n", "\\n")
+        message = f"{timestamp} {prefix} [{record.name}] {text}"
 
         if hasattr(record, "correlation_id"):
             message += f" [cid={record.correlation_id}]"

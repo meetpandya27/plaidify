@@ -35,8 +35,15 @@ function isTerminalLinkEvent(eventName) {
 }
 
 // src/link-url.ts
+function trimTrailingSlashes(url) {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return url.slice(0, end);
+}
 function buildHostedLinkUrl(serverUrl, linkToken, options = {}, base) {
-  const url = new URL(`${serverUrl.replace(/\/+$/, "")}/link`, base);
+  const url = new URL(`${trimTrailingSlashes(serverUrl)}/link`, base);
   url.searchParams.set("token", linkToken);
   if (options.origin) {
     url.searchParams.set("origin", options.origin);
@@ -65,7 +72,7 @@ function buildPlaidifyHostedLinkUrl(config) {
   });
 }
 function plaidifyOrigin(serverUrl) {
-  return new URL(serverUrl.replace(/\/+$/, "")).origin;
+  return new URL(trimTrailingSlashes(serverUrl)).origin;
 }
 function createPlaidifyReactNativeWebViewProps(config) {
   return {
