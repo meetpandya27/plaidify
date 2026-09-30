@@ -24,7 +24,7 @@ import asyncio
 import base64
 import json
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -63,6 +63,7 @@ from plaidify.models import (
     MFAChallenge,
     MFASubmitResult,
     PublicTokenExchangeResult,
+    RegistrationPending,
     UserProfile,
     WebhookDeliveryResult,
     WebhookRegistration,
@@ -619,7 +620,7 @@ class Plaidify:
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
-    async def register(self, username: str, email: str, password: str) -> AuthToken:
+    async def register(self, username: str, email: str, password: str) -> Union[AuthToken, RegistrationPending]:
         """Register a new user account.
 
         Args:
@@ -628,7 +629,10 @@ class Plaidify:
             password: Password (min 8 chars).
 
         Returns:
-            AuthToken with JWT access token.
+            AuthToken with JWT access token when the server creates the account
+            at once (it is used for later requests). RegistrationPending when the
+            server has the address proven first (HTTP 202): pass the token from
+            the email it sends to :meth:`verify_email`.
         """
         try:
             r = await self._http.post(
@@ -639,10 +643,31 @@ class Plaidify:
             raise ConnectionError() from e
         _raise_for_api_error(r)
         d = r.json()
+        if r.status_code == 202:
+            return RegistrationPending(status=d.get("status", "verification_sent"), detail=d.get("detail", ""))
         token = AuthToken(access_token=d["access_token"], token_type=d.get("token_type", "bearer"))
         # Auto-set for subsequent requests
         self._use_credential(token.access_token)
         return token
+
+    async def verify_email(self, token: str) -> AuthToken:
+        """Finish a sign-up with the one-time token emailed after :meth:`register`.
+
+        Creates the account and uses its access token for later requests.
+
+        Raises:
+            PlaidifyError: 400 for an unknown, used or expired token; 409 when
+                the username or address was taken in the meantime (register again).
+        """
+        try:
+            r = await self._http.post("/auth/verify-email", json={"token": token})
+        except httpx.ConnectError as e:
+            raise ConnectionError() from e
+        _raise_for_api_error(r)
+        d = r.json()
+        auth = AuthToken(access_token=d["access_token"], token_type=d.get("token_type", "bearer"))
+        self._use_credential(auth.access_token)
+        return auth
 
     async def login(self, username: str, password: str) -> AuthToken:
         """Log in and receive a JWT token.
@@ -1651,8 +1676,11 @@ class PlaidifySync:
     def fetch_data(self, access_token: str, consent_token: Optional[str] = None) -> ConnectResult:
         return self._run(self._async_client.fetch_data(access_token, consent_token))
 
-    def register(self, username: str, email: str, password: str) -> AuthToken:
+    def register(self, username: str, email: str, password: str) -> Union[AuthToken, RegistrationPending]:
         return self._run(self._async_client.register(username, email, password))
+
+    def verify_email(self, token: str) -> AuthToken:
+        return self._run(self._async_client.verify_email(token))
 
     def login(self, username: str, password: str) -> AuthToken:
         return self._run(self._async_client.login(username, password))

@@ -25,6 +25,13 @@ const result = await client.connect("hydro_one", "your_username", "your_password
 console.log(result.status); // "connected", "mfa_required" (then submitMfa) or "pending" (then waitForAccessJob)
 ```
 
+`register(username, email, password)` resolves to the new account's tokens
+(and keeps its access token) when the server creates it at once. A server that
+has sign-ups prove their email address first answers a `RegistrationPending`
+(`{ status: "verification_sent", detail }`) whether or not the username or
+address was free, and emails the address a one-time token:
+`verifyEmail(token)` creates the account and keeps its token.
+
 `token` (a user access token) is sent as `Authorization: Bearer`; `apiKey`
 (`pk_…`, agent keys `pk_agent_…`) as `X-API-Key` — the server accepts API
 keys only there, so a `pk_` value passed as `token` is sent as a key too.

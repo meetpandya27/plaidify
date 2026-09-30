@@ -165,6 +165,19 @@ class AuthToken:
 
 
 @dataclass(frozen=True)
+class RegistrationPending:
+    """``register()`` while the server has sign-ups prove their email address first (HTTP 202).
+
+    The reply is the same whether or not the username or address was free;
+    the address is emailed either way. The account is created by
+    ``verify_email()`` with the token that email carries.
+    """
+
+    status: str = "verification_sent"
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class UserProfile:
     """Current user profile."""
 

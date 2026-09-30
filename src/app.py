@@ -47,6 +47,7 @@ from src.database import (
     LoginThrottle,
     MaintenanceLease,
     PasswordResetToken,
+    PendingRegistration,
     RefreshToken,
     SessionLocal,
     get_current_key_version,
@@ -139,6 +140,15 @@ def _validate_runtime_configuration() -> None:
 
     if settings.debug:
         raise RuntimeError("DEBUG must be false in production.")
+
+    if settings.registration_enabled and settings.registration_email_verification and not mail_configured():
+        raise RuntimeError(
+            "REGISTRATION_ENABLED is set with email-verified sign-up (REGISTRATION_EMAIL_VERIFICATION, on by default "
+            "in production) but SMTP_HOST/SMTP_FROM are not set: no verification email could be sent, so no sign-up "
+            "could finish. Set SMTP_HOST and SMTP_FROM, or set REGISTRATION_EMAIL_VERIFICATION=false to create "
+            "accounts at once (registration then reveals whether a username or email is taken), or leave "
+            "REGISTRATION_ENABLED unset."
+        )
 
     if not settings.redis_url:
         raise RuntimeError("REDIS_URL is required in production for shared state and rate limiting.")
@@ -262,7 +272,7 @@ def _claim_maintenance_lease(name: str, ttl_seconds: float) -> bool:
 
 
 def _purge_expired_auth_rows() -> None:
-    """Delete expired refresh and password-reset tokens and stale sign-in throttles.
+    """Delete expired refresh and password-reset tokens, expired sign-ups and stale sign-in throttles.
 
     Revoked refresh tokens stay until they expire: presenting a rotated token
     again is how token theft is detected (and the whole family revoked).
@@ -273,6 +283,9 @@ def _purge_expired_auth_rows() -> None:
         reset_tokens = (
             db.query(PasswordResetToken).filter(PasswordResetToken.expires_at < now).delete(synchronize_session=False)
         )
+        sign_ups = (
+            db.query(PendingRegistration).filter(PendingRegistration.expires_at < now).delete(synchronize_session=False)
+        )
         throttles = (
             db.query(LoginThrottle)
             .filter(
@@ -282,13 +295,14 @@ def _purge_expired_auth_rows() -> None:
             .delete(synchronize_session=False)
         )
         db.commit()
-    if refresh_tokens or reset_tokens or throttles:
+    if refresh_tokens or reset_tokens or sign_ups or throttles:
         logger.info(
             "Cleaned up expired auth rows",
             extra={
                 "extra_data": {
                     "refresh_tokens": refresh_tokens,
                     "password_reset_tokens": reset_tokens,
+                    "pending_registrations": sign_ups,
                     "login_throttles": throttles,
                 }
             },

@@ -238,9 +238,23 @@ var Plaidify = class {
     }
   }
   // ── Auth ───────────────────────────────────────────────────────────────
-  /** Create an account and use its access token for later calls. */
+  /**
+   * Create an account and use its access token for later calls. A server
+   * that has the email address proven first answers with a
+   * `RegistrationPending` instead: finish with `verifyEmail()`.
+   */
   async register(username, email, password) {
-    const result = await this.post("/auth/register", { username, email, password });
+    const result = await this.post("/auth/register", {
+      username,
+      email,
+      password
+    });
+    if ("access_token" in result && result.access_token) this.token = result.access_token;
+    return result;
+  }
+  /** Finish a sign-up with the one-time token from the email, and keep the new account's token. */
+  async verifyEmail(token) {
+    const result = await this.post("/auth/verify-email", { token });
     if (result.access_token) this.token = result.access_token;
     return result;
   }

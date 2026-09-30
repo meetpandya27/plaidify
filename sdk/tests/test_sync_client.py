@@ -4,6 +4,7 @@ import httpx
 import respx
 
 from plaidify.client import PlaidifySync
+from plaidify.models import RegistrationPending
 from _support import mock_encryption_session
 
 
@@ -11,6 +12,20 @@ BASE = "http://test-server:8000"
 
 
 class TestSyncClient:
+    @respx.mock
+    def test_register_then_verify_email(self):
+        respx.post(f"{BASE}/auth/register").mock(
+            return_value=httpx.Response(202, json={"status": "verification_sent", "detail": "Check your email."})
+        )
+        respx.post(f"{BASE}/auth/verify-email").mock(
+            return_value=httpx.Response(200, json={"access_token": "jwt-v", "token_type": "bearer"})
+        )
+        with PlaidifySync(server_url=BASE) as pfy:
+            pending = pfy.register("alice", "alice@example.com", "Secure@pass123")
+            token = pfy.verify_email("mailed-token")
+        assert pending == RegistrationPending(status="verification_sent", detail="Check your email.")
+        assert token.access_token == "jwt-v"
+
     @respx.mock
     def test_health(self):
         respx.get(f"{BASE}/health").mock(

@@ -23,8 +23,10 @@ only against a disposable instance. A `HealthOnlyUser` is available for pure
 probe load.
 
 Registration is off by default when `ENV=production`, so for a production-mode
-test instance set `REGISTRATION_ENABLED=true` on it (never on a real
-deployment), or the virtual users can't sign up. Rate limits apply per client
+test instance set `REGISTRATION_ENABLED=true` and
+`REGISTRATION_EMAIL_VERIFICATION=false` on it (never on a real deployment), or
+the virtual users can't sign up: with verification on, an account exists only
+once its emailed link is followed. Rate limits apply per client
 address: raise `RATE_LIMIT_*` on the test instance, or the single load
 generator's address is throttled like one very busy user. Behind a proxy, set
 `FORWARDED_ALLOW_IPS` first (see [DEPLOYMENT.md](DEPLOYMENT.md)) or every user

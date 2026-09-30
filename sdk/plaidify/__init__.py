@@ -31,6 +31,7 @@ __all__ = [
     "AuditLogResult",
     "AuditVerifyResult",
     "PublicTokenExchangeResult",
+    "RegistrationPending",
     "WebhookDeliveryResult",
     "PlaidifyError",
     "ConnectionError",
@@ -62,6 +63,7 @@ from plaidify.models import (
     LinkSession,
     MFAChallenge,
     PublicTokenExchangeResult,
+    RegistrationPending,
     WebhookDeliveryResult,
     WebhookRegistration,
 )

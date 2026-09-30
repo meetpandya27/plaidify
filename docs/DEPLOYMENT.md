@@ -281,18 +281,20 @@ compose files and the Azure template all start `gunicorn src.main:app -c gunicor
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15`      | Access token TTL (minutes)        |
 | `JWT_REFRESH_TOKEN_EXPIRE_MINUTES`| `10080`   | Refresh token TTL (7 days)        |
 | `REGISTRATION_ENABLED` | `true` in development, `false` in production | Public `POST /auth/register`. In production it is off unless set explicitly; provision accounts with `BOOTSTRAP_USER_*`. |
+| `REGISTRATION_EMAIL_VERIFICATION` | `true` in production, `false` elsewhere | Sign-ups prove their email address first. `POST /auth/register` answers `202` alike whether or not the username or address is taken, and mails the address a one-time token (24 hours; a new sign-up for the address replaces it), or a note that the address already has an account or that the username is taken. `POST /auth/verify-email {token}` creates the account; it answers `404` while this is off. Needs `SMTP_HOST`/`SMTP_FROM`: production refuses to start with registration enabled, this on and no mail. `false`: the account is created at once, and a taken username or address answers `400`. |
 | `BOOTSTRAP_USER_USERNAME`, `BOOTSTRAP_USER_EMAIL`, `BOOTSTRAP_USER_PASSWORD` | unset | With all three set, startup creates this administrator (idempotent). It never promotes an existing account: a clash with one stops startup in production. Remove them once the account exists. |
 | `OAUTH_ENABLED` | `false` | `POST /auth/oauth2` social login. With it on, startup fails unless every provider in `OAUTH_ALLOWED_PROVIDERS` (default `google,github`) has its ids: `OAUTH_GOOGLE_CLIENT_ID` for Google; `OAUTH_GITHUB_CLIENT_ID` and `OAUTH_GITHUB_CLIENT_SECRET` for GitHub. |
 | `OAUTH_AUTO_REGISTER` | `true` | Create an account on the first login with a verified email |
 
-### Password-reset mail
+### Mail: password resets and sign-up verification
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SMTP_HOST`, `SMTP_FROM` | unset | Both are needed to send reset mail. Without them `POST /auth/forgot-password` sends nothing (production logs a warning at startup). |
+| `SMTP_HOST`, `SMTP_FROM` | unset | Both are needed to send any mail. Without them `POST /auth/forgot-password` sends nothing (production logs a warning at startup) and verified sign-ups cannot finish (production refuses to start with registration enabled). |
 | `SMTP_PORT`, `SMTP_STARTTLS`, `SMTP_TIMEOUT_SECONDS` | `587`, `true`, `10.0` | Connection settings; disable STARTTLS only for a local relay |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | unset | SMTP login, if the relay needs one |
 | `PASSWORD_RESET_URL` | unset | Your reset page, with `{token}` in it. Unset: the email carries the one-time code for `POST /auth/reset-password`. |
+| `EMAIL_VERIFICATION_URL` | unset | Your sign-up page, with `{token}` in it; it posts the token to `POST /auth/verify-email`. Unset: the verification email carries the one-time code. |
 
 ### Server
 
@@ -424,13 +426,13 @@ backup service `backup_age_recipients`.
 
 - [ ] Set strong `ENCRYPTION_KEY` and `JWT_SECRET_KEY` (never reuse dev values), plus separate `AUDIT_HMAC_KEY` and `LINK_LAUNCH_SECRET`
 - [ ] Set `HEALTH_CHECK_TOKEN` (otherwise `/health/detailed` answers 404) and `METRICS_TOKEN` wherever `/metrics` is reachable from outside the private network
-- [ ] Configure `SMTP_HOST` / `SMTP_FROM` (and `PASSWORD_RESET_URL`) if users reset their own passwords
+- [ ] Configure `SMTP_HOST` / `SMTP_FROM` if users reset their own passwords (and `PASSWORD_RESET_URL`) or sign themselves up (and `EMAIL_VERIFICATION_URL`)
 - [ ] Set `ENV=production` and `ENFORCE_HTTPS=true`
 - [ ] Set `FORWARDED_ALLOW_IPS` to your proxy's network, and have the edge proxy overwrite `X-Forwarded-For`
 - [ ] Configure `CORS_ORIGINS` to your exact frontend domain(s)
 - [ ] Prefer `POST /link/bootstrap` plus `POST /link/sessions/bootstrap` for hosted-link launches
 - [ ] Leave `PUBLIC_LINK_SESSIONS_ENABLED=false` unless you intentionally support anonymous hosted-link bootstrapping
-- [ ] Leave `REGISTRATION_ENABLED` unset (off in production) and provision the first administrator with `BOOTSTRAP_USER_*`; remove those values once it exists
+- [ ] Leave `REGISTRATION_ENABLED` unset (off in production) and provision the first administrator with `BOOTSTRAP_USER_*`; remove those values once it exists. If you do open sign-ups, keep `REGISTRATION_EMAIL_VERIFICATION` on (the default) so registration does not reveal which usernames and addresses are taken
 - [ ] Leave `DOCS_ENABLED` unset: the OpenAPI schema maps every endpoint
 - [ ] Place behind a reverse proxy (nginx, Caddy, ALB) that terminates TLS
 - [ ] Restrict database and Redis access to the application network only
@@ -593,6 +595,7 @@ HTTPS.
 | "SQLite is not supported in production" | `ENV=production` without `DATABASE_URL` | Point `DATABASE_URL` at PostgreSQL |
 | Startup stops: `JWT_SECRET_KEY must be at least 32 characters`, `DEBUG must be false in production`, `REDIS_URL is required in production…`, `OAUTH_ENABLED is set but … is missing` | A production or security precondition | Fix the setting the message names |
 | Startup stops: `BOOTSTRAP_USER_USERNAME / BOOTSTRAP_USER_EMAIL match an existing account…` | The bootstrap values clash with an account someone else holds; it is never promoted | Pick another username and email, or remove `BOOTSTRAP_USER_*` |
+| Startup stops: `REGISTRATION_ENABLED is set with email-verified sign-up … SMTP_HOST/SMTP_FROM are not set` | Open sign-ups in production prove their address by email, and no mail can be sent | Set `SMTP_HOST` and `SMTP_FROM`; or `REGISTRATION_EMAIL_VERIFICATION=false` (registration then reveals taken names); or leave `REGISTRATION_ENABLED` unset |
 | Every request answers `307` to the same URL | The proxy isn't trusted, so the API sees plain HTTP | Set `FORWARDED_ALLOW_IPS` to the proxy's network |
 | All clients hit `429` together | Rate limits keyed on the proxy's address | Same: set `FORWARDED_ALLOW_IPS`; have the edge proxy overwrite `X-Forwarded-For` |
 | `/health` returns `503` | The database is unreachable (`/health` checks only the database) | Check `DATABASE_URL` and the network; `/health/detailed` shows Redis and KMS too |

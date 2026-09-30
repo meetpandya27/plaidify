@@ -21,6 +21,7 @@ import type {
   BlueprintListResult,
   ConnectResult,
   AuthToken,
+  RegistrationPending,
   UserProfile,
   LinkInfo,
   LinkSession,
@@ -306,9 +307,28 @@ export class Plaidify {
 
   // ── Auth ───────────────────────────────────────────────────────────────
 
-  /** Create an account and use its access token for later calls. */
-  async register(username: string, email: string, password: string): Promise<AuthToken> {
-    const result = await this.post<AuthToken>("/auth/register", { username, email, password });
+  /**
+   * Create an account and use its access token for later calls. A server
+   * that has the email address proven first answers with a
+   * `RegistrationPending` instead: finish with `verifyEmail()`.
+   */
+  async register(
+    username: string,
+    email: string,
+    password: string,
+  ): Promise<AuthToken | RegistrationPending> {
+    const result = await this.post<AuthToken | RegistrationPending>("/auth/register", {
+      username,
+      email,
+      password,
+    });
+    if ("access_token" in result && result.access_token) this.token = result.access_token;
+    return result;
+  }
+
+  /** Finish a sign-up with the one-time token from the email, and keep the new account's token. */
+  async verifyEmail(token: string): Promise<AuthToken> {
+    const result = await this.post<AuthToken>("/auth/verify-email", { token });
     if (result.access_token) this.token = result.access_token;
     return result;
   }
