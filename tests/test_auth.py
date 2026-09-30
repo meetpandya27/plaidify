@@ -688,13 +688,13 @@ class TestUniformReplies:
         import src.dependencies as deps
 
         calls = []
-        real_verify = deps.pwd_context.verify
+        real_matches = deps._bcrypt_matches
 
-        def counting_verify(secret, hashed):
+        def counting_matches(secret, hashed):
             calls.append(hashed)
-            return real_verify(secret, hashed)
+            return real_matches(secret, hashed)
 
-        with patch.object(deps.pwd_context, "verify", side_effect=counting_verify):
+        with patch.object(deps, "_bcrypt_matches", side_effect=counting_matches):
             assert _login(client, "ghost-user", "WrongPass1!").status_code == 400
         assert len(calls) == 1
 

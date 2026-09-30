@@ -65,13 +65,12 @@ def _new_key() -> str:
 
 def _make_user(db, username="keyrotuser", with_dek=True) -> User:
     """Create a user (with a DEK unless told otherwise) for testing."""
-    from passlib.context import CryptContext
+    from src.dependencies import get_password_hash
 
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
     user = User(
         username=username,
         email=f"{username}@example.com",
-        hashed_password=pwd_context.hash("password123"),
+        hashed_password=get_password_hash("password123"),
         encrypted_dek=create_user_dek() if with_dek else None,
     )
     db.add(user)
