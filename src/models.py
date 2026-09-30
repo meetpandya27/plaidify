@@ -371,6 +371,22 @@ class UserRegisterRequest(BaseModel):
         return validate_new_password(value)
 
 
+class RegistrationPendingResponse(BaseModel):
+    """202 reply of POST /auth/register while sign-ups prove their email address first.
+
+    The same whether or not the username or address was free.
+    """
+
+    status: str = "verification_sent"
+    detail: str
+
+
+class VerifyEmailRequest(BaseModel):
+    """Request body for POST /auth/verify-email."""
+
+    token: str = Field(..., max_length=256)
+
+
 class TokenResponse(BaseModel):
     """JWT token response."""
 

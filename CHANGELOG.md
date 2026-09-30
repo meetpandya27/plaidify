@@ -24,6 +24,7 @@ upgrading.
 - Password reset, `POST /auth/sessions/revoke-all` and deactivating an account end every session at once.
 - Startup fails when `JWT_SECRET_KEY` is shorter than 32 characters, when `LINK_LAUNCH_SECRET` is short or equal to it, or when `OAUTH_ENABLED` is set without the enabled providers' client ids (and the GitHub client secret).
 - Self-registration is off in production unless `REGISTRATION_ENABLED` is set explicitly. The bootstrap administrator is only ever created, never promoted from an existing account; a clash stops startup in production.
+- Sign-ups prove their email address first, by default in production (`REGISTRATION_EMAIL_VERIFICATION`): `POST /auth/register` answers `202 {"status": "verification_sent", "detail": …}` whether or not the username or address is taken and emails the address a one-time token (or a note that the address has an account or the username is taken); the new `POST /auth/verify-email {token}` creates the account and returns its tokens (`400` for an unknown, used or expired token, `409` when the name was taken meanwhile). `EMAIL_VERIFICATION_URL` makes the email a link to your page. Production refuses to start with registration enabled, verification on and no `SMTP_HOST`/`SMTP_FROM`. Elsewhere sign-ups stay instant unless the setting is on, and `/auth/verify-email` answers `404`.
 
 **API contract**
 - Secrets travel only in JSON bodies: `POST /mfa/submit {session_id, code}`, `POST /submit_credentials {link_token, username?, password?, encrypted_username?, encrypted_password?}`, `POST /fetch_data {access_token, consent_token?}` and `POST /submit_instructions`. The query-string forms and `GET /fetch_data` (now 405) are gone.
@@ -44,6 +45,7 @@ upgrading.
 **Hosted page and SDKs**
 - The hosted page never shows the public token (it goes to the host app only), sends `EXIT` only on an explicit exit or page teardown, and sends telemetry as `{"event": "TELEMETRY", "name": "step_view", …}` (the field was `event`). Theme parameters are `accent`, `bg`, `radius` and `logo` (a `data:` URI up to 32 KB); `?server=` works only in development builds.
 - JavaScript SDK: `login(username, password)` posts the OAuth2 form to `/auth/token`; `register` sends the username; `registerWebhook` posts to `/webhooks/register` with a secret; `createApiKey` takes a scope list; list methods return arrays; consent ids are strings.
+- Python SDK: `register()` returns `RegistrationPending` when the server answers `202`, and `verify_email(token)` finishes the sign-up; JavaScript SDK: `register()` resolves to `AuthToken | RegistrationPending`, and `verifyEmail(token)`.
 - Python SDK: `create_api_key(name, scopes=[…], expires_days=…)`; the CLI dropped `-p` (it prompts, or reads `--password-stdin`). `plaidify audit verify` / `audit logs` take a user's access token and refuse API keys up front; `plaidify login` prints one. JS `listRefreshJobs()` returns `{ jobs: RefreshJobInfo[] }` with masked tokens.
 - Swift and Android: the hosted web view is the default; the native Link screens run only with `experimentalNativeScreens`. New native session types; the Android bridge is `window.plaidifyLink.postMessage` and results come back through the Activity result.
 
@@ -63,6 +65,7 @@ upgrading.
 - No secrets in URLs; access logs redact secret query parameters and token-bearing path segments; typed values are scrubbed from browser error text; tokens are logged as fingerprints.
 - Per-user envelope encryption now also covers stored job results and webhook secrets and payloads. Key rotation re-wraps every user key (`plaidify rotate-key --re-encrypt`) with an `ENCRYPTION_KEY_PREVIOUS` fallback, and the KMS migration moves every secret and fails loudly on anything it skips.
 - The audit chain is an HMAC-SHA256 chain keyed by `AUDIT_HMAC_KEY` (or derived from `ENCRYPTION_KEY`), with serialized appends, a signed head row, checkpoints when pruning, key-rotation seals and streamed verification.
+- Registration no longer reveals whether a username or address is taken when sign-ups are email-verified (the production default); only the mailbox learns it.
 - Sign-in throttling per username and address and per username (the throttle table holds only HMACs), OAuth tokens checked against this app's client ids, agent rate limits enforced, `RATE_LIMIT_DEFAULT` applied to every endpoint without its own limit (CORS wraps it, so browsers can read the 429), failed sign-ins audited without the typed username, request bodies capped for chunked uploads too, passwords over 72 bytes refused instead of truncated, and bad input answered with 4xx instead of 500.
 - The MCP server's HTTP transports bind `127.0.0.1` by default and check the `Host` header.
 
@@ -71,6 +74,7 @@ upgrading.
 - Scheduled refresh runs from the database under a lease in one process; the webhook outbox and the maintenance jobs run under leases too (`src/background_services.py`).
 - The executor serves `/metrics` and `/health` on `ACCESS_WORKER_METRICS_PORT` (9101); metrics use Prometheus multiprocess mode, so one scrape covers every gunicorn worker.
 - The hosted page's MFA, "Try again" and event delivery work; the live-events stream no longer blocks a worker; browser crashes no longer jam the pool; wrong passwords and MFA rejections are detected.
+- The Anthropic provider calls the Messages API through the official `anthropic` SDK (1.9.0) instead of raw HTTP, streaming each reply. Requests, errors, retries and server-side fallbacks behave as before; a stream that breaks or ends early counts as a failed call; the SDK's DEBUG logging, which includes request bodies (page content), stays off.
 
 ### Ops and CI
 - CI: lint of the whole repository, a lock-drift check with `pip-audit` and `npm audit`, tests on Python 3.11–3.13 with Redis, a Playwright job (hosted-link E2E, engine browser tests, the demo), a PostgreSQL migrations job, a container smoke test, client jobs (hosted page, JavaScript, Python, Swift, Android SDKs), configuration checks, CodeQL (Python, JavaScript/TypeScript, Actions) and a weekly dependency audit. Actions are pinned to commit SHAs.

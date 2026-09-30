@@ -15,6 +15,7 @@ import respx
 from _support import decrypt_credential, mock_encryption_session
 from plaidify.client import Plaidify
 from plaidify.exceptions import BlueprintNotFoundError, NotFoundError, PlaidifyError
+from plaidify.models import RegistrationPending
 
 BASE = "http://test-server:8000"
 
@@ -98,6 +99,39 @@ class TestAuthHeaders:
             "email": "alice@example.com",
             "password": "Secure@pass123",
         }
+
+    @respx.mock
+    async def test_a_verification_reply_to_register_sets_no_credential(self):
+        respx.post(f"{BASE}/auth/register").mock(
+            return_value=httpx.Response(
+                202,
+                json={"status": "verification_sent", "detail": "If the address can be used, we sent it a link."},
+            )
+        )
+        me = respx.get(f"{BASE}/auth/me").mock(return_value=httpx.Response(401, json={"detail": "Not authenticated"}))
+        async with Plaidify(server_url=BASE) as pfy:
+            assert isinstance(await pfy.register("alice", "alice@example.com", "Secure@pass123"), RegistrationPending)
+            with pytest.raises(PlaidifyError):
+                await pfy.me()
+        assert "authorization" not in me.calls[0].request.headers
+
+    @respx.mock
+    async def test_verify_email_sends_the_token_in_the_body_and_keeps_the_new_token(self):
+        verify = respx.post(f"{BASE}/auth/verify-email").mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "jwt-2", "refresh_token": "r-2", "token_type": "bearer"}
+            )
+        )
+        me = respx.get(f"{BASE}/auth/me").mock(
+            return_value=httpx.Response(200, json={"id": 1, "username": "alice", "email": None, "is_active": True})
+        )
+        async with Plaidify(server_url=BASE) as pfy:
+            await pfy.verify_email("mailed-token-1")
+            await pfy.me()
+        request = verify.calls[0].request
+        assert _json(request) == {"token": "mailed-token-1"}
+        _assert_no_secrets_in_url(request, "mailed-token-1")
+        assert me.calls[0].request.headers["authorization"] == "Bearer jwt-2"
 
 
 # ── Connect ───────────────────────────────────────────────────────────────────

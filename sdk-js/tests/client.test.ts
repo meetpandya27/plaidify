@@ -251,6 +251,46 @@ describe("register", () => {
     await anonymous.me();
     expect(sent().headers.Authorization).toBe("Bearer jwt-token");
   });
+
+  it("returns the pending sign-up and keeps no token while the address is to be verified", async () => {
+    const anonymous = new Plaidify({ serverUrl: BASE });
+    const pending = {
+      status: "verification_sent",
+      detail: "If the address can be used, we sent it a link to finish signing up.",
+    };
+    globalThis.fetch = mockFetch(pending, 202);
+    const result = await anonymous.register("alice", "alice@test.com", "Secure@pass123");
+    expect(result).toEqual(pending);
+    expect("access_token" in result).toBe(false);
+
+    globalThis.fetch = mockFetch({ status: "healthy" });
+    await anonymous.health();
+    expect(sent().headers.Authorization).toBeUndefined();
+  });
+});
+
+describe("verifyEmail", () => {
+  it("posts the emailed token to /auth/verify-email and keeps the new token", async () => {
+    const anonymous = new Plaidify({ serverUrl: BASE });
+    globalThis.fetch = mockFetch({ access_token: "jwt-verified", refresh_token: "ref", token_type: "bearer" });
+    const result = await anonymous.verifyEmail("mailed-token");
+    expect(result.access_token).toBe("jwt-verified");
+    expect(sent()).toMatchObject({ url: `${BASE}/auth/verify-email`, method: "POST" });
+    expect(sent().headers.Authorization).toBeUndefined();
+    expect(sentJson()).toEqual({ token: "mailed-token" });
+
+    globalThis.fetch = mockFetch({ status: "healthy" });
+    await anonymous.health();
+    expect(sent().headers.Authorization).toBe("Bearer jwt-verified");
+  });
+
+  it("raises the server's error for a spent token", async () => {
+    globalThis.fetch = mockFetchError({ detail: "Invalid or expired verification token" }, 400);
+    await expect(new Plaidify({ serverUrl: BASE }).verifyEmail("spent")).rejects.toMatchObject({
+      message: "Invalid or expired verification token",
+      statusCode: 400,
+    });
+  });
 });
 
 describe("login", () => {

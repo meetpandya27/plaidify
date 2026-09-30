@@ -119,6 +119,15 @@ class Settings(BaseSettings):
             "bootstrap settings below."
         ),
     )
+    registration_email_verification: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Sign-ups prove their email address first: POST /auth/register answers 202 alike whether or not "
+            "the username or address is taken, and mails the address; POST /auth/verify-email with the mailed "
+            "token creates the account. Unset: on in production, off elsewhere (the account is created at once). "
+            "Production refuses to start with it on, registration enabled and no SMTP_HOST/SMTP_FROM."
+        ),
+    )
     bootstrap_user_username: Optional[str] = Field(
         default=None,
         description="If set with email + password, create this user on startup (idempotent).",
@@ -685,14 +694,14 @@ class Settings(BaseSettings):
     )
     smtp_host: Optional[str] = Field(
         default=None,
-        description="SMTP server for password-reset mail. Unset: reset emails are not sent (logged at WARNING).",
+        description="SMTP server for password-reset and sign-up mail. Unset: no email is sent (logged at WARNING).",
     )
     smtp_port: int = Field(default=587, ge=1, le=65535, description="SMTP port (587 for STARTTLS).")
     smtp_username: Optional[str] = Field(default=None, description="SMTP login user; unset for no login.")
     smtp_password: Optional[str] = Field(default=None, description="SMTP login password.")
     smtp_from: Optional[str] = Field(
         default=None,
-        description="From address of password-reset mail. Required together with SMTP_HOST.",
+        description="From address of password-reset and sign-up mail. Required together with SMTP_HOST.",
     )
     smtp_starttls: bool = Field(
         default=True,
@@ -706,6 +715,14 @@ class Settings(BaseSettings):
             "the reset email links to it; otherwise the email carries the one-time code for POST /auth/reset-password."
         ),
     )
+    email_verification_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Your app's page that finishes a sign-up, e.g. 'https://app.example.com/verify?token={token}'. When "
+            "set, the verification email links to it; otherwise the email carries the one-time code for "
+            "POST /auth/verify-email."
+        ),
+    )
 
     @field_validator(
         "link_launch_secret",
@@ -716,11 +733,18 @@ class Settings(BaseSettings):
         "smtp_password",
         "smtp_from",
         "password_reset_url",
+        "email_verification_url",
         mode="before",
     )
     @classmethod
     def empty_api_setting_is_unset(cls, v):
         return v or None
+
+    @field_validator("registration_email_verification", mode="before")
+    @classmethod
+    def empty_verification_setting_is_unset(cls, v):
+        # An empty REGISTRATION_EMAIL_VERIFICATION= means "unset" (the env default), not an error.
+        return None if isinstance(v, str) and not v.strip() else v
 
     @model_validator(mode="after")
     def _apply_production_rules(self) -> "Settings":
@@ -737,6 +761,10 @@ class Settings(BaseSettings):
             # BOOTSTRAP_USER_* settings or an administrator.
             if "registration_enabled" not in self.model_fields_set:
                 self.registration_enabled = False
+        # Unset, sign-ups prove their address in production and stay instant
+        # elsewhere (development, tests, the demo and load tests).
+        if self.registration_email_verification is None:
+            self.registration_email_verification = self.env == "production"
         return self
 
     @field_validator("cors_origins")

@@ -83,11 +83,20 @@ interface MFAChallenge {
     mfa_type: string;
     prompt?: string;
 }
-/** POST /auth/register, POST /auth/token */
+/** POST /auth/register, POST /auth/verify-email, POST /auth/token */
 interface AuthToken {
     access_token: string;
     refresh_token?: string | null;
     token_type: string;
+}
+/**
+ * POST /auth/register (202) while the server has sign-ups prove their email
+ * address first. The same whether or not the username or address was free;
+ * finish with `verifyEmail(token)`, the token coming from the email.
+ */
+interface RegistrationPending {
+    status: "verification_sent";
+    detail: string;
 }
 /** GET /auth/me */
 interface UserProfile {
@@ -412,8 +421,14 @@ declare class Plaidify {
         pollIntervalMs?: number;
         timeoutMs?: number;
     }): Promise<AccessJob>;
-    /** Create an account and use its access token for later calls. */
-    register(username: string, email: string, password: string): Promise<AuthToken>;
+    /**
+     * Create an account and use its access token for later calls. A server
+     * that has the email address proven first answers with a
+     * `RegistrationPending` instead: finish with `verifyEmail()`.
+     */
+    register(username: string, email: string, password: string): Promise<AuthToken | RegistrationPending>;
+    /** Finish a sign-up with the one-time token from the email, and keep the new account's token. */
+    verifyEmail(token: string): Promise<AuthToken>;
     /** Log in (OAuth2 password form at POST /auth/token) and keep the token. */
     login(username: string, password: string): Promise<AuthToken>;
     me(): Promise<UserProfile>;
@@ -546,4 +561,4 @@ declare class ServerError extends PlaidifyError {
     constructor(message?: string, errorCode?: string);
 }
 
-export { type AccessJob, type AccessJobListResult, type AccessTokenInfo, type AgentInfo, type AgentListResult, type ApiKeyCreated, type ApiKeyInfo, type AuditChainError, type AuditEntry, type AuditLogResult, type AuditVerifyResult, type AuthToken, AuthenticationError, type BlueprintInfo, type BlueprintListResult, type BlueprintSummary, type ConnectResult, type ConsentGrant, type ConsentGrantInfo, type ConsentListResult, type ConsentRequest, type HealthStatus, type HostedLinkBootstrapRequest, type HostedLinkBootstrapResponse, type HostedLinkUrlOptions, type LinkEvent, type LinkInfo, type LinkSession, type LinkTheme, type MFAChallenge, type MfaSubmitResult, NotFoundError, Plaidify, type PlaidifyConfig, PlaidifyError, type PlaidifyErrorResponse, type PlaidifyLinkConfig, type PlaidifyLinkEventName, type PlaidifyLinkEventPayload, type PlaidifyLinkExitDetails, type PlaidifyLinkMfaDetails, type PlaidifyLinkSuccessMetadata, type PublicTokenExchangeResult, RateLimitError, type RefreshJobInfo, type RefreshJobListResult, type RefreshScheduleResult, ServerError, type UserProfile, type WebhookDelivery, type WebhookDeliveryResult, type WebhookInfo, type WebhookListResult, type WebhookRegistration, buildHostedLinkUrl };
+export { type AccessJob, type AccessJobListResult, type AccessTokenInfo, type AgentInfo, type AgentListResult, type ApiKeyCreated, type ApiKeyInfo, type AuditChainError, type AuditEntry, type AuditLogResult, type AuditVerifyResult, type AuthToken, AuthenticationError, type BlueprintInfo, type BlueprintListResult, type BlueprintSummary, type ConnectResult, type ConsentGrant, type ConsentGrantInfo, type ConsentListResult, type ConsentRequest, type HealthStatus, type HostedLinkBootstrapRequest, type HostedLinkBootstrapResponse, type HostedLinkUrlOptions, type LinkEvent, type LinkInfo, type LinkSession, type LinkTheme, type MFAChallenge, type MfaSubmitResult, NotFoundError, Plaidify, type PlaidifyConfig, PlaidifyError, type PlaidifyErrorResponse, type PlaidifyLinkConfig, type PlaidifyLinkEventName, type PlaidifyLinkEventPayload, type PlaidifyLinkExitDetails, type PlaidifyLinkMfaDetails, type PlaidifyLinkSuccessMetadata, type PublicTokenExchangeResult, RateLimitError, type RefreshJobInfo, type RefreshJobListResult, type RefreshScheduleResult, type RegistrationPending, ServerError, type UserProfile, type WebhookDelivery, type WebhookDeliveryResult, type WebhookInfo, type WebhookListResult, type WebhookRegistration, buildHostedLinkUrl };

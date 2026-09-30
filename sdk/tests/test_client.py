@@ -4,6 +4,7 @@ import pytest
 import httpx
 import respx
 
+from plaidify import RegistrationPending
 from plaidify.client import Plaidify, _raise_for_api_error
 from _support import mock_encryption_session
 from plaidify.models import (
@@ -508,6 +509,50 @@ class TestAuth:
         async with Plaidify(server_url=BASE) as pfy:
             token = await pfy.register("alice", "alice@example.com", "secretpass")
         assert token.access_token == "jwt-new"
+
+    @respx.mock
+    async def test_register_while_the_server_verifies_the_address(self):
+        respx.post(f"{BASE}/auth/register").mock(
+            return_value=httpx.Response(
+                202,
+                json={
+                    "status": "verification_sent",
+                    "detail": "If the address can be used, we sent it a link to finish signing up.",
+                },
+            )
+        )
+        async with Plaidify(server_url=BASE) as pfy:
+            result = await pfy.register("alice", "alice@example.com", "secretpass")
+        assert isinstance(result, RegistrationPending)
+        assert result.status == "verification_sent"
+        assert result.detail.startswith("If the address can be used")
+
+    @respx.mock
+    async def test_verify_email(self):
+        respx.post(f"{BASE}/auth/verify-email").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "access_token": "jwt-verified",
+                    "refresh_token": "refresh-1",
+                    "token_type": "bearer",
+                },
+            )
+        )
+        async with Plaidify(server_url=BASE) as pfy:
+            token = await pfy.verify_email("mailed-token")
+        assert token.access_token == "jwt-verified"
+
+    @respx.mock
+    async def test_verify_email_with_a_spent_token(self):
+        respx.post(f"{BASE}/auth/verify-email").mock(
+            return_value=httpx.Response(400, json={"detail": "Invalid or expired verification token"})
+        )
+        async with Plaidify(server_url=BASE) as pfy:
+            with pytest.raises(PlaidifyError) as raised:
+                await pfy.verify_email("spent-token")
+        assert raised.value.status_code == 400
+        assert raised.value.message == "Invalid or expired verification token"
 
     @respx.mock
     async def test_login(self):

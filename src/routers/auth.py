@@ -1,5 +1,5 @@
 """
-Authentication endpoints: register, login, OAuth2, profile, token refresh.
+Authentication endpoints: register (and email verification), login, OAuth2, profile, token refresh.
 """
 
 import functools
@@ -13,8 +13,9 @@ from typing import Optional
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,7 @@ from src.config import get_settings
 from src.database import (
     LoginThrottle,
     PasswordResetToken,
+    PendingRegistration,
     RefreshToken,
     SessionLocal,
     User,
@@ -41,16 +43,24 @@ from src.dependencies import (
     verify_password,
 )
 from src.logging_config import get_logger
-from src.mailer import mail_configured, send_password_reset_email
+from src.mailer import (
+    mail_configured,
+    send_password_reset_email,
+    send_sign_up_address_in_use,
+    send_sign_up_username_taken,
+    send_sign_up_verification,
+)
 from src.models import (
     DeleteAccountRequest,
     ForgotPasswordRequest,
     OAuth2LoginRequest,
     RefreshTokenRequest,
+    RegistrationPendingResponse,
     ResetPasswordRequest,
     TokenResponse,
     UserProfileResponse,
     UserRegisterRequest,
+    VerifyEmailRequest,
 )
 from src.oauth_providers import OAuthVerificationError, verify_oauth_token
 from src.routers.links import unschedule_refresh_jobs
@@ -62,6 +72,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _RESET_TOKEN_TTL = timedelta(hours=1)
 _FORGOT_PASSWORD_REPLY = {"message": "If an account with that email exists, a reset link has been sent."}
+_SIGN_UP_TOKEN_TTL = timedelta(hours=24)
+# With email verification on, every sign-up gets this reply, whatever is taken.
+_SIGN_UP_PENDING_REPLY = {
+    "status": "verification_sent",
+    "detail": "If the address can be used, we sent it a link to finish signing up.",
+}
 
 # ── Sign-in throttling ────────────────────────────────────────────────────────
 #
@@ -150,10 +166,114 @@ def _client_ip(request: Request) -> Optional[str]:
     return request.client.host if request.client else None
 
 
-@router.post("/register", response_model=TokenResponse)
+def _holders_of(db: Session, username: str, email: str) -> list[Optional[str]]:
+    """The addresses of the accounts holding ``username`` or ``email``; empty when both are free."""
+    return [row.email for row in db.query(User.email).filter((User.username == username) | (User.email == email))]
+
+
+def _finish_registration(db: Session, user: User, request: Request) -> dict:
+    """Log and audit a newly created account, and sign it in."""
+    db.refresh(user)
+    logger.info("User registered", extra={"extra_data": {"user_id": user.id}})
+    record_audit_event(
+        db,
+        "auth",
+        "register",
+        user_id=user.id,
+        metadata={"username": user.username},
+        ip_address=_client_ip(request),
+    )
+    return issue_token_pair(user, db)
+
+
+def _store_pending_registration(db: Session, username: str, email: str, hashed_password: str, raw_token: str) -> None:
+    for attempt in (1, 2):
+        now = utcnow()
+        # One live sign-up per address: this one replaces an earlier one, and so its token.
+        db.query(PendingRegistration).filter(PendingRegistration.email == email).delete(synchronize_session=False)
+        db.add(
+            PendingRegistration(
+                username=username,
+                email=email,
+                hashed_password=hashed_password,
+                token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
+                created_at=now,
+                expires_at=now + _SIGN_UP_TOKEN_TTL,
+            )
+        )
+        try:
+            db.commit()
+            return
+        except IntegrityError:
+            # A sign-up for the same address was stored at the same moment; replace it as well.
+            db.rollback()
+            if attempt == 2:
+                raise
+
+
+def _start_sign_up(username: str, email: str, hashed_password: str) -> None:
+    """Store a sign-up whose address is still to be proven and mail the address. Runs after the reply is sent.
+
+    A new address asking for a free username gets a pending registration and
+    its one-time token (a pending sign-up for another address holds no
+    username). An address that already has an account, or a new one asking
+    for a taken username, gets a note instead, and nothing is stored.
+    """
+    with SessionLocal() as db:
+        holders = _holders_of(db, username, email)
+        if email in holders:
+            mail = functools.partial(send_sign_up_address_in_use, email)
+        elif holders:
+            mail = functools.partial(send_sign_up_username_taken, email)
+        else:
+            raw_token = secrets.token_urlsafe(32)
+            _store_pending_registration(db, username, email, hashed_password, raw_token)
+            mail = functools.partial(
+                send_sign_up_verification,
+                email,
+                raw_token,
+                username=username,
+                expires_hours=int(_SIGN_UP_TOKEN_TTL.total_seconds() // 3600),
+            )
+
+    if not mail_configured():
+        logger.warning(
+            "Sign-up requested but SMTP is not configured (SMTP_HOST, SMTP_FROM): "
+            "sign-up emails are disabled, so the sign-up cannot be completed"
+        )
+        return
+    try:
+        mail()
+    except Exception as exc:
+        logger.error("Sign-up email could not be sent", extra={"extra_data": {"error": type(exc).__name__}})
+
+
+@router.post(
+    "/register",
+    response_model=TokenResponse,
+    responses={
+        202: {
+            "model": RegistrationPendingResponse,
+            "description": "Sign-ups prove their email address first: finish with POST /auth/verify-email.",
+        }
+    },
+)
 @limiter.limit("3/minute")
-def register_user(request: Request, body: UserRegisterRequest, db: Session = Depends(get_db)):
-    """Register a new user account."""
+def register_user(
+    request: Request,
+    body: UserRegisterRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Register a new user account.
+
+    With REGISTRATION_EMAIL_VERIFICATION (on in production unless set) the
+    reply is always 202 ``verification_sent``, in the same time, whether or
+    not the username or address is taken: what is taken is looked up after the
+    reply has been sent, and only the address is told. POST /auth/verify-email
+    with the token it is mailed creates the account. Otherwise the account is
+    created at once and its tokens are returned.
+    """
     if not settings.registration_enabled:
         raise HTTPException(
             status_code=403,
@@ -161,9 +281,12 @@ def register_user(request: Request, body: UserRegisterRequest, db: Session = Dep
         )
     # Hash first: a taken username or email then costs as long as a new account.
     hashed_pw = get_password_hash(body.password)
+    if settings.registration_email_verification:
+        background_tasks.add_task(_start_sign_up, body.username, body.email, hashed_pw)
+        return JSONResponse(status_code=202, content=dict(_SIGN_UP_PENDING_REPLY))
+
     already_registered = HTTPException(status_code=400, detail="Username or email already registered")
-    existing = db.query(User.id).filter((User.username == body.username) | (User.email == body.email)).first()
-    if existing:
+    if _holders_of(db, body.username, body.email):
         raise already_registered
 
     user = User(
@@ -178,18 +301,71 @@ def register_user(request: Request, body: UserRegisterRequest, db: Session = Dep
     except IntegrityError:
         db.rollback()
         raise already_registered
-    db.refresh(user)
+    return _finish_registration(db, user, request)
 
-    logger.info("User registered", extra={"extra_data": {"user_id": user.id}})
-    record_audit_event(
-        db,
-        "auth",
-        "register",
-        user_id=user.id,
-        metadata={"username": body.username},
-        ip_address=_client_ip(request),
+
+@router.post("/verify-email", response_model=TokenResponse)
+@limiter.limit("3/minute")
+def verify_email(request: Request, body: VerifyEmailRequest, db: Session = Depends(get_db)):
+    """Finish a sign-up: create the account with the one-time token POST /auth/register mailed.
+
+    The account is created as an immediate registration creates it, with its
+    address marked verified, and its tokens are returned. 400 for an unknown,
+    used or expired token; 409 when the username or the address was taken in
+    the meantime (the sign-up is then void: register again). 404 while
+    REGISTRATION_EMAIL_VERIFICATION is off.
+    """
+    if not settings.registration_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Self-registration is disabled. Contact an administrator for access.",
+        )
+    if not settings.registration_email_verification:
+        raise HTTPException(status_code=404, detail="Email verification is not enabled.")
+
+    invalid = HTTPException(status_code=400, detail="Invalid or expired verification token")
+    unavailable = HTTPException(
+        status_code=409, detail="That username or address is no longer available. Register again."
     )
-    return issue_token_pair(user, db)
+    token_hash = hashlib.sha256(body.token.encode()).hexdigest()
+    pending = db.execute(
+        select(PendingRegistration.username, PendingRegistration.email, PendingRegistration.hashed_password).where(
+            PendingRegistration.token_hash == token_hash, PendingRegistration.expires_at > utcnow()
+        )
+    ).first()
+    if pending is None:
+        raise invalid
+    # Claim the sign-up with one conditional DELETE: of two concurrent verifications with the token, one wins.
+    claim = (
+        delete(PendingRegistration)
+        .where(PendingRegistration.token_hash == token_hash)
+        .execution_options(synchronize_session=False)
+    )
+    if db.execute(claim).rowcount != 1:
+        db.rollback()
+        raise invalid
+
+    if _holders_of(db, pending.username, pending.email):
+        db.commit()  # the claimed sign-up stays deleted: it cannot finish
+        raise unavailable
+    user = User(
+        username=pending.username,
+        email=pending.email,
+        hashed_password=pending.hashed_password,
+        encrypted_dek=create_user_dek(),
+        # The token reached the mailbox: the address is proven.
+        email_verified=True,
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        # Taken at the same moment. The rollback restored the claimed sign-up; delete it again.
+        db.rollback()
+        db.execute(claim)
+        db.commit()
+        raise unavailable
+    return _finish_registration(db, user, request)
 
 
 @router.post("/token", response_model=TokenResponse)

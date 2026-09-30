@@ -4,9 +4,12 @@ import json
 from dataclasses import FrozenInstanceError
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anthropic
+import httpx2
 import pytest
 
 from src.core.llm_provider import (
+    ANTHROPIC_FALLBACK_BETA,
     AnthropicProvider,
     FallbackChain,
     LLMAuthError,
@@ -17,6 +20,7 @@ from src.core.llm_provider import (
     OpenAIProvider,
     TokenUsage,
     create_provider,
+    json_schema_format,
 )
 
 # ── Data Classes ──────────────────────────────────────────────────────────────
@@ -335,30 +339,113 @@ class TestOpenAIProvider:
 
 
 # ── Anthropic Provider ────────────────────────────────────────────────────────
+#
+# These run the real anthropic SDK. Only its transport is swapped, for an
+# httpx2.MockTransport that records each request and answers from a queue.
+
+_SSE_HEADERS = {"content-type": "text/event-stream"}
 
 
-def _mock_anthropic_response(
-    content: str = '{"balance": 100}',
-    model: str = "claude-sonnet-4-20250514",
-    status_code: int = 200,
-    input_tokens: int = 500,
-    output_tokens: int = 50,
-):
-    """Create a mock httpx response for Anthropic API."""
-    resp = MagicMock()
-    resp.status_code = status_code
-    resp.headers = {}
-    data = {
-        "content": [{"type": "text", "text": content}],
-        "model": model,
-        "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
+class _MessagesAPI:
+    """Stands in for the Messages API: records requests and answers with queued replies."""
+
+    def __init__(self):
+        self.replies = []
+        self.requests = []
+
+    def handle(self, request):
+        self.requests.append(request)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def body(self, index=-1):
+        return json.loads(self.requests[index].content)
+
+
+@pytest.fixture
+def anthropic_api(monkeypatch):
+    """Every SDK client an AnthropicProvider builds during the test talks to one _MessagesAPI."""
+    api = _MessagesAPI()
+    sdk_client = anthropic.AsyncAnthropic
+
+    def client(**kwargs):
+        transport = httpx2.MockTransport(api.handle)
+        return sdk_client(http_client=anthropic.DefaultAsyncHttpxClient(transport=transport), **kwargs)
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", client)
+    return api
+
+
+def _sse_body(*events):
+    return "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
+
+
+def _sse(*events):
+    """A 200 reply that streams ``events`` as server-sent events."""
+    return httpx2.Response(200, headers=_SSE_HEADERS, content=_sse_body(*events))
+
+
+def _message_events(text='{"ok": true}', stop_reason="end_turn", model="claude-opus-5"):
+    """The events of one streamed message: a thinking block (which the provider skips), then ``text``."""
+    return [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": model,
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 500, "output_tokens": 1},
+            },
         },
-    }
-    resp.json.return_value = data
-    resp.text = json.dumps(data)
-    return resp
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+        },
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "c2ln"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": text}},
+        {"type": "content_block_stop", "index": 1},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+            "usage": {"output_tokens": 50},
+        },
+        {"type": "message_stop"},
+    ]
+
+
+def _anthropic_reply(text='{"ok": true}', **kwargs):
+    return _sse(*_message_events(text, **kwargs))
+
+
+def _anthropic_error(status_code, error_type, message, headers=None):
+    body = {"type": "error", "error": {"type": error_type, "message": message}}
+    return httpx2.Response(status_code, headers=headers, json=body)
+
+
+class _FailingStream(httpx2.AsyncByteStream):
+    """A response body that raises ``error`` after its first chunk."""
+
+    def __init__(self, first_chunk, error):
+        self.first_chunk = first_chunk
+        self.error = error
+
+    async def __aiter__(self):
+        yield self.first_chunk
+        raise self.error
+
+
+def _broken_stream(error):
+    """A 200 reply whose stream breaks with ``error`` partway through the message."""
+    return httpx2.Response(200, headers=_SSE_HEADERS, stream=_FailingStream(_sse_body(*_message_events()[:3]), error))
 
 
 class TestAnthropicProvider:
@@ -369,120 +456,128 @@ class TestAnthropicProvider:
         assert p.base_url == "https://api.anthropic.com"
 
     @pytest.mark.asyncio
-    async def test_call_success(self):
+    async def test_call_success(self, anthropic_api):
+        anthropic_api.replies.append(_anthropic_reply('{"balance": 100}'))
         p = AnthropicProvider(api_key="sk-ant-test")
-        mock_resp = _mock_anthropic_response()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        p._client = mock_client
 
-        result = await p._call(
-            [{"role": "user", "content": "extract data"}],
-        )
+        result = await p._call([{"role": "user", "content": "extract data"}])
 
         assert result.content == '{"balance": 100}'
+        assert result.model == "claude-opus-5"
         assert result.provider == "anthropic"
-        assert result.usage.prompt_tokens == 500
-        assert result.usage.completion_tokens == 50
-        assert result.usage.total_tokens == 550
+        assert result.usage == TokenUsage(prompt_tokens=500, completion_tokens=50, total_tokens=550)
+        assert result.latency_ms > 0
+        assert result.raw["stop_reason"] == "end_turn"
+        assert [block["type"] for block in result.raw["content"]] == ["thinking", "text"]
 
-        payload = mock_client.post.call_args[1]["json"]
-        assert payload["model"] == "claude-opus-5"
-        assert "system" not in payload
+        request = anthropic_api.requests[0]
+        assert request.headers["x-api-key"] == "sk-ant-test"
+        assert request.headers["anthropic-version"] == "2023-06-01"
+        body = anthropic_api.body()
+        assert body["model"] == "claude-opus-5"
+        assert body["messages"] == [{"role": "user", "content": "extract data"}]
+        assert body["max_tokens"] == 4096
+        assert body["stream"] is True
+        assert "system" not in body
         # Current Claude models reject sampling parameters.
-        assert "temperature" not in payload
+        assert "temperature" not in body
 
     @pytest.mark.asyncio
-    async def test_call_with_system_prompt(self):
+    async def test_extract_sends_the_system_prompt_as_system(self, anthropic_api):
+        anthropic_api.replies.append(_anthropic_reply())
         p = AnthropicProvider(api_key="sk-ant-test")
-        mock_resp = _mock_anthropic_response()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        p._client = mock_client
 
-        await p._call(
-            [
-                {"role": "system", "content": "You are an extractor."},
-                {"role": "user", "content": "extract data"},
-            ],
-        )
+        result = await p.extract("extract data", system_prompt="You are an extractor.")
 
-        payload = mock_client.post.call_args[1]["json"]
-        assert payload["system"] == "You are an extractor."
+        assert result.parse_json() == {"ok": True}
+        body = anthropic_api.body()
+        assert body["system"] == "You are an extractor."
         # System message should NOT be in messages array
-        assert all(m["role"] != "system" for m in payload["messages"])
+        assert body["messages"] == [{"role": "user", "content": "extract data"}]
 
     @pytest.mark.asyncio
-    async def test_call_rate_limit(self):
+    async def test_call_rate_limit(self, anthropic_api):
+        anthropic_api.replies.append(
+            _anthropic_error(429, "rate_limit_error", "Too many requests", headers={"retry-after": "30"})
+        )
         p = AnthropicProvider(api_key="sk-ant-test")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 429
-        mock_resp.headers = {}
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        p._client = mock_client
 
-        with pytest.raises(LLMRateLimitError):
+        with pytest.raises(LLMRateLimitError, match="rate limit") as caught:
+            await p._call([{"role": "user", "content": "test"}])
+        assert caught.value.retry_after == 30.0
+        # The SDK does not retry by itself; the caller (FallbackChain) decides.
+        assert len(anthropic_api.requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_overloaded_is_retryable(self, anthropic_api):
+        anthropic_api.replies.append(
+            _anthropic_error(529, "overloaded_error", "Overloaded", headers={"retry-after": "7"})
+        )
+        p = AnthropicProvider(api_key="sk-ant-test")
+
+        with pytest.raises(LLMRateLimitError, match="overloaded") as caught:
+            await p._call([{"role": "user", "content": "test"}])
+        assert caught.value.retry_after == 7.0
+        assert len(anthropic_api.requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_overload_during_the_stream_is_retryable(self, anthropic_api):
+        overloaded = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+        anthropic_api.replies.append(_sse(*_message_events()[:5], overloaded))
+        p = AnthropicProvider(api_key="sk-ant-test")
+
+        with pytest.raises(LLMRateLimitError, match="overloaded"):
             await p._call([{"role": "user", "content": "test"}])
 
     @pytest.mark.asyncio
-    async def test_call_auth_error(self):
+    @pytest.mark.parametrize("status_code, error_type", [(401, "authentication_error"), (403, "permission_error")])
+    async def test_call_auth_error(self, anthropic_api, status_code, error_type):
+        anthropic_api.replies.append(_anthropic_error(status_code, error_type, "invalid x-api-key"))
         p = AnthropicProvider(api_key="bad-key")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 401
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        p._client = mock_client
 
-        with pytest.raises(LLMAuthError):
+        with pytest.raises(LLMAuthError, match=str(status_code)):
             await p._call([{"role": "user", "content": "test"}])
 
     @pytest.mark.asyncio
-    async def test_call_server_error(self):
+    async def test_call_server_error(self, anthropic_api):
+        anthropic_api.replies.append(_anthropic_error(500, "api_error", "Internal server error"))
         p = AnthropicProvider(api_key="sk-ant-test")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        mock_resp.text = "Internal error"
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        p._client = mock_client
 
-        with pytest.raises(LLMProviderError, match="500"):
+        with pytest.raises(LLMProviderError, match="500: Internal server error"):
             await p._call([{"role": "user", "content": "test"}])
 
     @pytest.mark.asyncio
-    async def test_close(self):
+    async def test_timeout(self, anthropic_api):
+        anthropic_api.replies.append(httpx2.ReadTimeout("timed out"))
+        p = AnthropicProvider(api_key="sk-ant-test", timeout=12.5)
+
+        with pytest.raises(LLMProviderError, match="timed out after 12.5s"):
+            await p._call([{"role": "user", "content": "test"}])
+        timeouts = anthropic_api.requests[0].extensions["timeout"]
+        assert timeouts == {"connect": 12.5, "read": 12.5, "write": 12.5, "pool": 12.5}
+
+    @pytest.mark.asyncio
+    async def test_connection_error(self, anthropic_api):
+        anthropic_api.replies.append(httpx2.ConnectError("connection refused"))
         p = AnthropicProvider(api_key="sk-ant-test")
-        mock_client = AsyncMock()
-        p._client = mock_client
+
+        with pytest.raises(LLMProviderError, match="request failed: ConnectError"):
+            await p._call([{"role": "user", "content": "test"}])
+
+    @pytest.mark.asyncio
+    async def test_close(self, anthropic_api):
+        p = AnthropicProvider(api_key="sk-ant-test")
+        client = p._get_client()
 
         await p.close()
-        mock_client.aclose.assert_awaited_once()
+
+        assert client.is_closed()
         assert p._client is None
 
     @pytest.mark.asyncio
-    async def test_posts_to_correct_endpoint(self):
+    async def test_close_no_client(self):
         p = AnthropicProvider(api_key="sk-ant-test")
-        mock_resp = _mock_anthropic_response()
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        p._client = mock_client
-
-        await p._call([{"role": "user", "content": "test"}])
-
-        call_args = mock_client.post.call_args
-        assert call_args[0][0] == "/v1/messages"
-
-    def test_get_client_headers(self):
-        p = AnthropicProvider(api_key="sk-ant-test")
-        import httpx
-
-        with patch.object(httpx, "AsyncClient") as mock_async:
-            mock_async.return_value = MagicMock()
-            p._get_client()
-            call_kwargs = mock_async.call_args[1]
-            assert call_kwargs["headers"]["x-api-key"] == "sk-ant-test"
-            assert "anthropic-version" in call_kwargs["headers"]
+        await p.close()  # Should not raise
 
 
 # ── Extract Method (shared behavior) ─────────────────────────────────────────
@@ -631,17 +726,18 @@ class TestFallbackChain:
             await chain._call([{"role": "user", "content": "test"}])
 
     @pytest.mark.asyncio
-    async def test_close_all_providers(self):
+    async def test_close_all_providers(self, anthropic_api):
         p1 = OpenAIProvider(api_key="sk-test")
         p1._client = AsyncMock()
         p2 = AnthropicProvider(api_key="sk-ant-test")
-        p2._client = AsyncMock()
+        sdk_client = p2._get_client()
 
         chain = FallbackChain([p1, p2])
         await chain.close()
 
         assert p1._client is None
         assert p2._client is None
+        assert sdk_client.is_closed()
 
     @pytest.mark.asyncio
     async def test_rate_limit_falls_back(self):
@@ -770,15 +866,6 @@ def _json_response(status_code, body, headers=None):
     return resp
 
 
-def _anthropic_body(text='{"ok": true}', stop_reason="end_turn", model="claude-opus-5"):
-    return {
-        "content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": text}],
-        "model": model,
-        "stop_reason": stop_reason,
-        "usage": {"input_tokens": 10, "output_tokens": 5},
-    }
-
-
 class TestOpenAIRequestShape:
     @pytest.mark.asyncio
     async def test_reasoning_models_get_max_completion_tokens_and_no_temperature(self):
@@ -861,11 +948,14 @@ class TestOpenAIRequestShape:
             await p._call([{"role": "user", "content": "x"}])
 
 
+_SCHEMA = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+
+
 class TestAnthropicRequestShape:
     @pytest.mark.asyncio
-    async def test_images_become_base64_image_blocks(self):
+    async def test_images_become_base64_image_blocks(self, anthropic_api):
+        anthropic_api.replies.append(_anthropic_reply())
         p = AnthropicProvider(api_key="k")
-        p._client = _client_returning(_json_response(200, _anthropic_body()))
         await p._call(
             [
                 {"role": "system", "content": "sys"},
@@ -878,81 +968,172 @@ class TestAnthropicRequestShape:
                 },
             ]
         )
-        payload = p._client.post.call_args[1]["json"]
-        blocks = payload["messages"][0]["content"]
+        body = anthropic_api.body()
+        blocks = body["messages"][0]["content"]
         assert blocks[0] == {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}}
         assert blocks[1] == {"type": "text", "text": "read this"}
-        assert payload["system"] == "sys"
+        assert body["system"] == "sys"
 
     @pytest.mark.asyncio
-    async def test_structured_output_effort_and_fallbacks_on_current_models(self):
-        from src.core.llm_provider import ANTHROPIC_FALLBACK_BETA, json_schema_format
-
-        schema = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+    async def test_structured_output_effort_and_fallbacks_on_current_models(self, anthropic_api):
+        anthropic_api.replies.append(_anthropic_reply())
         p = AnthropicProvider(model="claude-opus-5", api_key="k", effort="low")
-        p._client = _client_returning(_json_response(200, _anthropic_body()))
-        await p._call([{"role": "user", "content": "x"}], response_format=json_schema_format(schema))
-        call = p._client.post.call_args
-        payload = call[1]["json"]
-        assert payload["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": schema}}
-        assert payload["fallbacks"] == "default"
-        assert call[1]["headers"] == {"anthropic-beta": ANTHROPIC_FALLBACK_BETA}
-        assert "temperature" not in payload
+        await p._call([{"role": "user", "content": "x"}], response_format=json_schema_format(_SCHEMA))
+
+        request = anthropic_api.requests[0]
+        assert request.url == "https://api.anthropic.com/v1/messages?beta=true"
+        assert request.headers["anthropic-beta"] == ANTHROPIC_FALLBACK_BETA
+        body = anthropic_api.body()
+        assert body["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": _SCHEMA}}
+        assert body["fallbacks"] == "default"
+        assert "temperature" not in body
 
     @pytest.mark.asyncio
-    async def test_older_models_keep_temperature_and_skip_unsupported_features(self):
-        from src.core.llm_provider import json_schema_format
-
-        p = AnthropicProvider(model="claude-sonnet-4-20250514", api_key="k", effort="low")
-        p._client = _client_returning(_json_response(200, _anthropic_body()))
+    async def test_older_models_keep_temperature_and_skip_unsupported_features(self, anthropic_api):
+        anthropic_api.replies.append(_anthropic_reply(model="claude-sonnet-4-5"))
+        p = AnthropicProvider(model="claude-sonnet-4-5", api_key="k", effort="low")
         await p._call([{"role": "user", "content": "x"}], response_format=json_schema_format({"type": "object"}))
-        payload = p._client.post.call_args[1]["json"]
-        assert payload["temperature"] == 0.0
-        assert "output_config" not in payload and "fallbacks" not in payload
+
+        request = anthropic_api.requests[0]
+        assert request.url == "https://api.anthropic.com/v1/messages"
+        assert "anthropic-beta" not in request.headers
+        body = anthropic_api.body()
+        assert body["temperature"] == 0.0
+        assert "output_config" not in body and "fallbacks" not in body
 
     @pytest.mark.asyncio
-    async def test_no_fallbacks_through_a_proxy(self):
-        p = AnthropicProvider(model="claude-opus-5", api_key="k", base_url="https://llm-proxy.internal.example")
-        p._client = _client_returning(_json_response(200, _anthropic_body()))
+    @pytest.mark.parametrize(
+        "base_url, server_side_fallbacks",
+        [("https://llm-proxy.internal.example", True), ("https://api.anthropic.com", False)],
+        ids=["through-a-proxy", "turned-off"],
+    )
+    async def test_no_fallbacks(self, anthropic_api, base_url, server_side_fallbacks):
+        anthropic_api.replies.append(_anthropic_reply())
+        p = AnthropicProvider(
+            model="claude-opus-5", api_key="k", base_url=base_url, server_side_fallbacks=server_side_fallbacks
+        )
         await p._call([{"role": "user", "content": "x"}])
-        assert "fallbacks" not in p._client.post.call_args[1]["json"]
+
+        request = anthropic_api.requests[0]
+        assert request.url == f"{base_url}/v1/messages"
+        assert "anthropic-beta" not in request.headers
+        assert "fallbacks" not in anthropic_api.body()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stop_reason, message", [("refusal", "declined"), ("max_tokens", "ran out of tokens")])
-    async def test_refusals_and_truncation_are_provider_errors(self, stop_reason, message):
+    @pytest.mark.parametrize(
+        "events, message",
+        [
+            (_message_events(stop_reason="refusal"), "declined"),
+            (_message_events(stop_reason="max_tokens"), "ran out of tokens"),
+            (_message_events(text=""), "empty reply"),
+            # The stream closes before message_delta brings a stop reason.
+            (_message_events()[:-2], "ended before the reply was complete"),
+        ],
+        ids=["refusal", "max-tokens", "empty", "cut-short"],
+    )
+    async def test_unusable_replies_are_provider_errors(self, anthropic_api, events, message):
+        anthropic_api.replies.append(_sse(*events))
         p = AnthropicProvider(api_key="k")
-        p._client = _client_returning(_json_response(200, _anthropic_body(stop_reason=stop_reason)))
         with pytest.raises(LLMProviderError, match=message):
             await p._call([{"role": "user", "content": "x"}])
 
     @pytest.mark.asyncio
-    async def test_rejected_beta_is_dropped_and_retried(self):
-        rejected = _json_response(
-            400,
-            {
-                "type": "error",
-                "error": {
-                    "type": "invalid_request_error",
-                    "message": "Unexpected value(s) `server-side-fallback-2026-07-01` for the `anthropic-beta` header.",
-                },
-            },
-        )
+    async def test_rejected_beta_is_dropped_and_retried(self, anthropic_api):
+        anthropic_api.replies += [
+            _anthropic_error(
+                400,
+                "invalid_request_error",
+                "Unexpected value(s) `server-side-fallback-2026-07-01` for the `anthropic-beta` header.",
+            ),
+            _anthropic_reply(),
+        ]
         p = AnthropicProvider(model="claude-opus-5", api_key="k")
-        p._client = _client_returning(rejected, _json_response(200, _anthropic_body()))
+
         result = await p._call([{"role": "user", "content": "x"}])
+
         assert result.content == '{"ok": true}'
-        retry = p._client.post.call_args_list[1]
-        assert "fallbacks" not in retry[1]["json"] and "headers" not in retry[1]
+        rejected, retry = anthropic_api.requests
+        assert rejected.headers["anthropic-beta"] == ANTHROPIC_FALLBACK_BETA
+        assert retry.url == "https://api.anthropic.com/v1/messages"
+        assert "anthropic-beta" not in retry.headers
+        assert "fallbacks" not in anthropic_api.body(1)
 
     @pytest.mark.asyncio
-    async def test_overloaded_is_retryable(self):
-        p = AnthropicProvider(api_key="k")
-        p._client = _client_returning(
-            _json_response(529, {"error": {"type": "overloaded_error"}}, headers={"retry-after": "7"})
+    @pytest.mark.parametrize(
+        "complaint, retried_output_config",
+        [
+            (
+                "output_config.effort: Extra inputs are not permitted",
+                {"format": {"type": "json_schema", "schema": _SCHEMA}},
+            ),
+            ("output_config.format: structured outputs are not supported for this model", {"effort": "low"}),
+        ],
+        ids=["effort", "format"],
+    )
+    async def test_rejected_output_config_is_dropped_and_retried(self, anthropic_api, complaint, retried_output_config):
+        anthropic_api.replies += [_anthropic_error(400, "invalid_request_error", complaint), _anthropic_reply()]
+        p = AnthropicProvider(model="claude-opus-5", api_key="k", effort="low")
+
+        await p._call([{"role": "user", "content": "x"}], response_format=json_schema_format(_SCHEMA))
+
+        retry = anthropic_api.body(1)
+        assert retry["output_config"] == retried_output_config
+        assert retry["fallbacks"] == "default"
+
+    @pytest.mark.asyncio
+    async def test_rejected_temperature_is_dropped_and_retried(self, anthropic_api):
+        anthropic_api.replies += [
+            _anthropic_error(400, "invalid_request_error", "temperature: sampling is not supported for this model"),
+            _anthropic_reply(),
+        ]
+        p = AnthropicProvider(model="claude-sonnet-4-5", api_key="k")
+
+        await p._call([{"role": "user", "content": "x"}])
+
+        assert anthropic_api.body(0)["temperature"] == 0.0
+        assert "temperature" not in anthropic_api.body(1)
+
+    @pytest.mark.asyncio
+    async def test_a_400_that_names_nothing_to_drop_is_not_retried(self, anthropic_api):
+        anthropic_api.replies.append(
+            _anthropic_error(400, "invalid_request_error", "messages: roles must alternate between user and assistant")
         )
-        with pytest.raises(LLMRateLimitError) as caught:
+        p = AnthropicProvider(model="claude-opus-5", api_key="k")
+
+        with pytest.raises(LLMProviderError, match="400: messages: roles must alternate"):
             await p._call([{"role": "user", "content": "x"}])
-        assert caught.value.retry_after == 7.0
+        assert len(anthropic_api.requests) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error, message",
+        [
+            (httpx2.ReadTimeout("no data within the read timeout"), "timed out after 60.0s"),
+            (httpx2.RemoteProtocolError("peer closed connection"), "request failed: RemoteProtocolError"),
+        ],
+        ids=["read-timeout", "disconnect"],
+    )
+    async def test_a_stream_that_breaks_is_a_provider_error(self, anthropic_api, error, message):
+        anthropic_api.replies.append(_broken_stream(error))
+        p = AnthropicProvider(api_key="k")
+        with pytest.raises(LLMProviderError, match=message):
+            await p._call([{"role": "user", "content": "x"}])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            # A proxy that ignores "stream": true and answers with the whole message.
+            httpx2.Response(200, json={"type": "message", "content": [{"type": "text", "text": "{}"}]}),
+            httpx2.Response(200, headers=_SSE_HEADERS, content=b"event: message_start\ndata: {not json\n\n"),
+        ],
+        ids=["whole-message", "malformed-event"],
+    )
+    async def test_a_reply_that_is_not_a_message_stream_is_a_provider_error(self, anthropic_api, reply):
+        anthropic_api.replies.append(reply)
+        p = AnthropicProvider(api_key="k", base_url="https://llm-proxy.internal.example")
+        with pytest.raises(LLMProviderError, match="not a message stream"):
+            await p._call([{"role": "user", "content": "x"}])
 
     def test_capability_predicates(self):
         from src.core.llm_provider import (
@@ -995,6 +1176,14 @@ class TestFailureWrapping:
         fallback = OpenAIProvider(model="fallback", api_key="k")
         fallback._client = _client_returning(_mock_openai_response(model="fallback"))
         result = await FallbackChain([primary, fallback]).extract("x")
+        assert result.model == "fallback"
+
+    @pytest.mark.asyncio
+    async def test_chain_falls_back_when_the_anthropic_stream_breaks(self, anthropic_api):
+        anthropic_api.replies.append(_broken_stream(httpx2.ReadError("connection reset by peer")))
+        fallback = OpenAIProvider(model="fallback", api_key="k")
+        fallback._client = _client_returning(_mock_openai_response(model="fallback"))
+        result = await FallbackChain([AnthropicProvider(api_key="k"), fallback]).extract("x")
         assert result.model == "fallback"
 
     @pytest.mark.asyncio

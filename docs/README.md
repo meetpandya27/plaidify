@@ -34,7 +34,7 @@ no credentials (a token in the path or body is the capability).
 | | `GET /health/detailed` | `HEALTH_CHECK_TOKEN`, JWT or key (open outside production while no token is set; 404 in production without one) |
 | | `GET /metrics` (not in the schema) | `METRICS_TOKEN` when set |
 | | `POST /blueprints/generate` | admin |
-| Accounts | `POST /auth/register`, `/auth/token` (form), `/auth/oauth2`, `/auth/refresh`, `/auth/forgot-password`, `/auth/reset-password` | public (rate-limited) |
+| Accounts | `POST /auth/register`, `/auth/verify-email`, `/auth/token` (form), `/auth/oauth2`, `/auth/refresh`, `/auth/forgot-password`, `/auth/reset-password` | public (rate-limited) |
 | | `GET`/`DELETE /auth/me`, `GET /auth/sessions`, `POST /auth/sessions/revoke-all` | JWT |
 | Direct connect | `POST /connect` | JWT or key, or the `link_token` of a live hosted session |
 | | `POST /encryption/session`, `GET /encryption/public_key/{link_token}`, `POST /mfa/submit`, `GET /mfa/status/{session_id}` | public (rate-limited; the link token or MFA session id is the capability) |
@@ -66,6 +66,21 @@ Contract rules that apply everywhere:
 - Scopes are lists of field names, `"balance"` or `"read:balance"`; omitted
   means every field, `[]` means none.
 - Timestamps are ISO 8601 with a UTC offset.
+
+### Sign-up
+
+`POST /auth/register {username, email, password}` creates the account and
+returns its tokens, unless sign-ups prove their address first
+(`REGISTRATION_EMAIL_VERIFICATION`, on by default in production). Then it
+answers `202 {"status": "verification_sent", "detail": …}` whether or not the
+username or address is taken, and emails the address: a one-time token (a
+link to `EMAIL_VERIFICATION_URL` when set; valid 24 hours, and a new sign-up
+for the address replaces it), or a note that the address already has an
+account or that the username is taken. `POST /auth/verify-email {token}`
+creates the account and returns its tokens; an unknown, used or expired token
+is `400`, and `409` means the username or address was taken in the meantime
+(register again). While verification is off, `/auth/verify-email` answers
+`404` and a taken username or address is `400` at registration.
 
 ### Webhooks
 

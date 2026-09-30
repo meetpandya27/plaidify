@@ -24,6 +24,7 @@ export type {
   MfaSubmitResult,
   MFAChallenge,
   AuthToken,
+  RegistrationPending,
   UserProfile,
   LinkInfo,
   LinkSession,

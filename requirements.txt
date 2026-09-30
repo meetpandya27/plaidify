@@ -29,10 +29,7 @@ psycopg2-binary==2.9.12
 
 # ── Security ──────────────────────────────────────────────────────────────────
 cryptography==50.0.1
-# passlib is unmaintained and holds bcrypt below 5.0; replacing it is an
-# application change (src/auth_utils.py), tracked separately.
-passlib[bcrypt]==1.7.4
-bcrypt==4.3.0
+bcrypt==5.0.0
 PyJWT==2.15.1
 slowapi==0.1.9
 
@@ -41,6 +38,12 @@ httpx==0.28.1
 beautifulsoup4==4.13.4
 lxml==6.1.0
 sse-starlette==2.4.1
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+# The official SDK for the Anthropic provider (OpenAI calls use httpx above).
+anthropic==1.9.0
+# The Anthropic provider catches httpx2's transport errors mid-stream, so it imports it directly.
+httpx2==2.13.1
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
 redis==5.2.1

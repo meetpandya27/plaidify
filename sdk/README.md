@@ -55,6 +55,13 @@ async with Plaidify(server_url="http://localhost:8000") as pfy:
 Managing API keys, agents, webhooks and refresh schedules needs a user access
 token (`login()`), not an API key.
 
+`register(username, email, password)` returns an `AuthToken` (and uses it)
+when the server creates the account at once. A server that has sign-ups prove
+their email address first (`REGISTRATION_EMAIL_VERIFICATION`, the production
+default) returns a `RegistrationPending` instead, whether or not the username
+or address was free, and emails the address; `verify_email(token)` with the
+token from that email creates the account and returns its `AuthToken`.
+
 ## Hosted Link Flow
 
 Preferred production pattern:

@@ -1,10 +1,10 @@
-"""Outbound email over SMTP (password-reset messages).
+"""Outbound email over SMTP (password-reset and sign-up messages).
 
 Configured with SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD and
 SMTP_FROM. The connection is upgraded with STARTTLS (certificate verified
 against the system roots) before logging in or sending, unless
 SMTP_STARTTLS=false for a local relay. Nothing here logs a message body: it
-can carry a one-time reset token.
+can carry a one-time token.
 """
 
 from __future__ import annotations
@@ -56,15 +56,24 @@ def send_email(to_address: str, subject: str, body: str) -> None:
         smtp.send_message(message)
 
 
-def password_reset_link(token: str) -> str | None:
-    """The reset page URL for ``token`` (PASSWORD_RESET_URL with ``{token}`` filled in), if configured."""
-    template = settings.password_reset_url
+def _token_link(template: str | None, token: str) -> str | None:
+    """``template`` with ``{token}`` filled in (or a ``token`` query parameter added), if it is set."""
     if not template:
         return None
     encoded = quote(token, safe="")
     if "{token}" in template:
         return template.replace("{token}", encoded)
     return f"{template}{'&' if '?' in template else '?'}token={encoded}"
+
+
+def password_reset_link(token: str) -> str | None:
+    """The reset page URL for ``token`` (PASSWORD_RESET_URL with ``{token}`` filled in), if configured."""
+    return _token_link(settings.password_reset_url, token)
+
+
+def email_verification_link(token: str) -> str | None:
+    """The sign-up page URL for ``token`` (EMAIL_VERIFICATION_URL with ``{token}`` filled in), if configured."""
+    return _token_link(settings.email_verification_url, token)
 
 
 def send_password_reset_email(to_address: str, token: str, *, expires_minutes: int) -> None:
@@ -82,3 +91,46 @@ def send_password_reset_email(to_address: str, token: str, *, expires_minutes: i
         "ignore this email: your password stays as it is.\n"
     )
     send_email(to_address, f"Reset your {settings.app_name} password", body)
+
+
+def send_sign_up_verification(to_address: str, token: str, *, username: str, expires_hours: int) -> None:
+    """Email the one-time token that finishes a sign-up (as a link when EMAIL_VERIFICATION_URL is set).
+
+    The username is named so that someone who did not start this sign-up can
+    tell it is not theirs: the link creates the account with the password
+    chosen at sign-up.
+    """
+    link = email_verification_link(token)
+    how = (
+        f"Open this link to finish signing up:\n\n    {link}\n"
+        if link
+        else f"Use this one-time code to finish signing up:\n\n    {token}\n"
+    )
+    body = (
+        f'Someone asked to create a {settings.app_name} account with the username "{username}" for this '
+        "email address.\n\n"
+        f"{how}\n"
+        f"It works once and expires in {expires_hours} hours. If you did not ask for this, ignore this "
+        "email: no account is created.\n"
+    )
+    send_email(to_address, f"Finish signing up for {settings.app_name}", body)
+
+
+def send_sign_up_address_in_use(to_address: str) -> None:
+    """Tell an account's address that someone tried to sign up with it; nothing was created."""
+    body = (
+        f"Someone tried to create a {settings.app_name} account with this email address, which already has "
+        "an account. If it was you, sign in instead, or reset your password if you have forgotten it.\n\n"
+        "If it was not you, ignore this email: nothing has changed.\n"
+    )
+    send_email(to_address, f"Sign-up attempt with your {settings.app_name} address", body)
+
+
+def send_sign_up_username_taken(to_address: str) -> None:
+    """Tell a new address that the username its sign-up asked for is taken; nothing was created."""
+    body = (
+        f"Someone asked to create a {settings.app_name} account for this email address, but the username "
+        "they chose is taken. To sign up, register again with another username.\n\n"
+        "If you did not ask for this, ignore this email.\n"
+    )
+    send_email(to_address, f"Choose another {settings.app_name} username", body)

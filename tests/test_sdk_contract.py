@@ -9,17 +9,21 @@ FastAPI's routing, dependencies and models exactly as over the network.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import uuid
+from unittest.mock import patch
 
 import httpx
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "sdk"))
 
-from plaidify import Plaidify  # noqa: E402
+from plaidify import Plaidify, RegistrationPending  # noqa: E402
 from plaidify.exceptions import InvalidTokenError  # noqa: E402
 
+import src.mailer as mailer  # noqa: E402
+import src.routers.auth as auth_router  # noqa: E402
 from src import session_store  # noqa: E402
 from src.database import AccessToken, Link, SessionLocal, User, encrypt_credential_for_user  # noqa: E402
 from src.main import app  # noqa: E402
@@ -78,6 +82,23 @@ async def test_register_login_and_bearer_auth():
         token = await fresh.login(username, PASSWORD)
         assert token.access_token
         assert (await fresh.me()).id == me.id
+
+
+async def test_verified_sign_up_through_register_and_verify_email():
+    mails = []
+    username = f"sdk-{uuid.uuid4().hex[:10]}"
+    with (
+        patch.object(auth_router.settings, "registration_email_verification", True),
+        patch.object(mailer.settings, "smtp_host", "smtp.example.com"),
+        patch.object(mailer.settings, "smtp_from", "no-reply@example.com"),
+        patch.object(mailer, "send_email", side_effect=lambda to, subject, body: mails.append(body)),
+    ):
+        async with _sdk() as pfy:
+            pending = await pfy.register(username, f"{username}@example.com", PASSWORD)
+            assert isinstance(pending, RegistrationPending) and pending.status == "verification_sent"
+            token = re.search(r"finish signing up:\n\n    (\S+)\n", mails[0]).group(1)
+            assert (await pfy.verify_email(token)).access_token
+            assert (await pfy.me()).username == username
 
 
 async def test_api_key_travels_in_x_api_key_and_honours_expires_days():

@@ -98,11 +98,21 @@ export interface MFAChallenge {
   prompt?: string;
 }
 
-/** POST /auth/register, POST /auth/token */
+/** POST /auth/register, POST /auth/verify-email, POST /auth/token */
 export interface AuthToken {
   access_token: string;
   refresh_token?: string | null;
   token_type: string;
+}
+
+/**
+ * POST /auth/register (202) while the server has sign-ups prove their email
+ * address first. The same whether or not the username or address was free;
+ * finish with `verifyEmail(token)`, the token coming from the email.
+ */
+export interface RegistrationPending {
+  status: "verification_sent";
+  detail: string;
 }
 
 /** GET /auth/me */

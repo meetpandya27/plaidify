@@ -1103,6 +1103,27 @@ class PasswordResetToken(Base):
     user = relationship("User")
 
 
+class PendingRegistration(Base):
+    """A sign-up waiting for its email address to be proven (POST /auth/verify-email).
+
+    Holds what the account will be created with; of the emailed one-time token
+    only its SHA-256 is stored. One row per address: a new sign-up for it
+    replaces the row, and so the earlier token. The username is not reserved:
+    whichever sign-up is verified first gets it.
+    """
+
+    __tablename__ = "pending_registrations"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String, nullable=False)
+    # As the users table stores it: the address as validated (domain lowercased).
+    email = Column(String, unique=True, nullable=False)
+    hashed_password = Column(Text, nullable=False)
+    token_hash = Column(String(64), unique=True, nullable=False)
+    created_at = Column(UTCDateTime(), nullable=False, default=utcnow)
+    expires_at = Column(UTCDateTime(), nullable=False)
+
+
 class Link(Base):
     """A link token representing a user's intent to connect a site."""
 

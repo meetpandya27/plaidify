@@ -197,20 +197,22 @@ class TestBootstrapUser:
             appmod._bootstrap_user()  # no-op, no error
 
 
-# ── bcrypt shim ──────────────────────────────────────────────────────────────
+# ── Password hashing (bcrypt, no passlib) ─────────────────────────────────────
 
 
-class TestBcryptShim:
+class TestPasswordHashing:
     def test_password_hash_and_verify(self):
         from src.dependencies import get_password_hash, verify_password
 
         hashed = get_password_hash("Sup3r!secret")
+        assert hashed.startswith("$2b$12$")
         assert verify_password("Sup3r!secret", hashed)
         assert not verify_password("wrong", hashed)
 
-    def test_bcrypt_about_shim_present(self):
-        import bcrypt
+    def test_hashes_made_by_passlib_still_verify(self):
+        from src.dependencies import verify_password
 
-        # The shim ensures passlib can read the version without warning.
-        assert hasattr(bcrypt, "__about__")
-        assert hasattr(bcrypt.__about__, "__version__")
+        # Produced by passlib 1.7.4's bcrypt handler (rounds lowered to keep the test fast).
+        passlib_hash = "$2b$04$nVjd4k8eVXYNhS7Ke/O6NuM0HdykHA72eKOMoRsYlLszm1h/Izrs2"
+        assert verify_password("Sup3r!secret", passlib_hash)
+        assert not verify_password("Sup3r!secreT", passlib_hash)

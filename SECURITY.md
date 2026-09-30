@@ -48,7 +48,17 @@ Master key (ENCRYPTION_KEY, or a managed KMS key)
 
 1. **Registration**: `POST /auth/register` (off in production unless
    `REGISTRATION_ENABLED` is set). Passwords need upper and lower case, a digit
-   and a special character; bcrypt-hashed.
+   and a special character; bcrypt-hashed. With
+   `REGISTRATION_EMAIL_VERIFICATION` (on by default in production) every
+   sign-up gets the same `202`, in the same time, whether or not the username
+   or address is taken; only the address learns which, by email: a one-time
+   token (24 hours, stored as a SHA-256 digest; a new sign-up for the address
+   replaces it), or a note that the address already has an account or that the
+   username is taken. `POST /auth/verify-email` with the token creates the
+   account and marks the address verified. The email names the username, so
+   a sign-up someone else started for the address can be recognised (see
+   Known limits). With it off the account is created at once, and a taken
+   username or address answers `400`.
 2. **Sign-in**: `POST /auth/token` (OAuth2 password form) returns an access
    token and a refresh token. Failed attempts are counted per username and
    client address (5 in 15 minutes locks that pair for 15 minutes) and per
@@ -161,7 +171,7 @@ when `REDIS_URL` is set. The limiter fails open if Redis stops answering.
 
 | Endpoint | Limit |
 |----------|-------|
-| `POST /auth/register` | 3/minute |
+| `POST /auth/register`, `POST /auth/verify-email` | 3/minute |
 | `POST /auth/token`, `POST /auth/oauth2`, `POST /auth/refresh` | `RATE_LIMIT_AUTH` (5/minute) |
 | `POST /auth/forgot-password` / `POST /auth/reset-password` | 3/minute / 5/minute |
 | `POST /connect` | `RATE_LIMIT_CONNECT` (10/minute) |
@@ -287,6 +297,7 @@ launch tokens. Changing `LINK_LAUNCH_SECRET` only invalidates launch tokens
 | Stored access-job results | `RESULT_RETENTION_DAYS` (30) | Daily; the job row (status, timings) stays |
 | Refresh tokens | Until expiry (7 days); revoked ones are kept until then so reuse is detected | Hourly |
 | Password-reset tokens | 1 hour, single use | Hourly |
+| Pending sign-ups (email verification) | 24 hours, single use; a new sign-up for the address replaces the row | Hourly |
 | Sign-in throttle rows | A day after the last failure, once no lock is active | Hourly |
 | Webhook deliveries | `WEBHOOK_DELIVERY_RETENTION_DAYS` (7) after they finish | By the outbox |
 | Link sessions, one-time RSA keys | 10 minutes | Redis TTL (or in-memory expiry in development) |
@@ -301,7 +312,12 @@ The cleanup jobs run under leases: each runs in one process at a time.
 
 These are open, and deliberately written down:
 
-- Registration still reveals whether a username or email is taken.
+- With `REGISTRATION_EMAIL_VERIFICATION=false` (the default outside
+  production), registration reveals whether a username or email is taken.
+- A verification link creates the account with the username and password of
+  whoever started the sign-up: following a link for a sign-up you did not
+  start gives someone else an account on your address (the email names the
+  username so it can be recognised; a password reset takes the account back).
 - A blind GET can still leave the browser on a redirect hop before the run
   is stopped (the policy checks each hop, but the first request of a
   refused redirect has already been sent).

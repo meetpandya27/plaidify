@@ -14,11 +14,11 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from limits import parse as parse_rate_limit
-from passlib.context import CryptContext
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
@@ -68,21 +68,19 @@ limiter = Limiter(
 
 # ── Password Hashing ─────────────────────────────────────────────────────────
 
-# passlib 1.7.4 reads ``bcrypt.__about__.__version__`` which bcrypt 4.x removed,
-# producing a spurious "(trapped) error reading bcrypt version" warning on first
-# hash. Shim the attribute so passlib reads the real version (hashing works
-# either way; this only silences the false-alarm log).
-try:
-    import bcrypt as _bcrypt
+# bcrypt directly (passlib is unmaintained). Stored hashes are standard
+# "$2b$" strings, so accounts hashed through passlib verify unchanged.
+BCRYPT_ROUNDS = 12
 
-    if not hasattr(_bcrypt, "__about__"):
-        import types as _types
 
-        _bcrypt.__about__ = _types.SimpleNamespace(__version__=getattr(_bcrypt, "__version__", "unknown"))
-except Exception:  # pragma: no cover - never block over a logging shim
-    pass
+def _bcrypt_hash(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode("ascii")
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12, bcrypt__ident="2b")
+
+def _bcrypt_matches(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("ascii"))
+
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 
@@ -100,12 +98,12 @@ def get_password_hash(password: str) -> str:
     """Hash a password using bcrypt. Refuses passwords bcrypt would truncate."""
     if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
         raise ValueError(f"Passwords longer than {MAX_PASSWORD_BYTES} bytes cannot be hashed with bcrypt.")
-    return pwd_context.hash(password)
+    return _bcrypt_hash(password)
 
 
 @functools.lru_cache(maxsize=1)
 def _dummy_password_hash() -> str:
-    return pwd_context.hash(secrets.token_urlsafe(24))
+    return _bcrypt_hash(secrets.token_urlsafe(24))
 
 
 def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
@@ -118,12 +116,12 @@ def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool
     """
     if not hashed_password or len(plain_password.encode("utf-8")) > MAX_PASSWORD_BYTES:
         try:
-            pwd_context.verify(plain_password, _dummy_password_hash())
+            _bcrypt_matches("timing-equalizer", _dummy_password_hash())
         except (ValueError, TypeError):
             pass
         return False
     try:
-        return pwd_context.verify(plain_password, hashed_password)
+        return _bcrypt_matches(plain_password, hashed_password)
     except (ValueError, TypeError):
         return False
 
