@@ -169,6 +169,9 @@ def setup_logging(level: str = "INFO", log_format: str = "json") -> None:
     if not any(isinstance(f, AccessLogRedactFilter) for f in access_logger.filters):
         access_logger.addFilter(AccessLogRedactFilter())
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    # The anthropic SDK logs every request body at DEBUG, and an extraction
+    # request carries the page's content.
+    logging.getLogger("anthropic").setLevel(max(root_logger.level, logging.INFO))
 
 
 def get_logger(name: str) -> logging.Logger:

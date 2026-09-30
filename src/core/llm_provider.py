@@ -50,7 +50,6 @@ _llm_breaker = CircuitBreaker(
 
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
-ANTHROPIC_API_VERSION = "2023-06-01"
 ANTHROPIC_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 _ANTHROPIC_FIRST_PARTY_HOSTS = frozenset({"api.anthropic.com"})
 _MAX_RETRY_AFTER_SECONDS = 300.0
@@ -593,8 +592,17 @@ def _anthropic_content(content: Any) -> Any:
     return images + others
 
 
+def _anthropic_error_message(error: Any) -> str:
+    """The API's own message from an SDK status error (the raw body when that is not the usual JSON)."""
+    body = error.body
+    detail = body.get("error") if isinstance(body, dict) else None
+    if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+        return detail["message"]
+    return body if isinstance(body, str) else error.message
+
+
 class AnthropicProvider(BaseLLMProvider):
-    """Anthropic Claude provider (Messages API over raw HTTP)."""
+    """Anthropic Claude provider (Messages API through the official ``anthropic`` SDK)."""
 
     provider_name = "anthropic"
 
@@ -624,16 +632,15 @@ class AnthropicProvider(BaseLLMProvider):
 
     def _get_client(self):
         if self._client is None:
-            import httpx
+            import anthropic
 
-            self._client = httpx.AsyncClient(
+            # No retries inside the SDK: rate limits and overloads go back to the
+            # caller, where FallbackChain backs off or moves on to the next model.
+            self._client = anthropic.AsyncAnthropic(
+                api_key=self.api_key,
                 base_url=self.base_url,
-                headers={
-                    "x-api-key": self.api_key,
-                    "anthropic-version": ANTHROPIC_API_VERSION,
-                    "Content-Type": "application/json",
-                },
                 timeout=self.timeout,
+                max_retries=0,
             )
         return self._client
 
@@ -645,13 +652,14 @@ class AnthropicProvider(BaseLLMProvider):
             and bool(_ANTHROPIC_REFUSAL_CLASSIFIERS.match(_claude_name(self.model)))
         )
 
-    def _payload(
+    def _params(
         self,
         messages: List[Dict[str, Any]],
         max_tokens: Optional[int],
         temperature: Optional[float],
         response_format: Optional[Dict[str, Any]],
-    ) -> tuple[Dict[str, Any], Dict[str, str]]:
+    ) -> Dict[str, Any]:
+        """Keyword arguments for ``messages.stream`` (``beta.messages.stream`` when they carry ``fallbacks``)."""
         # Anthropic uses a separate 'system' parameter
         system_text = None
         user_messages = []
@@ -661,15 +669,17 @@ class AnthropicProvider(BaseLLMProvider):
             else:
                 user_messages.append({**msg, "content": _anthropic_content(msg.get("content"))})
 
-        payload: Dict[str, Any] = {
+        params: Dict[str, Any] = {
             "model": self.model,
             "messages": user_messages,
             "max_tokens": max_tokens or self.max_tokens,
         }
         if system_text:
-            payload["system"] = system_text
+            params["system"] = system_text
         if anthropic_accepts_sampling(self.model):
-            payload["temperature"] = temperature if temperature is not None else self.temperature
+            # The SDK no longer takes sampling arguments; the models that still
+            # accept temperature read it from the request body.
+            params["extra_body"] = {"temperature": temperature if temperature is not None else self.temperature}
 
         output_config: Dict[str, Any] = {}
         effort = anthropic_effort(self.model, self.effort)
@@ -682,38 +692,59 @@ class AnthropicProvider(BaseLLMProvider):
         ):
             output_config["format"] = {"type": "json_schema", "schema": response_format["schema"]}
         if output_config:
-            payload["output_config"] = output_config
+            params["output_config"] = output_config
 
-        headers: Dict[str, str] = {}
         if self._wants_server_side_fallbacks():
-            payload["fallbacks"] = "default"
-            headers["anthropic-beta"] = ANTHROPIC_FALLBACK_BETA
-        return payload, headers
+            params["betas"] = [ANTHROPIC_FALLBACK_BETA]
+            params["fallbacks"] = "default"
+        return params
 
     @staticmethod
-    def _adapt(payload: Dict[str, Any], headers: Dict[str, str], resp: Any) -> bool:
-        """Drop the parameter a 400 complains about; True if the call is worth retrying."""
-        _param, message = _error_body(resp)
-        output_config = payload.get("output_config") or {}
+    def _adapt(params: Dict[str, Any], message: str) -> bool:
+        """Drop the parameter a 400's error ``message`` complains about; True if the call is worth retrying."""
+        message = message.lower()
+        output_config = params.get("output_config") or {}
+        sampling = params.get("extra_body") or {}
 
-        if ("fallback" in message or "anthropic-beta" in message) and "fallbacks" in payload:
-            payload.pop("fallbacks")
-            headers.pop("anthropic-beta", None)
+        if ("fallback" in message or "anthropic-beta" in message) and "fallbacks" in params:
+            params.pop("fallbacks")
+            params.pop("betas", None)
             return True
-        if ("temperature" in message or "top_p" in message or "sampling" in message) and "temperature" in payload:
-            payload.pop("temperature")
+        if ("temperature" in message or "top_p" in message or "sampling" in message) and "temperature" in sampling:
+            params.pop("extra_body")
             return True
         if "effort" in message and "effort" in output_config:
             output_config.pop("effort")
             if not output_config:
-                payload.pop("output_config", None)
+                params.pop("output_config", None)
             return True
         if ("output_config" in message or "format" in message or "schema" in message) and "format" in output_config:
             output_config.pop("format")
             if not output_config:
-                payload.pop("output_config", None)
+                params.pop("output_config", None)
             return True
         return False
+
+    def _status_error(self, error: Any) -> LLMProviderError:
+        """The LLMProviderError for an error status from the API, or an error event in its stream."""
+        status = error.status_code
+        # An overload during the stream arrives as an error event on a 200 response.
+        if status in (429, 529) or error.type == "overloaded_error":
+            return LLMRateLimitError(
+                "Anthropic rate limit exceeded" if status == 429 else "Anthropic API overloaded",
+                retry_after=parse_retry_after(error.response.headers),
+            )
+        if status in (401, 403):
+            return LLMAuthError(f"Anthropic authentication failed: {status}")
+        return LLMProviderError(f"Anthropic API error {status}: {_anthropic_error_message(error)[:500]}")
+
+    async def _stream(self, client: Any, params: Dict[str, Any]) -> Any:
+        """Send one request and read its event stream through to the final message."""
+        # Streamed, the read timeout bounds the gap between events rather than
+        # the whole reply, so a long answer or a long think can finish.
+        messages_api = client.beta.messages if "fallbacks" in params else client.messages
+        async with messages_api.stream(**params) as stream:
+            return await stream.get_final_message()
 
     async def _call(
         self,
@@ -723,68 +754,66 @@ class AnthropicProvider(BaseLLMProvider):
         temperature: Optional[float] = None,
         response_format: Optional[Dict[str, Any]] = None,
     ) -> LLMResponse:
+        import anthropic
+        import httpx2
+
         client = self._get_client()
-        payload, headers = self._payload(messages, max_tokens, temperature, response_format)
+        params = self._params(messages, max_tokens, temperature, response_format)
 
         start = time.monotonic()
         for _attempt in range(_MAX_PARAMETER_RETRIES + 1):
-            if headers:
-                resp = await self._post(client, "/v1/messages", payload, headers=headers)
-            else:
-                resp = await self._post(client, "/v1/messages", payload)
-            if resp.status_code == 400 and _attempt < _MAX_PARAMETER_RETRIES and self._adapt(payload, headers, resp):
-                logger.info("Anthropic rejected a parameter for %s; retrying without it", self.model)
-                continue
+            try:
+                message = await self._stream(client, params)
+            except anthropic.BadRequestError as error:
+                if _attempt < _MAX_PARAMETER_RETRIES and self._adapt(params, _anthropic_error_message(error)):
+                    logger.info("Anthropic rejected a parameter for %s; retrying without it", self.model)
+                    continue
+                raise self._status_error(error) from error
+            except anthropic.APIStatusError as error:
+                raise self._status_error(error) from error
+            # The SDK wraps a failure to send the request; one that breaks the
+            # stream later arrives as the raw httpx2 error.
+            except (anthropic.APITimeoutError, httpx2.TimeoutException) as error:
+                raise LLMProviderError(f"{self.provider_name} request timed out after {self.timeout}s") from error
+            except (anthropic.APIConnectionError, httpx2.HTTPError) as error:
+                failure = type(error.__cause__ or error).__name__
+                raise LLMProviderError(f"{self.provider_name} request failed: {failure}") from error
+            except (AssertionError, LookupError, RuntimeError, ValueError) as error:
+                # get_final_message() over a body that is not an event stream (a
+                # proxy that ignored "stream": true) or over a malformed event.
+                raise LLMProviderError("Anthropic returned a reply that is not a message stream") from error
             break
         latency_ms = (time.monotonic() - start) * 1000
 
-        if resp.status_code in (429, 529):
-            raise LLMRateLimitError(
-                "Anthropic rate limit exceeded" if resp.status_code == 429 else "Anthropic API overloaded",
-                retry_after=parse_retry_after(resp.headers),
-            )
-        if resp.status_code in (401, 403):
-            raise LLMAuthError(f"Anthropic authentication failed: {resp.status_code}")
-        if resp.status_code != 200:
-            raise LLMProviderError(f"Anthropic API error {resp.status_code}: {_error_excerpt(resp)}")
-
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise LLMProviderError("Anthropic returned a body that is not JSON") from exc
-        if not isinstance(data, dict):
-            raise LLMProviderError("Anthropic returned an unexpected response shape")
-
-        stop_reason = data.get("stop_reason")
-        if stop_reason == "refusal":
-            raise LLMProviderError(f"Anthropic model {data.get('model', self.model)} declined the request")
-        if stop_reason == "max_tokens":
+        if message.stop_reason == "refusal":
+            raise LLMProviderError(f"Anthropic model {message.model or self.model} declined the request")
+        if message.stop_reason == "max_tokens":
             raise LLMProviderError(f"Anthropic model {self.model} ran out of tokens before finishing its reply")
+        if message.stop_reason is None:
+            # A finished message always has a stop reason; the stream closed early.
+            raise LLMProviderError(f"Anthropic model {self.model} stream ended before the reply was complete")
 
-        content_blocks = data.get("content") or []
-        text = "".join(
-            block.get("text", "") for block in content_blocks if isinstance(block, dict) and block.get("type") == "text"
-        )
+        text = "".join(block.text for block in message.content if block.type == "text")
         if not text.strip():
             raise LLMProviderError(f"Anthropic model {self.model} returned an empty reply")
-        usage = data.get("usage") or {}
+        usage = message.usage
 
         return LLMResponse(
             content=text,
-            model=data.get("model", self.model),
+            model=message.model or self.model,
             usage=TokenUsage(
-                prompt_tokens=usage.get("input_tokens", 0),
-                completion_tokens=usage.get("output_tokens", 0),
-                total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                prompt_tokens=usage.input_tokens,
+                completion_tokens=usage.output_tokens,
+                total_tokens=usage.input_tokens + usage.output_tokens,
             ),
             latency_ms=latency_ms,
             provider=self.provider_name,
-            raw=data,
+            raw=message.to_dict(),
         )
 
     async def close(self) -> None:
         if self._client is not None:
-            await self._client.aclose()
+            await self._client.close()
             self._client = None
 
 

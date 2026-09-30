@@ -71,6 +71,7 @@ upgrading.
 - Scheduled refresh runs from the database under a lease in one process; the webhook outbox and the maintenance jobs run under leases too (`src/background_services.py`).
 - The executor serves `/metrics` and `/health` on `ACCESS_WORKER_METRICS_PORT` (9101); metrics use Prometheus multiprocess mode, so one scrape covers every gunicorn worker.
 - The hosted page's MFA, "Try again" and event delivery work; the live-events stream no longer blocks a worker; browser crashes no longer jam the pool; wrong passwords and MFA rejections are detected.
+- The Anthropic provider calls the Messages API through the official `anthropic` SDK (1.9.0) instead of raw HTTP, streaming each reply. Requests, errors, retries and server-side fallbacks behave as before; a stream that breaks or ends early counts as a failed call; the SDK's DEBUG logging, which includes request bodies (page content), stays off.
 
 ### Ops and CI
 - CI: lint of the whole repository, a lock-drift check with `pip-audit` and `npm audit`, tests on Python 3.11–3.13 with Redis, a Playwright job (hosted-link E2E, engine browser tests, the demo), a PostgreSQL migrations job, a container smoke test, client jobs (hosted page, JavaScript, Python, Swift, Android SDKs), configuration checks, CodeQL (Python, JavaScript/TypeScript, Actions) and a weekly dependency audit. Actions are pinned to commit SHAs.
