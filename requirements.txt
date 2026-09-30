@@ -42,6 +42,8 @@ sse-starlette==2.4.1
 # ── LLM ───────────────────────────────────────────────────────────────────────
 # The official SDK for the Anthropic provider (OpenAI calls use httpx above).
 anthropic==1.9.0
+# The Anthropic provider catches httpx2's transport errors mid-stream, so it imports it directly.
+httpx2==2.13.1
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
 redis==5.2.1
