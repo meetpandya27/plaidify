@@ -426,6 +426,124 @@ class TestBrowserGuards:
             await pool.release("redirect")
 
     @pytest.mark.asyncio
+    async def test_a_refused_redirect_hop_is_never_requested(self):
+        """The Location of a refused redirect is not requested, including a second hop."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        from src.core.browser_pool import BrowserPool
+        from src.core.network_policy import AddressPolicy
+        from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
+
+        class RefuseLocalhostName(AddressPolicy):
+            def __init__(self):
+                super().__init__(block_private=True, allow_loopback=True)
+
+            async def host_block_reason(self, host):
+                if host == "localhost":
+                    return "private address"
+                return await super().host_block_reason(host)
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = self.path.split("?", 1)[0]
+                self.server.hits.append(path)
+                port = self.server.server_address[1]
+                if path == "/go":
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{port}/mid")
+                elif path == "/mid":
+                    self.send_response(302)
+                    self.send_header("Location", f"http://localhost:{port}/secret")
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"secret-body")
+                    return
+                self.end_headers()
+
+            def log_message(self, fmt, *args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.hits = []
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            async with BrowserPool() as pool:
+                policy = ReadOnlyExecutionPolicy(enabled=True, phase=ExecutionPhase.READ)
+                lease = await pool.acquire(
+                    "redirect-unsent",
+                    read_only_policy=policy,
+                    address_policy=RefuseLocalhostName(),
+                )
+                page = await lease.context.new_page()
+                try:
+                    await page.goto(f"http://127.0.0.1:{port}/go", timeout=5000)
+                except Exception:
+                    pass
+                assert lease.network_violation and "localhost" in lease.network_violation
+                assert "/secret" not in server.hits
+                assert server.hits.count("/mid") == 1  # checked, then not followed
+                assert "/go" in server.hits
+                await pool.release("redirect-unsent")
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_an_allowed_redirect_lands_on_the_final_page(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        from src.core.browser_pool import BrowserPool
+        from src.core.network_policy import AddressPolicy
+        from src.core.read_only_policy import ExecutionPhase, ReadOnlyExecutionPolicy
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                path = self.path.split("?", 1)[0]
+                self.server.hits.append(path)
+                port = self.server.server_address[1]
+                if path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{port}/landed")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body>landed-ok</body></html>")
+
+            def log_message(self, fmt, *args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.hits = []
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            async with BrowserPool() as pool:
+                lease = await pool.acquire(
+                    "redirect-ok",
+                    read_only_policy=ReadOnlyExecutionPolicy(enabled=True, phase=ExecutionPhase.READ),
+                    address_policy=AddressPolicy(block_private=True, allow_loopback=True),
+                )
+                page = await lease.context.new_page()
+                await page.goto(f"http://127.0.0.1:{port}/start", wait_until="domcontentloaded", timeout=5000)
+                assert page.url.endswith("/landed")
+                assert "landed-ok" in await page.content()
+                assert lease.network_violation is None
+                assert "/start" in server.hits and "/landed" in server.hits
+                await pool.release("redirect-ok")
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+    @pytest.mark.asyncio
     async def test_goto_file_is_refused_in_cleanup(self, test_site):
         from src.core.blueprint import BlueprintStep, StepAction
         from src.core.browser_pool import BrowserPool

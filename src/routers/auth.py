@@ -254,7 +254,7 @@ def _start_sign_up(username: str, email: str, hashed_password: str) -> None:
     responses={
         202: {
             "model": RegistrationPendingResponse,
-            "description": "Sign-ups prove their email address first: finish with POST /auth/verify-email.",
+            "description": "Sign-ups prove their email address first: finish with POST /auth/verify-email {token, password}.",
         }
     },
 )
@@ -271,8 +271,8 @@ def register_user(
     reply is always 202 ``verification_sent``, in the same time, whether or
     not the username or address is taken: what is taken is looked up after the
     reply has been sent, and only the address is told. POST /auth/verify-email
-    with the token it is mailed creates the account. Otherwise the account is
-    created at once and its tokens are returned.
+    with the mailed token and this password creates the account. Otherwise the
+    account is created at once and its tokens are returned.
     """
     if not settings.registration_enabled:
         raise HTTPException(
@@ -307,12 +307,15 @@ def register_user(
 @router.post("/verify-email", response_model=TokenResponse)
 @limiter.limit("3/minute")
 def verify_email(request: Request, body: VerifyEmailRequest, db: Session = Depends(get_db)):
-    """Finish a sign-up: create the account with the one-time token POST /auth/register mailed.
+    """Finish a sign-up: the mailed token together with the password chosen at registration.
 
-    The account is created as an immediate registration creates it, with its
+    The link or the token alone does not create the account — someone who
+    follows a sign-up they did not start does not have that password. The
+    account is then created as an immediate registration creates it, with its
     address marked verified, and its tokens are returned. 400 for an unknown,
-    used or expired token; 409 when the username or the address was taken in
-    the meantime (the sign-up is then void: register again). 404 while
+    used or expired token or a wrong password (the same answer, and the token
+    is not spent); 409 when the username or the address was taken in the
+    meantime (the sign-up is then void: register again). 404 while
     REGISTRATION_EMAIL_VERIFICATION is off.
     """
     if not settings.registration_enabled:
@@ -333,7 +336,11 @@ def verify_email(request: Request, body: VerifyEmailRequest, db: Session = Depen
             PendingRegistration.token_hash == token_hash, PendingRegistration.expires_at > utcnow()
         )
     ).first()
-    if pending is None:
+    # One bcrypt either way, and the same 400 for an unknown token and a wrong
+    # password. The row stays until the password matches, so a link by itself
+    # (or a guess at the password) cannot create the account or burn the token.
+    password_ok = verify_password(body.password, pending.hashed_password if pending is not None else None)
+    if pending is None or not password_ok:
         raise invalid
     # Claim the sign-up with one conditional DELETE: of two concurrent verifications with the token, one wins.
     claim = (

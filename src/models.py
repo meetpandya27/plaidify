@@ -382,9 +382,20 @@ class RegistrationPendingResponse(BaseModel):
 
 
 class VerifyEmailRequest(BaseModel):
-    """Request body for POST /auth/verify-email."""
+    """Request body for POST /auth/verify-email.
+
+    ``token`` is the one-time value from the sign-up email. ``password`` is the
+    one chosen at registration: the token on its own does not create the
+    account, so opening the link without that password does nothing.
+    """
 
     token: str = Field(..., max_length=256)
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, value):
+        return validate_new_password(value)
 
 
 class TokenResponse(BaseModel):

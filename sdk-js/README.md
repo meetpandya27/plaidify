@@ -30,7 +30,8 @@ console.log(result.status); // "connected", "mfa_required" (then submitMfa) or "
 has sign-ups prove their email address first answers a `RegistrationPending`
 (`{ status: "verification_sent", detail }`) whether or not the username or
 address was free, and emails the address a one-time token:
-`verifyEmail(token)` creates the account and keeps its token.
+`verifyEmail(token, password)` with that same password creates the account and
+keeps its token. The token alone does not.
 
 `token` (a user access token) is sent as `Authorization: Bearer`; `apiKey`
 (`pk_…`, agent keys `pk_agent_…`) as `X-API-Key` — the server accepts API

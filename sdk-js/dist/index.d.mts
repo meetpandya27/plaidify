@@ -92,7 +92,8 @@ interface AuthToken {
 /**
  * POST /auth/register (202) while the server has sign-ups prove their email
  * address first. The same whether or not the username or address was free;
- * finish with `verifyEmail(token)`, the token coming from the email.
+ * finish with `verifyEmail(token, password)` — the token from the email and
+ * the password passed to `register`. The token alone does not create the account.
  */
 interface RegistrationPending {
     status: "verification_sent";
@@ -424,11 +425,16 @@ declare class Plaidify {
     /**
      * Create an account and use its access token for later calls. A server
      * that has the email address proven first answers with a
-     * `RegistrationPending` instead: finish with `verifyEmail()`.
+     * `RegistrationPending` instead: finish with `verifyEmail(token, password)`
+     * using this same password. The token alone does not create the account.
      */
     register(username: string, email: string, password: string): Promise<AuthToken | RegistrationPending>;
-    /** Finish a sign-up with the one-time token from the email, and keep the new account's token. */
-    verifyEmail(token: string): Promise<AuthToken>;
+    /**
+     * Finish a sign-up with the one-time token from the email and the password
+     * passed to `register`, and keep the new account's token. The token alone
+     * does not create the account.
+     */
+    verifyEmail(token: string, password: string): Promise<AuthToken>;
     /** Log in (OAuth2 password form at POST /auth/token) and keep the token. */
     login(username: string, password: string): Promise<AuthToken>;
     me(): Promise<UserProfile>;

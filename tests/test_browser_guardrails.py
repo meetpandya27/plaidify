@@ -350,10 +350,28 @@ def test_stylesheets_are_not_blocked_and_service_workers_are():
 # ── Request policy on every request (SEC-03, ENG-03) ─────────────────────────
 
 
+class FakeResponse:
+    def __init__(self, status=200, headers=None):
+        self.status = status
+        self.headers = headers or {}
+
+
 class FakeRoute:
-    def __init__(self, request):
+    def __init__(self, request, response=None):
         self.request = request
+        self._response = response or FakeResponse()
         self.outcome = None
+        self.fetched = []
+
+    async def fetch(self, **kwargs):
+        self.fetched.append(kwargs)
+        # A follow-up hop is a new URL. The first response is the one the test set.
+        if "url" in kwargs:
+            return FakeResponse(200)
+        return self._response
+
+    async def fulfill(self, **kwargs):
+        self.outcome = ("fulfill", kwargs)
 
     async def abort(self, error_code=None):
         self.outcome = ("abort", error_code)
@@ -376,10 +394,10 @@ class FakeRouteRequest:
         return self._navigation
 
 
-async def _route_through(pool, lease, request):
-    route = FakeRoute(request)
+async def _route_through(pool, lease, request, response=None):
+    route = FakeRoute(request, response)
     await lease.context.routes[0](route)
-    return route.outcome
+    return route
 
 
 @pytest.mark.asyncio
@@ -390,16 +408,16 @@ async def test_every_request_is_checked_against_the_address_policy(tmp_path):
     policy = ReadOnlyExecutionPolicy(enabled=True, phase=ExecutionPhase.READ)
     lease = await pool.acquire("s", read_only_policy=policy, address_policy=AddressPolicy(block_private=True))
 
-    assert await _route_through(
+    blocked = await _route_through(
         pool, lease, FakeRouteRequest("http://169.254.169.254/latest/meta-data/", resource_type="xhr")
-    ) == ("abort", "blockedbyclient")
-    assert await _route_through(pool, lease, FakeRouteRequest("http://10.0.0.8/admin", resource_type="image")) == (
-        "abort",
-        "blockedbyclient",
     )
-    assert await _route_through(
+    assert blocked.outcome == ("abort", "blockedbyclient") and blocked.fetched == []
+    also_blocked = await _route_through(pool, lease, FakeRouteRequest("http://10.0.0.8/admin", resource_type="image"))
+    assert also_blocked.outcome == ("abort", "blockedbyclient")
+    allowed = await _route_through(
         pool, lease, FakeRouteRequest("https://93.184.216.34/app.js", resource_type="script")
-    ) == ("continue", None)
+    )
+    assert allowed.outcome[0] == "fulfill" and allowed.fetched == [{"max_redirects": 0}]
     assert [b.action for b in policy.blocked_actions] == ["network", "network"]
 
 
@@ -426,6 +444,74 @@ async def test_redirect_hops_to_private_addresses_fail_the_run(tmp_path):
     assert lease.network_violation and "169.254.169.254" in lease.network_violation
     assert closed == [True]
     assert policy.blocked_actions[-1].action == "redirect"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_redirect_is_not_fetched(tmp_path):
+    from src.core.network_policy import AddressPolicy
+
+    pool = _pool(tmp_path, FakeBrowser())
+    policy = ReadOnlyExecutionPolicy(enabled=True, phase=ExecutionPhase.READ)
+    lease = await pool.acquire("s", read_only_policy=policy, address_policy=AddressPolicy(block_private=True))
+    route = await _route_through(
+        pool,
+        lease,
+        FakeRouteRequest("https://93.184.216.34/login", navigation=True),
+        FakeResponse(302, {"location": "http://169.254.169.254/latest/meta-data/"}),
+    )
+
+    assert route.outcome == ("abort", "blockedbyclient")
+    assert route.fetched == [{"max_redirects": 0}]
+    assert lease.network_violation and "169.254.169.254" in lease.network_violation
+    assert policy.blocked_actions[-1].action == "redirect"
+
+
+@pytest.mark.asyncio
+async def test_an_allowed_redirect_is_returned_to_the_browser(tmp_path):
+    from src.core.network_policy import AddressPolicy, parse_domain_rule
+
+    pool = _pool(tmp_path, FakeBrowser())
+    policy = ReadOnlyExecutionPolicy(
+        enabled=True,
+        phase=ExecutionPhase.READ,
+        host_rules=(parse_domain_rule("93.184.216.34"),),
+    )
+    lease = await pool.acquire("s", read_only_policy=policy, address_policy=AddressPolicy(block_private=True))
+    response = FakeResponse(302, {"Location": "/dashboard"})
+    route = await _route_through(
+        pool,
+        lease,
+        FakeRouteRequest("https://93.184.216.34/login", navigation=True),
+        response,
+    )
+
+    assert route.outcome == (
+        "fulfill",
+        {"status": 302, "headers": {"location": "https://93.184.216.34/dashboard"}},
+    )
+    assert route.fetched[1]["url"] == "https://93.184.216.34/dashboard"
+    assert lease.network_violation is None
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_off_the_blueprint_domain_is_refused(tmp_path):
+    from src.core.network_policy import parse_domain_rule
+
+    pool = _pool(tmp_path, FakeBrowser())
+    policy = ReadOnlyExecutionPolicy(
+        enabled=True, phase=ExecutionPhase.READ, host_rules=(parse_domain_rule("93.184.216.34"),)
+    )
+    lease = await pool.acquire("s", read_only_policy=policy)
+    route = await _route_through(
+        pool,
+        lease,
+        FakeRouteRequest("https://93.184.216.34/login", navigation=True),
+        FakeResponse(302, {"location": "https://evil.example/phish"}),
+    )
+
+    assert route.outcome == ("abort", "blockedbyclient")
+    assert route.fetched == [{"max_redirects": 0}]
+    assert lease.network_violation and "evil.example" in lease.network_violation
 
 
 # ── Downloads come back with the result (ENG-21) ─────────────────────────────

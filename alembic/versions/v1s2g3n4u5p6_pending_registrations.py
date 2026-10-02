@@ -7,7 +7,8 @@ Create Date: 2026-09-30
 - ``pending_registrations``: with REGISTRATION_EMAIL_VERIFICATION on,
   ``POST /auth/register`` stores the username, the address and the password
   hash here and mails the address a one-time token; ``POST /auth/verify-email``
-  with that token creates the account and deletes the row. Only the token's
+  with that token and the same password creates the account and deletes the
+  row. Only the token's
   SHA-256 is stored. One row per address (a new sign-up replaces it); rows
   expire after 24 hours and are purged by the hourly auth cleanup.
 """
