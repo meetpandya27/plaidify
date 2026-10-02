@@ -126,11 +126,11 @@ class TestAuthHeaders:
             return_value=httpx.Response(200, json={"id": 1, "username": "alice", "email": None, "is_active": True})
         )
         async with Plaidify(server_url=BASE) as pfy:
-            await pfy.verify_email("mailed-token-1")
+            await pfy.verify_email("mailed-token-1", "Secure@pass123")
             await pfy.me()
         request = verify.calls[0].request
-        assert _json(request) == {"token": "mailed-token-1"}
-        _assert_no_secrets_in_url(request, "mailed-token-1")
+        assert _json(request) == {"token": "mailed-token-1", "password": "Secure@pass123"}
+        _assert_no_secrets_in_url(request, "mailed-token-1", "Secure@pass123")
         assert me.calls[0].request.headers["authorization"] == "Bearer jwt-2"
 
 

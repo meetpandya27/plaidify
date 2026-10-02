@@ -22,7 +22,7 @@ class TestSyncClient:
         )
         with PlaidifySync(server_url=BASE) as pfy:
             pending = pfy.register("alice", "alice@example.com", "Secure@pass123")
-            token = pfy.verify_email("mailed-token")
+            token = pfy.verify_email("mailed-token", "Secure@pass123")
         assert pending == RegistrationPending(status="verification_sent", detail="Check your email.")
         assert token.access_token == "jwt-v"
 

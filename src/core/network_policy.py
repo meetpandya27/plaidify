@@ -9,8 +9,9 @@ Two independent checks live here:
 * **Address policy.** Requests to private, loopback, link-local, shared (CGNAT),
   multicast, reserved and cloud-metadata addresses are refused. The browser pool
   applies it to *every* request the page makes, resolving the hostname each time
-  (with a short cache), so redirects, sub-resources and page-initiated fetches
-  are covered, not just the first URL.
+  (with a short cache), so sub-resources and page-initiated fetches are covered,
+  not just the first URL. A redirect's ``Location`` is checked before that hop
+  is requested.
 
 This module is pure policy: no Playwright, no blueprint imports.
 """

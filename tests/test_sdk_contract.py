@@ -97,7 +97,7 @@ async def test_verified_sign_up_through_register_and_verify_email():
             pending = await pfy.register(username, f"{username}@example.com", PASSWORD)
             assert isinstance(pending, RegistrationPending) and pending.status == "verification_sent"
             token = re.search(r"finish signing up:\n\n    (\S+)\n", mails[0]).group(1)
-            assert (await pfy.verify_email(token)).access_token
+            assert (await pfy.verify_email(token, PASSWORD)).access_token
             assert (await pfy.me()).username == username
 
 

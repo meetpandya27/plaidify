@@ -281,7 +281,7 @@ compose files and the Azure template all start `gunicorn src.main:app -c gunicor
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15`      | Access token TTL (minutes)        |
 | `JWT_REFRESH_TOKEN_EXPIRE_MINUTES`| `10080`   | Refresh token TTL (7 days)        |
 | `REGISTRATION_ENABLED` | `true` in development, `false` in production | Public `POST /auth/register`. In production it is off unless set explicitly; provision accounts with `BOOTSTRAP_USER_*`. |
-| `REGISTRATION_EMAIL_VERIFICATION` | `true` in production, `false` elsewhere | Sign-ups prove their email address first. `POST /auth/register` answers `202` alike whether or not the username or address is taken, and mails the address a one-time token (24 hours; a new sign-up for the address replaces it), or a note that the address already has an account or that the username is taken. `POST /auth/verify-email {token}` creates the account; it answers `404` while this is off. Needs `SMTP_HOST`/`SMTP_FROM`: production refuses to start with registration enabled, this on and no mail. `false`: the account is created at once, and a taken username or address answers `400`. |
+| `REGISTRATION_EMAIL_VERIFICATION` | `true` in production, `false` elsewhere | Sign-ups prove their email address first. `POST /auth/register` answers `202` alike whether or not the username or address is taken, and mails the address a one-time token (24 hours; a new sign-up for the address replaces it), or a note that the address already has an account or that the username is taken. `POST /auth/verify-email {token, password}` creates the account (`password` is the one from registration; the token alone does not, and a wrong password is the same `400` as an unknown token). It answers `404` while this is off. Needs `SMTP_HOST`/`SMTP_FROM`: production refuses to start with registration enabled, this on and no mail. `false`: the account is created at once, and a taken username or address answers `400`. |
 | `BOOTSTRAP_USER_USERNAME`, `BOOTSTRAP_USER_EMAIL`, `BOOTSTRAP_USER_PASSWORD` | unset | With all three set, startup creates this administrator (idempotent). It never promotes an existing account: a clash with one stops startup in production. Remove them once the account exists. |
 | `OAUTH_ENABLED` | `false` | `POST /auth/oauth2` social login. With it on, startup fails unless every provider in `OAUTH_ALLOWED_PROVIDERS` (default `google,github`) has its ids: `OAUTH_GOOGLE_CLIENT_ID` for Google; `OAUTH_GITHUB_CLIENT_ID` and `OAUTH_GITHUB_CLIENT_SECRET` for GitHub. |
 | `OAUTH_AUTO_REGISTER` | `true` | Create an account on the first login with a verified email |
@@ -294,7 +294,7 @@ compose files and the Azure template all start `gunicorn src.main:app -c gunicor
 | `SMTP_PORT`, `SMTP_STARTTLS`, `SMTP_TIMEOUT_SECONDS` | `587`, `true`, `10.0` | Connection settings; disable STARTTLS only for a local relay |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | unset | SMTP login, if the relay needs one |
 | `PASSWORD_RESET_URL` | unset | Your reset page, with `{token}` in it. Unset: the email carries the one-time code for `POST /auth/reset-password`. |
-| `EMAIL_VERIFICATION_URL` | unset | Your sign-up page, with `{token}` in it; it posts the token to `POST /auth/verify-email`. Unset: the verification email carries the one-time code. |
+| `EMAIL_VERIFICATION_URL` | unset | Your sign-up page, with `{token}` in it. The page posts that token and the password chosen at registration to `POST /auth/verify-email`. Unset: the verification email carries the one-time code. |
 
 ### Server
 

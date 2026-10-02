@@ -270,14 +270,14 @@ describe("register", () => {
 });
 
 describe("verifyEmail", () => {
-  it("posts the emailed token to /auth/verify-email and keeps the new token", async () => {
+  it("posts the emailed token and the registration password and keeps the new token", async () => {
     const anonymous = new Plaidify({ serverUrl: BASE });
     globalThis.fetch = mockFetch({ access_token: "jwt-verified", refresh_token: "ref", token_type: "bearer" });
-    const result = await anonymous.verifyEmail("mailed-token");
+    const result = await anonymous.verifyEmail("mailed-token", "Secure@pass123");
     expect(result.access_token).toBe("jwt-verified");
     expect(sent()).toMatchObject({ url: `${BASE}/auth/verify-email`, method: "POST" });
     expect(sent().headers.Authorization).toBeUndefined();
-    expect(sentJson()).toEqual({ token: "mailed-token" });
+    expect(sentJson()).toEqual({ token: "mailed-token", password: "Secure@pass123" });
 
     globalThis.fetch = mockFetch({ status: "healthy" });
     await anonymous.health();
@@ -286,7 +286,7 @@ describe("verifyEmail", () => {
 
   it("raises the server's error for a spent token", async () => {
     globalThis.fetch = mockFetchError({ detail: "Invalid or expired verification token" }, 400);
-    await expect(new Plaidify({ serverUrl: BASE }).verifyEmail("spent")).rejects.toMatchObject({
+    await expect(new Plaidify({ serverUrl: BASE }).verifyEmail("spent", "Secure@pass123")).rejects.toMatchObject({
       message: "Invalid or expired verification token",
       statusCode: 400,
     });

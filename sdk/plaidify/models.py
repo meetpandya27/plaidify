@@ -170,7 +170,8 @@ class RegistrationPending:
 
     The reply is the same whether or not the username or address was free;
     the address is emailed either way. The account is created by
-    ``verify_email()`` with the token that email carries.
+    ``verify_email()`` with the token that email carries and the password
+    from ``register()``. The token alone does not create the account.
     """
 
     status: str = "verification_sent"

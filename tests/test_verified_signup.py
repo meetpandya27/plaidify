@@ -3,8 +3,9 @@
 POST /auth/register answers 202 ``verification_sent`` whether or not the
 username or the address is taken, and only the address is told what
 happened: a new address asking for a free username is mailed a one-time
-token, and POST /auth/verify-email with it creates the account; an address
-that has an account, or one asking for a taken username, is mailed a note.
+token, and POST /auth/verify-email with that token and the password from
+registration creates the account; an address that has an account, or one
+asking for a taken username, is mailed a note.
 
 Also covers the setting's default per environment, the production startup
 check, the purge of expired sign-ups, and both endpoints while registration
@@ -56,8 +57,8 @@ def _sign_up(client, username, email, password=PASSWORD):
     return client.post("/auth/register", json={"username": username, "email": email, "password": password})
 
 
-def _verify(client, token):
-    return client.post("/auth/verify-email", json={"token": token})
+def _verify(client, token, password=PASSWORD):
+    return client.post("/auth/verify-email", json={"token": token, "password": password})
 
 
 def _code(mail) -> str:
@@ -145,8 +146,22 @@ class TestVerifyEmail:
             entry = db.query(AuditLog).filter(AuditLog.action == "register").one()
             assert entry.user_id == user.id and json.loads(entry.metadata_json) == {"username": "bob"}
         assert _pending() == []
-        # The account has the password chosen at sign-up.
+        # The account has the password chosen at sign-up, presented again here.
         assert client.post("/auth/token", data={"username": "bob", "password": PASSWORD}).status_code == 200
+
+    def test_the_token_alone_or_the_wrong_password_does_not_create_the_account(self, client, outbox):
+        _sign_up(client, "bob", "bob@example.com")
+        token = _code(outbox[0])
+
+        missing = client.post("/auth/verify-email", json={"token": token})
+        wrong = _verify(client, token, "Wrong@pass123")
+
+        assert missing.status_code == 422
+        assert (wrong.status_code, wrong.json()) == (400, INVALID)
+        # Neither attempt spends the token or creates the account.
+        assert _pending() == [("bob", "bob@example.com")]
+        assert client.post("/auth/token", data={"username": "bob", "password": PASSWORD}).status_code == 400
+        assert _verify(client, token).status_code == 200
 
     def test_unknown_used_and_expired_tokens_are_refused_alike(self, client, outbox):
         _sign_up(client, "bob", "bob@example.com")
@@ -196,7 +211,7 @@ class TestVerifyEmail:
 
         assert _pending() == [("henry2", "henry@example.com")]
         assert _verify(client, earlier).status_code == 400
-        assert _verify(client, later).status_code == 200
+        assert _verify(client, later, "Other@pass456").status_code == 200
         assert client.post("/auth/token", data={"username": "henry2", "password": "Other@pass456"}).status_code == 200
 
     def test_the_address_is_kept_as_the_users_table_keeps_it(self, client, outbox):

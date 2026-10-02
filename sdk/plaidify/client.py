@@ -632,7 +632,7 @@ class Plaidify:
             AuthToken with JWT access token when the server creates the account
             at once (it is used for later requests). RegistrationPending when the
             server has the address proven first (HTTP 202): pass the token from
-            the email it sends to :meth:`verify_email`.
+            the email it sends, together with this password, to :meth:`verify_email`.
         """
         try:
             r = await self._http.post(
@@ -650,17 +650,19 @@ class Plaidify:
         self._use_credential(token.access_token)
         return token
 
-    async def verify_email(self, token: str) -> AuthToken:
-        """Finish a sign-up with the one-time token emailed after :meth:`register`.
+    async def verify_email(self, token: str, password: str) -> AuthToken:
+        """Finish a sign-up with the emailed token and the password from :meth:`register`.
 
-        Creates the account and uses its access token for later requests.
+        The token alone does not create the account. On success, uses the new
+        account's access token for later requests.
 
         Raises:
-            PlaidifyError: 400 for an unknown, used or expired token; 409 when
-                the username or address was taken in the meantime (register again).
+            PlaidifyError: 400 for an unknown, used or expired token or a wrong
+                password (the same answer); 409 when the username or address was
+                taken in the meantime (register again).
         """
         try:
-            r = await self._http.post("/auth/verify-email", json={"token": token})
+            r = await self._http.post("/auth/verify-email", json={"token": token, "password": password})
         except httpx.ConnectError as e:
             raise ConnectionError() from e
         _raise_for_api_error(r)
@@ -1679,8 +1681,8 @@ class PlaidifySync:
     def register(self, username: str, email: str, password: str) -> Union[AuthToken, RegistrationPending]:
         return self._run(self._async_client.register(username, email, password))
 
-    def verify_email(self, token: str) -> AuthToken:
-        return self._run(self._async_client.verify_email(token))
+    def verify_email(self, token: str, password: str) -> AuthToken:
+        return self._run(self._async_client.verify_email(token, password))
 
     def login(self, username: str, password: str) -> AuthToken:
         return self._run(self._async_client.login(username, password))

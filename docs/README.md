@@ -76,11 +76,13 @@ answers `202 {"status": "verification_sent", "detail": …}` whether or not the
 username or address is taken, and emails the address: a one-time token (a
 link to `EMAIL_VERIFICATION_URL` when set; valid 24 hours, and a new sign-up
 for the address replaces it), or a note that the address already has an
-account or that the username is taken. `POST /auth/verify-email {token}`
-creates the account and returns its tokens; an unknown, used or expired token
-is `400`, and `409` means the username or address was taken in the meantime
-(register again). While verification is off, `/auth/verify-email` answers
-`404` and a taken username or address is `400` at registration.
+account or that the username is taken. `POST /auth/verify-email {token, password}`
+creates the account and returns its tokens — `password` is the one from
+registration, so the token alone does nothing. An unknown, used or expired
+token, or a wrong password, is the same `400` (the token is not spent), and
+`409` means the username or address was taken in the meantime (register
+again). While verification is off, `/auth/verify-email` answers `404` and a
+taken username or address is `400` at registration.
 
 ### Webhooks
 

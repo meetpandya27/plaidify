@@ -97,21 +97,21 @@ def send_sign_up_verification(to_address: str, token: str, *, username: str, exp
     """Email the one-time token that finishes a sign-up (as a link when EMAIL_VERIFICATION_URL is set).
 
     The username is named so that someone who did not start this sign-up can
-    tell it is not theirs: the link creates the account with the password
-    chosen at sign-up.
+    tell it is not theirs. The token does not create the account: it has to be
+    sent with the password chosen at sign-up, which only that person knows.
     """
     link = email_verification_link(token)
     how = (
-        f"Open this link to finish signing up:\n\n    {link}\n"
+        f"Open this link and enter the password from that sign-up to finish signing up:\n\n    {link}\n"
         if link
-        else f"Use this one-time code to finish signing up:\n\n    {token}\n"
+        else f"Use this one-time code with the password from that sign-up to finish signing up:\n\n    {token}\n"
     )
     body = (
         f'Someone asked to create a {settings.app_name} account with the username "{username}" for this '
         "email address.\n\n"
         f"{how}\n"
-        f"It works once and expires in {expires_hours} hours. If you did not ask for this, ignore this "
-        "email: no account is created.\n"
+        "The link or the code alone does not create the account. It works once and expires in "
+        f"{expires_hours} hours. If you did not ask for this, do nothing: no account is created.\n"
     )
     send_email(to_address, f"Finish signing up for {settings.app_name}", body)
 

@@ -59,8 +59,9 @@ token (`login()`), not an API key.
 when the server creates the account at once. A server that has sign-ups prove
 their email address first (`REGISTRATION_EMAIL_VERIFICATION`, the production
 default) returns a `RegistrationPending` instead, whether or not the username
-or address was free, and emails the address; `verify_email(token)` with the
-token from that email creates the account and returns its `AuthToken`.
+or address was free, and emails the address; `verify_email(token, password)`
+with the token from that email and the same password creates the account and
+returns its `AuthToken`. The token alone does not.
 
 ## Hosted Link Flow
 

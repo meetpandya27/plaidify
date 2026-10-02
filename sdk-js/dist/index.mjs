@@ -241,7 +241,8 @@ var Plaidify = class {
   /**
    * Create an account and use its access token for later calls. A server
    * that has the email address proven first answers with a
-   * `RegistrationPending` instead: finish with `verifyEmail()`.
+   * `RegistrationPending` instead: finish with `verifyEmail(token, password)`
+   * using this same password. The token alone does not create the account.
    */
   async register(username, email, password) {
     const result = await this.post("/auth/register", {
@@ -252,9 +253,13 @@ var Plaidify = class {
     if ("access_token" in result && result.access_token) this.token = result.access_token;
     return result;
   }
-  /** Finish a sign-up with the one-time token from the email, and keep the new account's token. */
-  async verifyEmail(token) {
-    const result = await this.post("/auth/verify-email", { token });
+  /**
+   * Finish a sign-up with the one-time token from the email and the password
+   * passed to `register`, and keep the new account's token. The token alone
+   * does not create the account.
+   */
+  async verifyEmail(token, password) {
+    const result = await this.post("/auth/verify-email", { token, password });
     if (result.access_token) this.token = result.access_token;
     return result;
   }

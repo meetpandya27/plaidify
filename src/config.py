@@ -124,8 +124,9 @@ class Settings(BaseSettings):
         description=(
             "Sign-ups prove their email address first: POST /auth/register answers 202 alike whether or not "
             "the username or address is taken, and mails the address; POST /auth/verify-email with the mailed "
-            "token creates the account. Unset: on in production, off elsewhere (the account is created at once). "
-            "Production refuses to start with it on, registration enabled and no SMTP_HOST/SMTP_FROM."
+            "token and the password from registration creates the account. Unset: on in production, off "
+            "elsewhere (the account is created at once). Production refuses to start with it on, registration "
+            "enabled and no SMTP_HOST/SMTP_FROM."
         ),
     )
     bootstrap_user_username: Optional[str] = Field(
@@ -719,8 +720,8 @@ class Settings(BaseSettings):
         default=None,
         description=(
             "Your app's page that finishes a sign-up, e.g. 'https://app.example.com/verify?token={token}'. When "
-            "set, the verification email links to it; otherwise the email carries the one-time code for "
-            "POST /auth/verify-email."
+            "set, the verification email links to it; the page posts the token and the password chosen at "
+            "registration to POST /auth/verify-email. Otherwise the email carries the one-time code."
         ),
     )
 

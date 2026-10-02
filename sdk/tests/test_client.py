@@ -540,7 +540,7 @@ class TestAuth:
             )
         )
         async with Plaidify(server_url=BASE) as pfy:
-            token = await pfy.verify_email("mailed-token")
+            token = await pfy.verify_email("mailed-token", "Secure@pass123")
         assert token.access_token == "jwt-verified"
 
     @respx.mock
@@ -550,7 +550,7 @@ class TestAuth:
         )
         async with Plaidify(server_url=BASE) as pfy:
             with pytest.raises(PlaidifyError) as raised:
-                await pfy.verify_email("spent-token")
+                await pfy.verify_email("spent-token", "Secure@pass123")
         assert raised.value.status_code == 400
         assert raised.value.message == "Invalid or expired verification token"
 

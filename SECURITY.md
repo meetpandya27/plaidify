@@ -54,11 +54,12 @@ Master key (ENCRYPTION_KEY, or a managed KMS key)
    or address is taken; only the address learns which, by email: a one-time
    token (24 hours, stored as a SHA-256 digest; a new sign-up for the address
    replaces it), or a note that the address already has an account or that the
-   username is taken. `POST /auth/verify-email` with the token creates the
-   account and marks the address verified. The email names the username, so
-   a sign-up someone else started for the address can be recognised (see
-   Known limits). With it off the account is created at once, and a taken
-   username or address answers `400`.
+   username is taken. `POST /auth/verify-email` with the token and the password
+   chosen at registration creates the account and marks the address verified.
+   The token alone does not: opening a sign-up you did not start does nothing,
+   because that password is not in the email (the email names the username so
+   the sign-up can be recognised). With it off the account is created at once,
+   and a taken username or address answers `400`.
 2. **Sign-in**: `POST /auth/token` (OAuth2 password form) returns an access
    token and a refresh token. Failed attempts are counted per username and
    client address (5 in 15 minutes locks that pair for 15 minutes) and per
@@ -314,13 +315,6 @@ These are open, and deliberately written down:
 
 - With `REGISTRATION_EMAIL_VERIFICATION=false` (the default outside
   production), registration reveals whether a username or email is taken.
-- A verification link creates the account with the username and password of
-  whoever started the sign-up: following a link for a sign-up you did not
-  start gives someone else an account on your address (the email names the
-  username so it can be recognised; a password reset takes the account back).
-- A blind GET can still leave the browser on a redirect hop before the run
-  is stopped (the policy checks each hop, but the first request of a
-  refused redirect has already been sent).
 - JSON POSTs are allowed in the read phase, for single-page apps; a site that
   changes state through a JSON POST is not stopped by the method rules.
 - Python connectors (`*_connector.py` in `CONNECTORS_DIR`) are trusted code:

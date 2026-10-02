@@ -23,6 +23,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Optional
+from urllib.parse import urljoin, urlsplit
 
 from playwright.async_api import (
     Browser,
@@ -147,6 +148,82 @@ def _strip_query(url: Optional[str]) -> Optional[str]:
     if not url:
         return url
     return url.split("?", 1)[0].split("#", 1)[0]
+
+
+# Statuses a browser will follow. 301/302/303 are retried as GET when the
+# original request had a body; 307/308 keep the method.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def _headers_for_hop(request: Any, method: str) -> dict[str, str]:
+    """Headers for a redirect hop we fetch ourselves.
+
+    The original ``Cookie`` is dropped so the browser's cookie jar is used,
+    including a ``Set-Cookie`` from the response that caused the hop. ``Host``
+    is dropped so the hop's own host is sent. A hop that became a GET does not
+    keep the previous body headers.
+    """
+    raw = getattr(request, "headers", {}) or {}
+    drop = {"cookie", "host"}
+    if method in {"GET", "HEAD"}:
+        drop |= {"content-length", "content-type"}
+    return {str(key): str(value) for key, value in dict(raw).items() if str(key).lower() not in drop}
+
+
+def _method_after_redirect(status: int, method: str) -> str:
+    """The method a browser uses on the next hop of a redirect."""
+    method = (method or "GET").upper()
+    if status in (301, 302, 303) and method not in {"GET", "HEAD"}:
+        return "GET"
+    return method
+
+
+def _response_headers(response: Any) -> dict[str, str]:
+    headers = getattr(response, "headers", None) or {}
+    if callable(headers):
+        headers = headers()
+    try:
+        items = list(headers.items())
+    except Exception:
+        return {}
+    return {str(key).lower(): str(value) for key, value in items}
+
+
+def _redirect_target(current_url: str, response: Any) -> Optional[str]:
+    """Absolute URL a redirect points at.
+
+    ``None`` when ``response`` is not a redirect. An empty string means the
+    hop must be refused: the location is missing, or it contains characters a
+    browser and this check could read differently.
+    """
+    status = getattr(response, "status", None)
+    if status not in _REDIRECT_STATUSES:
+        return None
+    location = _response_headers(response).get("location", "").strip()
+    if not location or "\\" in location or any(ord(char) < 32 or ord(char) == 127 for char in location):
+        return ""
+    return urljoin(current_url, location)
+
+
+class _HopRequest:
+    """A redirect hop, with the shape the read-only policy expects of a request."""
+
+    def __init__(self, url: str, method: str, *, navigation: bool, main_frame: bool) -> None:
+        self.url = url
+        self.method = method
+        self.headers: dict[str, str] = {}
+        self.resource_type = "document" if navigation else "xhr"
+        self._navigation = navigation
+        self._main_frame = main_frame
+        self.redirected_from = None
+
+    def is_navigation_request(self) -> bool:
+        return self._navigation
+
+    @property
+    def frame(self) -> Any:
+        parent = None if self._main_frame else object()
+        return type("Frame", (), {"parent_frame": parent})()
 
 
 # ── Browser Pool ──────────────────────────────────────────────────────────────
@@ -584,7 +661,11 @@ class BrowserPool:
                             await route.abort()
                             return
 
-                await route.continue_()
+                # continue_() lets Chromium follow the whole redirect chain, and
+                # those hops never re-enter this route — the refused request has
+                # already been sent by the time the request event fires. Fetch
+                # with no automatic redirects and refuse Location first.
+                await self._fulfill_checked(route, pooled)
             except Exception as exc:
                 # Fail closed; the route may also already be gone with its page.
                 logger.debug(
@@ -620,10 +701,105 @@ class BrowserPool:
             except Exception as exc:  # pragma: no cover - depends on the Playwright build
                 logger.warning("WebSocket routing unavailable", extra={"extra_data": {"error": str(exc)}})
 
-        # Routes never see redirect hops (Playwright only routes the first URL of
-        # a redirect chain). Watch the hops instead and fail the run closed if one
-        # goes somewhere a direct request could not.
+        # Backstop. _fulfill_checked refuses a Location before the browser asks
+        # for it; this still stops a hop that arrived as a request anyway (a
+        # page-level route, or a chain this handler did not see).
         context.on("request", lambda request: self._on_request(request, pooled))
+
+    async def _redirect_block_reason(
+        self,
+        pooled: PooledContext,
+        request: Any,
+        status: int,
+        next_url: str,
+        method: Optional[str] = None,
+    ) -> Optional[str]:
+        """Why the browser must not request ``next_url`` as the next hop, or None."""
+        if not next_url:
+            return "redirect location is missing or malformed"
+        parts = urlsplit(next_url)
+        scheme = (parts.scheme or "").lower()
+        if scheme not in {"http", "https"} or not parts.hostname:
+            return "redirect to a non-http(s) URL is not allowed"
+        if parts.username is not None or parts.password is not None:
+            return "redirect URL carries credentials"
+
+        policy = pooled.read_only_policy
+        navigation = ReadOnlyExecutionPolicy._is_navigation(request)
+        main_frame = navigation and ReadOnlyExecutionPolicy._is_main_frame(request)
+        # Host scoping needs no DNS, so an off-domain navigation is refused
+        # before a name lookup.
+        if policy is not None and main_frame and policy.host_rules:
+            reason = navigation_block_reason(next_url, policy.host_rules)
+            if reason:
+                return reason
+
+        reason = await self._network_block_reason(pooled, next_url)
+        if reason:
+            return reason
+        if policy is None:
+            return None
+        hop = _HopRequest(
+            next_url,
+            _method_after_redirect(status, method or str(getattr(request, "method", "GET"))),
+            navigation=navigation,
+            main_frame=main_frame,
+        )
+        return policy.evaluate_request(hop)
+
+    async def _fulfill_checked(self, route: Any, pooled: PooledContext) -> None:
+        """Send this request without letting the browser follow an unchecked redirect.
+
+        Playwright does not route a hop Chromium follows itself (``Fetch.continueRequest``
+        on ``redirectedFrom``), so a refused ``Location`` would already be on the wire.
+        The chain is followed here, with each hop checked before it is fetched. A
+        main-frame navigation is then handed back as one redirect to the final URL,
+        and only when that response itself was not a redirect.
+        """
+        request = route.request
+        current_url = str(request.url)
+        method = str(getattr(request, "method", "GET") or "GET").upper()
+        response = await route.fetch(max_redirects=0)
+        followed = 0
+        while getattr(response, "status", None) in _REDIRECT_STATUSES:
+            if followed >= 20:
+                reason = "too many redirects"
+                pooled.network_violation = f"redirect to {_strip_query(current_url)} refused: {reason}"
+                self._record(pooled, "redirect", reason, _strip_query(current_url))
+                await route.abort("blockedbyclient")
+                return
+            status = int(response.status)
+            target = _redirect_target(current_url, response) or ""
+            reason = await self._redirect_block_reason(pooled, request, status, target, method)
+            if reason:
+                shown = _strip_query(target) if target else None
+                pooled.network_violation = f"redirect to {shown or 'an unreadable location'} refused: {reason}"
+                self._record(pooled, "redirect", reason, shown)
+                await route.abort("blockedbyclient")
+                return
+            method = _method_after_redirect(status, method)
+            current_url = target
+            followed += 1
+            hop: dict[str, Any] = {
+                "url": current_url,
+                "method": method,
+                "headers": _headers_for_hop(request, method),
+                "max_redirects": 0,
+            }
+            # An empty body stops a POST's payload being replayed on a GET hop.
+            # b"" is falsy, so the fetch sends no body rather than the original one.
+            if method in {"GET", "HEAD"}:
+                hop["post_data"] = b""
+            response = await route.fetch(**hop)
+
+        # A 302 Chromium follows is not routed. Hand it only the last URL, whose
+        # response did not redirect, so there is no further Location to chase.
+        navigation = ReadOnlyExecutionPolicy._is_navigation(request)
+        main_frame = navigation and ReadOnlyExecutionPolicy._is_main_frame(request)
+        if main_frame and current_url != str(request.url):
+            await route.fulfill(status=302, headers={"location": current_url})
+            return
+        await route.fulfill(response=response)
 
     def _on_request(self, request: Any, pooled: PooledContext) -> None:
         if getattr(request, "redirected_from", None) is None:

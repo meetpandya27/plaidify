@@ -108,7 +108,8 @@ export interface AuthToken {
 /**
  * POST /auth/register (202) while the server has sign-ups prove their email
  * address first. The same whether or not the username or address was free;
- * finish with `verifyEmail(token)`, the token coming from the email.
+ * finish with `verifyEmail(token, password)` — the token from the email and
+ * the password passed to `register`. The token alone does not create the account.
  */
 export interface RegistrationPending {
   status: "verification_sent";
