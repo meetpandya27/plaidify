@@ -15,7 +15,7 @@
 boto3>=1.34
 
 # Azure Key Vault (KMS_PROVIDER=azure)
-azure-keyvault-keys>=4.9
+azure-keyvault-keys>=4.11.2
 azure-identity>=1.17
 
 # HashiCorp Vault Transit (KMS_PROVIDER=vault)
